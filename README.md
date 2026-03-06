@@ -56,3 +56,32 @@ The repository currently includes package tests for:
 
 Phase 1 parity tests against full historical runs still need real run-specific
 configurations and TFRecord locations.
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║   ███╗   ██╗██████╗ ███╗   ███╗      n d m                                 ║
+║   ████╗  ██║██╔══██╗████╗ ████║   Neural Disease Modeling                  ║
+║   ██╔██╗ ██║██║  ██║██╔████╔██║                                            ║
+║   ██║╚██╗██║██║  ██║██║╚██╔╝██║      R • reticulate • JAX Backend          ║
+║   ██║ ╚████║██████╔╝██║ ╚═╝ ██║                                            ║
+║   ╚═╝  ╚═══╝╚═════╝ ╚═╝     ╚═╝                                            ║
+║                                                                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║     Transformer Backbone               Epidemic Compartments                 ║
+║   ┌─────────────────────┐            ┌────────────────────────────┐         ║
+║   │   ●───▶●───▶●       │            │   S ──▶ E ──▶ I ──▶ R      │         ║
+║   │  DecoderOnly        │            │ Dynamic β • Multi-outcome  │         ║
+║   │     NeuralODE       │            │   Global Dynamics          │         ║
+║   └──────────▲──────────┘            └─────────────▲──────────────┘         ║
+║              │                                    │                        ║
+║              └────────────── ndm_fit() ───────────┘                        ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+     Built-in: seir_fixed • seirs_dynamic_beta • seirs_dynamic_beta_multi_outcome
+              • seirs_dynamic_beta_dynamic_global • TFRecords • .tex support
+              • ndm_create_config() • ndm_build_model() •
+			  ndm_predict()
+```
