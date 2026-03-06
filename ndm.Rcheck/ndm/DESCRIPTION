@@ -1,0 +1,25 @@
+Package: ndm
+Title: Neural Disease Modeling Software
+Version: 0.0.1
+Author: Connor T. Jerzak [aut, cre]
+Maintainer: Connor T. Jerzak <connor.jerzak@austin.utexas.edu>
+Authors@R: 
+    person(given = c("Connor", "T."),
+           family = "Jerzak",
+           role = c("aut", "cre"),
+           email = "connor.jerzak@austin.utexas.edu")
+Description: Provides an R-first interface for neural disease modeling with a
+    reticulate-managed JAX backend. The package includes backend bootstrap
+    helpers, built-in epidemiological model specifications, TFRecord-consuming
+    data interfaces, and a vendored runtime bundle for running extracted model
+    build and training code entirely from within the package.
+Depends: R (>= 4.1.0)
+Imports: data.table, rlang, reticulate, utils
+Suggests: testthat (>= 3.0.0)
+License: GPL-3
+Encoding: UTF-8
+Config/testthat/edition: 3
+RoxygenNote: 7.3.3
+NeedsCompilation: no
+Packaged: 2026-03-06 19:04:09 UTC; cjerzak
+Built: R 4.5.2; ; 2026-03-06 19:04:20 UTC; unix
