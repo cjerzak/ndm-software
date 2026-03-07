@@ -476,8 +476,14 @@
   if(length(lefthandside_vec) != length(righthandside_vec)){ print("left right here"); browser() }
 
   # combine left and right
-  righthandside_vec <- righthandside_vec[!duplicated(righthandside_vec)]
-  lefthandside_vec <- lefthandside_vec[!duplicated(lefthandside_vec)]
+  ode_pairs <- data.frame(
+    lefthandside_vec = lefthandside_vec,
+    righthandside_vec = righthandside_vec,
+    stringsAsFactors = FALSE
+  )
+  ode_pairs <- ode_pairs[!duplicated(ode_pairs), , drop = FALSE]
+  lefthandside_vec <- ode_pairs$lefthandside_vec
+  righthandside_vec <- ode_pairs$righthandside_vec
   ode_transformation_text <- paste(paste("'", lefthandside_vec, "'=", righthandside_vec, sep = ""),collapse = ",")
 
   #ode_transformation_text <- gsub(ode_transformation_text, pattern = uq_encneural_vec, replace = "Neural1")

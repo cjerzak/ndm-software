@@ -1,5 +1,47 @@
 # Content of SuperLModel_TrainDo.R
 print("Sarting SuperLModel_TrainDo.R")
+SavedModelDir <- get0(
+  "SavedModelDir",
+  ifnotfound = sprintf("./SavedModels/%s/Model_%s_%s",
+                       ifelse(grepl(tolower(AnalysisName), pattern = "sim"),
+                              yes = "FromSim", no = "FromReal"),
+                       AnalysisName,
+                       AnalysisDate)
+)
+checkpoint_file <- function(prefix, step){
+  file.path(SavedModelDir, sprintf("%s_i%s_%s_%s.eqx", prefix, step, AnalysisName, AnalysisDate))
+}
+reset_train_iterator <- function(){
+  TFDatasetIterator_train <<- reticulate::as_iterator(TFDataset_train)
+  TFDatasetIterator_train
+}
+batch_has_expected_shape <- function(dat_, expected_batch_size){
+  if("try-error" %in% class(dat_) || is.null(dat_) || length(dat_) == 0L){
+    return(FALSE)
+  }
+  batch_dims <- try(vapply(dat_, function(l_){ as.integer(np$array(l_$shape)[[1]]) }, integer(1)), TRUE)
+  if("try-error" %in% class(batch_dims) || length(batch_dims) == 0L || any(is.na(batch_dims))){
+    return(FALSE)
+  }
+  batch_size <- batch_dims[[1]]
+  batch_size > 0L && batch_size == expected_batch_size && all(batch_dims == batch_size)
+}
+next_train_batch <- function(max_attempts = 100L){
+  for(attempt_i in seq_len(max_attempts)){
+    dat_ <- try(reticulate::iter_next(TFDatasetIterator_train), TRUE)
+    if(batch_has_expected_shape(dat_, nBatch)){
+      return(TFConst2JAXArray(dat_))
+    }
+    print2(sprintf("Resetting train iterator in TrainDo.R [attempt %s]", attempt_i))
+    reset_train_iterator()
+  }
+  stop("Too many malformed batches in TrainDo.R")
+}
+save_eqx_enabled <- isTRUE(get0("SaveEqx", ifnotfound = TRUE))
+recover_checkpoint_at <- get0("RecoverCheckpointAt", ifnotfound = NULL)
+if(isTRUE(recover_checkpoint_at)){
+  recover_checkpoint_at <- "last"
+}
 for(i in i_:nSGD_model){
   if(Sys.info()["sysname"] != "Darwin" & i > 2){  
     #write.csv( file="./i_.csv",data.frame("i" = i, "te_total" = as.numeric(te_total, units = "secs"), "te_grad" = as.numeric(te_grads, units = "secs") ))  
@@ -15,29 +57,18 @@ for(i in i_:nSGD_model){
     saveCheckpointCounter <- saveCheckpointCounter + 1
 
     if(saveCheckpointCounter == 1){
-      zip::zip(zipfile = sprintf("./SavedModels/%s/Model_%s_%s/AnalysisR_%s_%s.zip",
-                            ifelse(grepl(tolower(AnalysisName), pattern = "sim"),
-                                   yes = "FromSim",no="FromReal"), 
-                            AnalysisName, AnalysisDate,
-                            AnalysisName, AnalysisDate), files = NDM_INTERNAL_ANALYSIS_DIR)
+      zip::zip(zipfile = file.path(SavedModelDir, sprintf("AnalysisR_%s_%s.zip", AnalysisName, AnalysisDate)),
+               files = NDM_INTERNAL_ANALYSIS_DIR)
     }
 
     if(i %in% CheckPointSaveAt){ save_i <- i }
-    if(SaveEqx <- F){ 
+    if(save_eqx_enabled){ 
       # save_i <- "last"
-      eq$tree_serialise_leaves(sprintf("./SavedModels/%s/Model_%s_%s/ModelList_i%s_%s_%s.eqx",
-                                       ifelse(grepl(tolower(AnalysisName), pattern = "sim"), yes = "FromSim",no="FromReal"), 
-                                       AnalysisName, AnalysisDate,
-                                       save_i,
-                                       AnalysisName, AnalysisDate),
+      eq$tree_serialise_leaves(checkpoint_file("ModelList", save_i),
                                list( ModelList, state, opt_state, 
                                     jnp$array(list(SIM_GLOBAL_SCALE_MEAN,SIM_GLOBAL_SCALE_SD))))
       if("ModelList_notshared_set" %in% ls()){
-        eq$tree_serialise_leaves(sprintf("./SavedModels/%s/Model_%s_%s/ModelList_notshared_set_i%s_%s_%s.eqx",
-                                         ifelse(grepl(tolower(AnalysisName), pattern = "sim"), yes = "FromSim",no="FromReal"), 
-                                         AnalysisName, AnalysisDate,
-                                         save_i,
-                                         AnalysisName, AnalysisDate),
+        eq$tree_serialise_leaves(checkpoint_file("ModelList_notshared_set", save_i),
                                  list(ModelList_notshared_set, # nonshared parameters 
                                       lapply(sim_dat_norm_list,jnp$array)) # means for recovery 
                                  ) 
@@ -45,21 +76,15 @@ for(i in i_:nSGD_model){
     }
 
     # recover trained model
-    if(T == F){
+    if(save_eqx_enabled && !is.null(recover_checkpoint_at)){
       # nSGD_model / 1:4 # defines i's
-      RecoverAt <- "last"; ModelList_recovered <- eq$tree_deserialise_leaves(
-        sprintf("./SavedModels/%s/Model_%s_%s/ModelList_i%s_%s_%s.eqx",
-                ifelse(grepl(tolower(AnalysisName), pattern = "sim"), yes = "FromSim",no="FromReal"), 
-                AnalysisName, AnalysisDate, RecoverAt,
-                AnalysisName, AnalysisDate),
+      RecoverAt <- recover_checkpoint_at
+      ModelList_recovered <- eq$tree_deserialise_leaves(
+        checkpoint_file("ModelList", RecoverAt),
         list( ModelList, state, opt_state,
              jnp$array(list(SIM_GLOBAL_SCALE_MEAN,SIM_GLOBAL_SCALE_SD)) ) ) 
       if("ModelList_notshared_set" %in% ls()){
-        ModelList_notshared_set_recovered <- eq$tree_deserialise_leaves(sprintf("./SavedModels/%s/Model_%s_%s/ModelList_notshared_set_i%s_%s_%s.eqx",
-                                         ifelse(grepl(tolower(AnalysisName), pattern = "sim"), yes = "FromSim",no="FromReal"), 
-                                         AnalysisName, AnalysisDate,
-                                         RecoverAt,
-                                         AnalysisName, AnalysisDate),
+        ModelList_notshared_set_recovered <- eq$tree_deserialise_leaves(checkpoint_file("ModelList_notshared_set", RecoverAt),
                                  list(ModelList_notshared_set, # non shared parameters 
                                       lapply(sim_dat_norm_list,jnp$array) ) # norm factors 
                                  )
@@ -99,35 +124,7 @@ for(i in i_:nSGD_model){
 
   # get batch
   if(nSGD_pretrain > 0L | nSGD_posttrain > 0){ 
-  dat_ <- try(reticulate::iter_next( TFDatasetIterator_train ), T)
-  # batch_l_train <-  TFConst2JAXArray(dat_)
-  # par(mfrow=c(2,2));i_<-sample(1:50,1)
-  # plot(np$array(dat_$XPred)[i_,,c_<-sample(1:dat_$XPred$shape[2],1)],main = dataInputs_colnames[c_],cex.main=0.5)
-  if("try-error" %in% class(dat_)){ 
-    print2("Resetting type: try-error in TrainDo.R...")
-    dat_ <- reticulate::iter_next(TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train))
-  }
-  if(is.null(dat_)){ 
-    print2("Resetting type: is.null in TrainDo.R...")
-    dat_ <- reticulate::iter_next(TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train))
-  }
-  if(length(dat_)[[1]] == 0){ 
-    print2("Resetting type: length 0 dat_ in TrainDo.R...")
-    dat_ <- reticulate::iter_next(TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train))
-  }
-  if(np$array(dat_[[1]]$shape)[[1]] != nBatch){  
-    print2("Resetting type: bad shape (1) in TrainDo.R...")
-    dat_ <- reticulate::iter_next(TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train))
-  }
-  if( any(unlist(lapply(dat_, function(l_){ np$array(l_$shape)[[1]] } ) ) != nBatch) ){  
-    badshape2_ctr <- 0; badshape2 <- T; while(badshape2){ 
-      print2("Resetting type: bad shape (2) in TrainDo.R...")
-      badshape2_ctr <- badshape2_ctr + 1; if(badshape2_ctr > 100){stop("Too many bad shape (2)'s in TrainDo.R")}
-      dat_ <- reticulate::iter_next(TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train))
-      badshape2 <- any(unlist(lapply(dat_, function(l_){ np$array(l_$shape)[[1]] } ) ) != nBatch)  
-    }
-  }
-  dat_ <- TFConst2JAXArray( dat_ )
+  dat_ <- next_train_batch()
 
   # update step
   {
@@ -151,6 +148,7 @@ for(i in i_:nSGD_model){
       # update state
       state_tmp <- GradientUpdatePackage[[1]][[2]]
       GradientUpdatePackage[[1]] <- GradientUpdatePackage[[1]][[1]]
+      state <- state_tmp
 
       # update loss
       myLoss_fromGrad <- GradientUpdatePackage[[1]]$tolist()
@@ -180,12 +178,14 @@ for(i in i_:nSGD_model){
           # plot(sort(colMeans(grad_norm_mat)))
           # plot(grad_norm_mat$InitProcessList.InitialEncodingTransform.Conv1d_long)
         }
-        print(tail(sort(unlist(values3),decreasing=F),25))
-        mean(duplicated(names(sort(unlist(values3)))))
-        plot(sort(unlist(values3)))
-        
-        if(i > 1){ 
-          plot(unlist(values3), unlist(values3_past)); abline(a=0,b=1)
+        if(is.na(COMMAND_ARG_INPUT)){
+          print(tail(sort(unlist(values3),decreasing=F),25))
+          mean(duplicated(names(sort(unlist(values3)))))
+          plot(sort(unlist(values3)))
+          
+          if(i > 1){ 
+            plot(unlist(values3), unlist(values3_past)); abline(a=0,b=1)
+          }
         }
         values3_past <- values3
       
@@ -227,7 +227,7 @@ for(i in i_:nSGD_model){
         }
         ModelList <- updatefxn_(ModelList, GradientUpdatePackage)
         in_loss_vec[i] <- as.numeric( myLoss_fromGrad )
-        rm(GradientUpdatePackage, state_tmp, dat_)
+        rm(GradientUpdatePackage, dat_)
       }
 
       # plotting sequence (do this after all parameter + state updates complete)

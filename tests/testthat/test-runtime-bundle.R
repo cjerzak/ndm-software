@@ -38,7 +38,6 @@ test_that("runtime helpers honor caller-supplied analysis_root end-to-end", {
 
   model <- ndm_build_model(
     runtime_env = runtime_env,
-    analysis_root = cfg$analysis_root,
     model_type = "DecoderOnly"
   )
   expect_equal(model$analysis_root, fixture$analysis_root)
@@ -51,12 +50,40 @@ test_that("runtime helpers honor caller-supplied analysis_root end-to-end", {
   expect_true(isTRUE(runtime_env$fixture_results_get_loaded))
   expect_true(isTRUE(runtime_env$fixture_results_analyze_loaded))
 
-  trained <- ndm_train(model, analysis_root = cfg$analysis_root)
+  trained <- ndm_train(runtime_env)
   expect_equal(trained$analysis_root, fixture$analysis_root)
   expect_true(isTRUE(runtime_env$fixture_train_define_loaded))
   expect_true(isTRUE(runtime_env$fixture_train_do_loaded))
   expect_equal(runtime_env$state$stage, "trained")
   expect_equal(runtime_env$opt_state$stage, "trained")
+})
+
+test_that("build fails fast when runtime outputs are incomplete", {
+  fixture <- make_runtime_fixture()
+  on.exit(unlink(fixture$root, recursive = TRUE), add = TRUE)
+
+  writeLines(
+    c(
+      "ModelList <- list(source = NDM_INTERNAL_ANALYSIS_DIR)",
+      "state <- list(stage = \"built\")"
+    ),
+    file.path(fixture$analysis_root, "ModelDefiners", "SuperLModel_BuildML.R")
+  )
+
+  cfg <- ndm_create_config(
+    model_type = "DecoderOnly",
+    backbone = "transformer",
+    analysis_root = fixture$analysis_root,
+    force_to_gpu = FALSE
+  )
+
+  runtime_env <- ndm_prepare_runtime(cfg, runtime_env = ndm_new_runtime_env())
+  ndm_prepare_data(runtime_env = runtime_env, analysis_root = cfg$analysis_root, generator = "sim")
+
+  expect_error(
+    ndm_build_model(runtime_env = runtime_env, model_type = "DecoderOnly"),
+    "PriorList"
+  )
 })
 
 test_that("runtime environments accept explicit globals", {
