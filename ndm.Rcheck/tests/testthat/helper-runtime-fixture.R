@@ -68,7 +68,14 @@ make_runtime_fixture <- function() {
       "fixture_build_model_loaded <- TRUE",
       "fixture_build_model_analysis_root <- NDM_INTERNAL_ANALYSIS_DIR",
       "ModelList <- list(source = fixture_build_model_analysis_root)",
-      "state <- list(stage = \"built\")"
+      "state <- list(stage = \"built\")",
+      "PriorList <- list(source = fixture_build_model_analysis_root)",
+      "PolicyList <- list(source = fixture_build_model_analysis_root)",
+      "GetPredSaveAtInfo_default <- list(1L)",
+      "GetPred_inference <- function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed) list(list(kind = \"inference\", batch = x), state)",
+      "GetPred_train_jit <- function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed) list(list(kind = \"train\", batch = x), state)",
+      "getLoss_train <- function(ModelList, x, y, y_mask, i, state, PriorList, PolicyList, GetPredSaveAtInfo, seed) list(list(kind = \"loss\", iteration = i), state)",
+      "gradLoss_jax <- function(ModelList, x, y, y_mask, i, state, PriorList, PolicyList, GetPredSaveAtInfo, seed) list(list(list(0, state)), ModelList)"
     ),
     file.path(analysis_root, "ModelDefiners", "SuperLModel_BuildML.R")
   )

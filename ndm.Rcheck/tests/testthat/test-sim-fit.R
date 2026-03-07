@@ -29,7 +29,10 @@ ndm_test_restore_env <- function(snapshot, dest = globalenv()) {
 
 ndm_test_fit_sim_case <- function(model_type,
                                   endogeneity,
-                                  n_sgd = NULL) {
+                                  n_sgd = NULL,
+                                  n_checkpoints = 0L,
+                                  enable_kv_cache = TRUE,
+                                  return_details = FALSE) {
   if (is.null(n_sgd)) {
     n_sgd <- if (identical(model_type, "NeuralODE")) 3L else 2L
   }
@@ -55,6 +58,7 @@ ndm_test_fit_sim_case <- function(model_type,
 
   dir.create(file.path(work_dir, "SavedModels", "FromSim"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(work_dir, "SavedResults", "Sim"), recursive = TRUE, showWarnings = FALSE)
+  dir.create(file.path(work_dir, "results"), recursive = TRUE, showWarnings = FALSE)
 
   sim_entry <- list(
     BaseID = 1L,
@@ -128,7 +132,7 @@ ndm_test_fit_sim_case <- function(model_type,
       nSGD_model = n_sgd,
       nSGD_pretrain = 0L,
       nSGD_posttrain = n_sgd,
-      nCheckpoints = 0L,
+      nCheckpoints = n_checkpoints,
       ModelDims = 32L,
       ModelDepth = 1L,
       nOutcomes = 1L,
@@ -136,6 +140,7 @@ ndm_test_fit_sim_case <- function(model_type,
       af = 1L,
       HolderFolder = file.path(work_dir, "results"),
       endAppend = TRUE,
+      EnableKVCaching = enable_kv_cache,
       paddingMethod = "left",
       nBatch_SimGridGen = 8L,
       nMonteEval = 1L,
@@ -212,7 +217,7 @@ ndm_test_fit_sim_case <- function(model_type,
   )
 
   losses <- as.numeric(trained$env$in_loss_vec[seq_len(n_sgd)])
-  data.frame(
+  summary <- data.frame(
     model_type = model_type,
     spec_preset = model_spec$preset,
     endogeneity = endogeneity,
@@ -221,9 +226,33 @@ ndm_test_fit_sim_case <- function(model_type,
     loss_delta = losses[[1]] - losses[[length(losses)]],
     stringsAsFactors = FALSE
   )
+  if (isTRUE(return_details)) {
+    batch <- if (exists("batch_l_cal", envir = runtime_env, inherits = FALSE)) {
+      get("batch_l_cal", envir = runtime_env, inherits = FALSE)
+    } else if (exists("batch_l_cal", envir = .GlobalEnv, inherits = FALSE)) {
+      get("batch_l_cal", envir = .GlobalEnv, inherits = FALSE)
+    } else if (exists("TFDataset_train", envir = runtime_env, inherits = FALSE) &&
+               exists("TFConst2JAXArray", envir = runtime_env, inherits = FALSE)) {
+      runtime_env$TFConst2JAXArray(
+        reticulate::iter_next(reticulate::as_iterator(get("TFDataset_train", envir = runtime_env, inherits = FALSE)))
+      )
+    } else {
+      NULL
+    }
+    return(list(
+      summary = summary,
+      model = model,
+      trained = trained,
+      runtime_env = runtime_env,
+      batch = batch,
+      work_dir = work_dir,
+      holder_folder = file.path(work_dir, "results")
+    ))
+  }
+  summary
 }
 
-test_that("simulated pandemic fits improve across model families and endogeneity levels", {
+ndm_skip_if_no_sim_backend <- function() {
   skip_on_cran()
   skip_if_not_installed("reticulate")
   skip_if_not_installed("fastmatch")
@@ -238,6 +267,10 @@ test_that("simulated pandemic fits improve across model families and endogeneity
     modules = c("jax", "numpy", "optax", "equinox", "diffrax", "tensorflow")
   )
   skip_if(is.null(backend_ready), "jax_cpu with JAX/TensorFlow is required for the simulation fit test.")
+}
+
+test_that("simulated pandemic fits improve across model families and endogeneity levels", {
+  ndm_skip_if_no_sim_backend()
 
   cases <- data.frame(
     model_type = c("DecoderOnly", "DecoderOnly", "NeuralODE", "NeuralODE"),
@@ -263,4 +296,61 @@ test_that("simulated pandemic fits improve across model families and endogeneity
   expect_true(all(results$loss_delta >= 0), info = results_info)
   expect_true(mean(results$loss_delta) > 1e-3, info = results_info)
   expect_true(min(neural_ode_results$loss_delta) > 1e-3, info = results_info)
+})
+
+test_that("decoder cache and non-cache predictions agree in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    return_details = TRUE
+  )
+
+  details$runtime_env$EnableKVCaching <- FALSE
+  pred_no_cache <- ndm_predict(
+    details$trained,
+    batch = details$batch,
+    seed = 123L,
+    update_state = FALSE
+  )
+  details$runtime_env$EnableKVCaching <- TRUE
+  pred_cache <- ndm_predict(
+    details$trained,
+    batch = details$batch,
+    seed = 123L,
+    update_state = FALSE
+  )
+
+  pred_no_cache_mu <- details$runtime_env$np$asanyarray(pred_no_cache$y_mu)
+  pred_cache_mu <- details$runtime_env$np$asanyarray(pred_cache$y_mu)
+
+  expect_equal(dim(pred_cache_mu), dim(pred_no_cache_mu))
+  expect_lt(max(abs(pred_cache_mu - pred_no_cache_mu)), 1e-4)
+})
+
+test_that("checkpointed sim runs emit analytics artifacts in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    n_checkpoints = 1L,
+    return_details = TRUE
+  )
+
+  csv_files <- list.files(details$holder_folder, pattern = "^res.*\\.csv$", full.names = TRUE)
+  rdata_files <- list.files(details$holder_folder, pattern = "^res.*\\.Rdata$", full.names = TRUE)
+
+  expect_length(csv_files, 1L)
+  expect_length(rdata_files, 1L)
+
+  metrics <- as.data.frame(data.table::fread(csv_files[[1]]))
+  metric_names <- names(metrics)
+
+  expect_true("PolicySkill1" %in% metric_names)
+  expect_true("RSSBaselineTime1" %in% metric_names)
+  expect_true(is.finite(as.numeric(details$trained$env$Skill8SanityCheck)))
 })

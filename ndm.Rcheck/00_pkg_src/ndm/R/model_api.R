@@ -70,6 +70,68 @@ ndm_prepare_data <- function(runtime_env,
   )
 }
 
+.ndm_runtime_env_from_object <- function(x, arg = "x") {
+  if (is.environment(x)) {
+    return(x)
+  }
+
+  if (inherits(x, "ndm_model") || inherits(x, "ndm_trained_model")) {
+    if (!is.environment(x$env)) {
+      stop("`", arg, "` does not contain a valid runtime environment.", call. = FALSE)
+    }
+    return(x$env)
+  }
+
+  stop("`", arg, "` must be an `ndm_model`, an `ndm_trained_model`, or a prepared runtime environment.", call. = FALSE)
+}
+
+.ndm_runtime_analysis_root <- function(env, analysis_root = NULL) {
+  if (!is.null(analysis_root) && nzchar(analysis_root)) {
+    return(.ndm_resolve_analysis_root(analysis_root, must_work = TRUE))
+  }
+
+  if (is.environment(env) && exists("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE)) {
+    env_root <- get("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE)
+    if (is.character(env_root) && length(env_root) == 1L && nzchar(env_root)) {
+      return(.ndm_resolve_analysis_root(env_root, must_work = TRUE))
+    }
+  }
+
+  .ndm_default_analysis_root()
+}
+
+.ndm_require_runtime_bindings <- function(env, names, context) {
+  missing <- names[!vapply(names, exists, logical(1), envir = env, inherits = FALSE)]
+  if (length(missing) > 0L) {
+    stop(
+      "Runtime environment is missing required objects for ",
+      context,
+      ": ",
+      paste(missing, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  invisible(env)
+}
+
+.ndm_is_packaged_prediction_batch <- function(batch) {
+  if (!is.list(batch) || length(batch) != 4L) {
+    return(FALSE)
+  }
+
+  expected_lengths <- c(2L, 2L, 1L, 1L)
+  if (!all(vapply(batch, is.list, logical(1)))) {
+    return(FALSE)
+  }
+
+  if (!identical(vapply(batch, length, integer(1)), expected_lengths)) {
+    return(FALSE)
+  }
+
+  TRUE
+}
+
 .ndm_batch_size_from_object <- function(x) {
   if (is.null(x)) {
     stop("Could not infer batch size from a NULL object.", call. = FALSE)
@@ -117,15 +179,15 @@ ndm_prepare_data <- function(runtime_env,
 
   if (is.list(batch) && !is.null(names(batch)) && "XPred" %in% names(batch)) {
     batch <- .ndm_as_runtime_jax(batch, env = env)
-    return(list(raw = batch, packaged = env$batch2package(batch)))
+    return(list(raw = batch, packaged = ndm_batch_to_model_inputs(batch)))
   }
 
-  if (is.list(batch) && length(batch) == 4L && is.list(batch[[1]])) {
+  if (.ndm_is_packaged_prediction_batch(batch)) {
     return(list(raw = batch, packaged = batch))
   }
 
   stop(
-    "`batch` must be either a named TFRecord-style batch list or a packaged model-input list from ndm_batch_to_model_inputs().",
+    "`batch` must be either a named TFRecord-style batch list or a packaged model-input list that follows ndm_batch_to_model_inputs().",
     call. = FALSE
   )
 }
@@ -185,15 +247,14 @@ ndm_build_model <- function(runtime_env,
                             model_spec = NULL,
                             backbone = "transformer",
                             runtime_globals = list()) {
-  if (!is.environment(runtime_env)) {
-    stop("`runtime_env` must be an environment returned by ndm_load_runtime() or prepared manually.", call. = FALSE)
-  }
+  runtime_env <- .ndm_runtime_env_from_object(runtime_env, arg = "runtime_env")
 
   model_type <- match.arg(model_type)
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
 
+  analysis_root <- .ndm_runtime_analysis_root(runtime_env, analysis_root = analysis_root)
   .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   ndm_set_runtime_globals(runtime_env, runtime_globals)
@@ -225,6 +286,21 @@ ndm_build_model <- function(runtime_env,
           call. = FALSE
         )
     }
+  )
+
+  .ndm_require_runtime_bindings(
+    runtime_env,
+    c(
+      "ModelList",
+      "state",
+      "PriorList",
+      "PolicyList",
+      "GetPredSaveAtInfo_default",
+      "GetPred_inference",
+      "GetPred_train_jit",
+      "getLoss_train"
+    ),
+    context = "prediction and loss after model build"
   )
 
   structure(
@@ -300,18 +376,23 @@ ndm_predict <- function(x,
                         inference = TRUE,
                         seed = 1L,
                         update_state = TRUE) {
-  runtime_env <- if (inherits(x, "ndm_model")) x$env else x
-  if (!is.environment(runtime_env)) {
-    stop("`x` must be an `ndm_model` or a prepared runtime environment.", call. = FALSE)
-  }
-  if (!exists("ModelList", envir = runtime_env, inherits = FALSE)) {
-    stop("`ModelList` is not available in the supplied environment. Build the model first.", call. = FALSE)
-  }
+  runtime_env <- .ndm_runtime_env_from_object(x)
 
   pred_fun_name <- if (isTRUE(inference)) "GetPred_inference" else "GetPred_train_jit"
-  if (!exists(pred_fun_name, envir = runtime_env, inherits = FALSE)) {
-    stop("Prediction function `", pred_fun_name, "` is not available. Build the model first.", call. = FALSE)
-  }
+  .ndm_require_runtime_bindings(
+    runtime_env,
+    c(
+      "ModelList",
+      "state",
+      "PriorList",
+      "PolicyList",
+      "GetPredSaveAtInfo_default",
+      "jax",
+      "JaxKey",
+      pred_fun_name
+    ),
+    context = "prediction"
+  )
 
   prepared_batch <- .ndm_prepare_prediction_batch(batch, env = runtime_env)
   batch_size <- .ndm_batch_size_from_object(prepared_batch$raw)
@@ -344,13 +425,22 @@ ndm_loss <- function(x,
                      iteration = 1L,
                      seed = 1L,
                      update_state = TRUE) {
-  runtime_env <- if (inherits(x, "ndm_model")) x$env else x
-  if (!is.environment(runtime_env)) {
-    stop("`x` must be an `ndm_model` or a prepared runtime environment.", call. = FALSE)
-  }
-  if (!exists("getLoss_train", envir = runtime_env, inherits = FALSE)) {
-    stop("Loss function `getLoss_train` is not available. Build the model first.", call. = FALSE)
-  }
+  runtime_env <- .ndm_runtime_env_from_object(x)
+  .ndm_require_runtime_bindings(
+    runtime_env,
+    c(
+      "ModelList",
+      "state",
+      "PriorList",
+      "PolicyList",
+      "GetPredSaveAtInfo_default",
+      "getLoss_train",
+      "jax",
+      "JaxKey",
+      "jnp"
+    ),
+    context = "loss evaluation"
+  )
 
   prepared_batch <- .ndm_prepare_prediction_batch(batch, env = runtime_env)
   raw_batch <- prepared_batch$raw
@@ -398,14 +488,20 @@ ndm_train <- function(x,
                       analysis_root = NULL,
                       run_define = TRUE,
                       run_loop = TRUE) {
-  runtime_env <- if (inherits(x, "ndm_model")) x$env else x
-  if (!is.environment(runtime_env)) {
-    stop("`x` must be an `ndm_model` or a prepared runtime environment.", call. = FALSE)
-  }
+  runtime_env <- .ndm_runtime_env_from_object(x)
 
-  analysis_root <- analysis_root %||% if (inherits(x, "ndm_model")) x$analysis_root else .ndm_default_analysis_root()
+  analysis_root <- .ndm_runtime_analysis_root(
+    runtime_env,
+    analysis_root = analysis_root %||% if (inherits(x, "ndm_model")) x$analysis_root else NULL
+  )
   .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
+
+  .ndm_require_runtime_bindings(
+    runtime_env,
+    c("ModelList"),
+    context = "training setup"
+  )
 
   if (isTRUE(run_define)) {
     tryCatch(
@@ -422,6 +518,14 @@ ndm_train <- function(x,
       error = function(e) {
         stop("Failed while sourcing training loop code from `analysis_root`: ", conditionMessage(e), call. = FALSE)
       }
+    )
+  }
+
+  if (isTRUE(run_loop)) {
+    .ndm_require_runtime_bindings(
+      runtime_env,
+      c("state", "PriorList", "PolicyList", "GetPredSaveAtInfo_default", "gradLoss_jax"),
+      context = "training loop"
     )
   }
 

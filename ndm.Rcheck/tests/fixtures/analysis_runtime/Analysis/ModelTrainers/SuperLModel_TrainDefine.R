@@ -66,15 +66,21 @@ NA20 <- function(zer){zer[is.na(zer)] <- 0;zer[is.infinite(zer)] <- 0;zer}
 grad_norm_vec <- out_loss_vec <- in_loss_vec <- rep(NA, times = nSGD_DefiningLRSeq );i_<-1
 grad_norm_mat <- c()
 LastOutCor <- Skill8SanityCheck <- NA
+te_total <- te_grads <- 0
 st0 <- Sys.time()
 plottingSeq_counter <- ExecuteUpdateCounter <- 0; GradNorm_jit <- jax$jit(optax$global_norm)
 crossIterCor_vec <- c()
 
 # create save directory for results
-dir.create(sprintf("./SavedModels/%s/Model_%s_%s/", 
-                   ifelse(grepl(tolower(AnalysisName), pattern = "sim"),
-                          yes = "FromSim",no="FromReal"), 
-                   AnalysisName, Sys.Date()))
+SavedModelDir <- sprintf("./SavedModels/%s/Model_%s_%s",
+                         ifelse(grepl(tolower(AnalysisName), pattern = "sim"),
+                                yes = "FromSim",no="FromReal"),
+                         AnalysisName,
+                         AnalysisDate)
+if(dir.exists(SavedModelDir)){
+  SavedModelDir <- sprintf("%s_%s", SavedModelDir, format(Sys.time(), "%H-%M-%S"))
+}
+dir.create(SavedModelDir, recursive = TRUE, showWarnings = FALSE)
 
 # calculate total parameter number
 print2(sprintf("Total trainable parameter count: %s",

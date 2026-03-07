@@ -273,12 +273,6 @@ if(backbonePath == "initialize"){
           cache[[l_]]$v   <- jax$lax$dynamic_update_slice(cache[[l_]]$v, vh, v_slice_idx)
           cache[[l_]]$len <- pm$len
 
-          print("DEBUG PRINT PREFILL")
-          print(paste(unlist(qh$shape),collapse=","))
-          print(paste(unlist(kh$shape),collapse=","))
-          print(paste(unlist(vh$shape),collapse=","))
-          print(paste(unlist(mask_keys_prefill$shape),collapse=","))
-          
           # Attention (NO transpose). API expects [T, N, H] (or [B,T,N,H]).
           attn_out <- dot_product_attention_unified(
             qh,      # [T, N, H]
@@ -288,10 +282,6 @@ if(backbonePath == "initialize"){
             is_causal = is_causal_flag, 
             prefer = "auto"
           )$astype(dtype)                # [T, N, H]
-          
-          # EXPERIMENTAL999
-          print("PAST ATTENTION 1 (PREFILL)")
-          #attn_out <- jnp$squeeze(attn_out, 0L)  # [T, N, H]
           
           # Zero out query rows >= prefix_len
           attn_out <- jnp$where(q_mask_T11, attn_out, jnp$zeros_like(attn_out))  # [T, N, H]
@@ -342,7 +332,10 @@ if(backbonePath == "initialize"){
           L <- eval(parse(text = sprintf("TransformerList$d%s", l_)))
           
           # Pre-norm
-          xt <- jnp$multiply(NormFxn(xtminus1 <- xt), L$NormScalerInput)  # [D]
+          xt <- jnp$multiply(
+            NormFxn(xtminus1 <- xt),
+            jnp$squeeze(L$NormScalerInput, 0L)
+          )  # [D]
           
           # Project Q/K/V for this single token
           q_full <- jnp$dot(xt, L$Multihead$W_q)               # [D]
@@ -409,12 +402,6 @@ if(backbonePath == "initialize"){
           #K_SNH <- jnp$expand_dims(K_SNH, 0L)  # [1, T, N, H]
           #V_SNH <- jnp$expand_dims(V_SNH, 0L)  # [1, T, N, H]
           
-          print("DEBUG PRINT DECODE:")
-          print(paste(unlist(q_TNH$shape),collapse=","))
-          print(paste(unlist(K_SNH$shape),collapse=","))
-          print(paste(unlist(V_SNH$shape),collapse=","))
-          print(paste(unlist(mask_keys_decode$shape),collapse=","))
-          
           attn <- dot_product_attention_unified(
             q = q_TNH,   # [1, N, H]
             k = K_SNH,   # [S, N, H]
@@ -426,9 +413,7 @@ if(backbonePath == "initialize"){
             is_causal = FALSE,
             prefer = "xla" # flash breaking on 1 to S attention 
           )$astype(dtype)                                        # [1, N, H]
-          
-          print("PAST ATTENTION 2 (DECODE)")
-          # EXPERIMENTAL999
+
           attn <- jnp$squeeze(attn, 0L)  # [1, T, N, H]
           
           # Merge heads back to [D] and project out
@@ -439,12 +424,11 @@ if(backbonePath == "initialize"){
           # Residual + pre-FFN norm
           xt <- (xtminus1 * jax$nn$softplus(L$ResidCon1$WtSkipPath)) +
             (mha_out * jax$nn$softplus(L$ResidCon1$WtResidPath))
-          xt <- NormFxn(xtminus1 <- xt) * L$NormScalerPostMultiHead
+          xt <- NormFxn(xtminus1 <- xt) * jnp$squeeze(L$NormScalerPostMultiHead, 0L)
           
           # SwiGLU FFN
-          xt <- jax$nn$swish( ffmap(L$FFN$WideProj1, xt) ) * 
-                                 ffmap(L$FFN$WideProj2, xt)
-          xt <- ffmap(L$FFN$OutProj1, xt)
+          xt <- jax$nn$swish(L$FFN$WideProj1(xt)) * L$FFN$WideProj2(xt)
+          xt <- L$FFN$OutProj1(xt)
           
           # Final residual
           xt <- (xtminus1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
@@ -544,15 +528,16 @@ if(backbonePath == "initialize"){
     WtResidPathInit <- sqrt( 1 / ( l_ + 0.01^2*ModelDepth)); 
     WtSkipPathInit <- sqrt(1-WtResidPathInit^2) # https://iclr-blog-track.github.io/2022/03/25/unnormalized-resnets/
     WtSkipPathInit_inv <- np$array( InvSoftPlus(jnp$array( WtSkipPathInit )))
+    WtResidPathInit_inv <- np$array( InvSoftPlus(jnp$array( WtResidPathInit )))
     # WtSkipPathInit <- 1; WtResidPathInit <- sqrt( 1 / ModelDepth)
     # plot( WtSkipPathInit,ylim = c(0,1),type="b"); points(WtResidPathInit,type="b"); WtResidPathInit + WtSkipPathInit
     TransformerList[[l_]]$ResidCon1 <- list("WtSkipPath"=jnp$squeeze(oryx$Normal(loc =WtSkipPathInit_inv,
                                                                       scale =  0.0000001)$sample( list(ModelDims), seed = 4000L+key)$astype(jaxFloatType),1L),
-                                            "WtResidPath"=jnp$squeeze(oryx$Normal(loc = WtSkipPathInit_inv,
+                                            "WtResidPath"=jnp$squeeze(oryx$Normal(loc = WtResidPathInit_inv,
                                                                  scale =  0.0000001)$sample( list(ModelDims), seed = 4001L+key)$astype(jaxFloatType),1L))
     TransformerList[[l_]]$ResidCon2 <-  list("WtSkipPath"=jnp$squeeze(oryx$Normal(loc = WtSkipPathInit_inv,
                                                                  scale =  0.0000001)$sample( list(ModelDims), seed = 4002L+ key)$astype(jaxFloatType,1L)),
-                                            "WtResidPath"=jnp$squeeze(oryx$Normal(loc = WtSkipPathInit_inv,
+                                            "WtResidPath"=jnp$squeeze(oryx$Normal(loc = WtResidPathInit_inv,
                                                                   scale =  0.0000001)$sample( list(ModelDims), seed =4003L+ key)$astype(jaxFloatType),1L))
   }
   names(TransformerList) <- paste0("d",as.character( 1L:length(TransformerList) ))
@@ -586,19 +571,25 @@ if(backbonePath == "run"){ # note: there is no caching here; caching is applied 
             mask = x_mask_attn )
         }
         if(!UseLatentAttention){
-          { 
-          # 1) Rotary pos-emb for Q and K paths
-          xt_pos <- eq$nn$RotaryPositionalEmbedding(ModelDims)( xt )  # [T, D]
+          {
+          # 1) Linear projections: [T, D] @ [D, D] -> [T, D]
+          q_ = jnp$dot(xt, TransformerList_d$Multihead$W_q)
+          k_ = jnp$dot(xt, TransformerList_d$Multihead$W_k)
+          v_ = jnp$dot(xt, TransformerList_d$Multihead$W_v)
           
-          # 2) Linear projections: [T, D] @ [D, D] -> [T, D]
-          q_ = jnp$dot(xt_pos, TransformerList_d$Multihead$W_q)
-          k_ = jnp$dot(xt_pos, TransformerList_d$Multihead$W_k)
-          v_ = jnp$dot(xt,     TransformerList_d$Multihead$W_v)
-          
-          # 3) Reshape to heads: [T, D] -> [T, N, H]
+          # 2) Reshape to heads: [T, D] -> [T, N, H]
           q_ = jnp$reshape(q_, list(q_$shape[[1]], num_heads, head_dim))
           k_ = jnp$reshape(k_, list(k_$shape[[1]], num_heads, head_dim))
           v_ = jnp$reshape(v_, list(v_$shape[[1]], num_heads, head_dim))
+          
+          # 3) Apply RoPE after Q/K projections so cached and uncached paths match.
+          pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
+          apply_rope_one_row <- function(NH_row, p) {
+            jax$vmap(function(hvec){ rope_apply_single(hvec, p, head_dim) }, in_axes = 0L)(NH_row)
+          }
+          apply_rope_all <- jax$vmap(apply_rope_one_row, in_axes = list(0L, 0L))
+          q_ <- apply_rope_all(q_, pos_ids)
+          k_ <- apply_rope_all(k_, pos_ids)
           
           # 4) Mask: make boolean and broadcast to [N, T, S].
           #     Your x_mask_attn is [T, S] with 1=keep, 0=mask. Convert to bool and add head axis.
@@ -677,4 +668,3 @@ if(backbonePath == "run"){ # note: there is no caching here; caching is applied 
   print2(sprintf("Done with Transformer block [depth: %s]...", ModelDepth))
 }
 print("Done sourcing SuperLModel_BackboneTransformer.R")
-

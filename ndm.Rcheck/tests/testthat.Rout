@@ -19,13 +19,14 @@ Type 'q()' to quit R.
 > library(ndm)
 > 
 > test_check("ndm")
-[ FAIL 0 | WARN 0 | SKIP 1 | PASS 58 ]
+[ FAIL 0 | WARN 0 | SKIP 3 | PASS 90 ]
 
-══ Skipped tests (1) ═══════════════════════════════════════════════════════════
-• On CRAN (1): 'test-sim-fit.R:227:3'
+══ Skipped tests (3) ═══════════════════════════════════════════════════════════
+• On CRAN (3): 'test-sim-fit.R:273:3', 'test-sim-fit.R:302:3',
+  'test-sim-fit.R:334:3'
 
-[ FAIL 0 | WARN 0 | SKIP 1 | PASS 58 ]
+[ FAIL 0 | WARN 0 | SKIP 3 | PASS 90 ]
 > 
 > proc.time()
    user  system elapsed 
-  0.746   0.103   0.852 
+  0.836   0.115   0.946 

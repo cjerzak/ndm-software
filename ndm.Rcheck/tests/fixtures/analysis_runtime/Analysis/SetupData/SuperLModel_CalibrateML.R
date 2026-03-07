@@ -214,7 +214,7 @@ print2("Starting a round of SuperLModel_CalibrateML.R")
             #tmppp <- apply(tmppp[,1,],2,sd)
             #tmppp <- apply(apply(tmppp,2:3,sd), 2, median)
             tmppp <- apply(apply(tmppp,2:3,sd), 2, mean)
-            tmppp <- (ifelse( tmppp > 100, yes = list(tmppp), no = list(InvSoftPlus_r(tmppp)) )[[1]])[1:nOutcomes]
+            tmppp <- ifelse(tmppp > 100, tmppp, InvSoftPlus_r(tmppp))[1:nOutcomes]
             ModelList$ScaleList$ScaleBayes$VarInit <-  jnp$array( tmppp )
             #ModelList[[ListIndices['ScaleList']]][[1]][[1]] <- jnp$array( tmppp ); #rm( tmp )   # calibrates ScaleList[[1]][[1]] i.e.
           }

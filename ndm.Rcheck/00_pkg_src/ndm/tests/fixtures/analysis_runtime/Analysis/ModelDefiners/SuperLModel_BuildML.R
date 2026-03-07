@@ -48,6 +48,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
 
   #BackboneType <- "mamba"; StateSize <- 4L
   DoPriorSamplingAutoDiff <- F
+  UseDiagonalLMatVCov <- isTRUE(get0("UseDiagonalLMatVCov", ifnotfound = TRUE))
 
   # define model architecture via input
   Constrained2Unconstrained <- function(target_mean_of_transformated_x, transformation, sd){
@@ -258,8 +259,14 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                                                       c(uq_encneural_vec,c("Neural1") )))
           nParams_DiagMat_neural <- nODEParams_neural # params for diagonal mat - clarify 
         }
-        if(UseDiagonalLMatVCov <- T){  nParams_LMat_base <- nODEParams_base } # params for base vcov mat (local fixed)
-        if(!UseDiagonalLMatVCov){  nParams_LMat_base <- sum(nODEParams_base:1L) } # params for base vcov mat (local fixed)
+        if(isTRUE(UseDiagonalLMatVCov)){
+          nParams_LMat_base <- nODEParams_base
+        }
+        if(!isTRUE(UseDiagonalLMatVCov)){
+          nParams_LMat_base <- ifelse(nODEParams_base > 0L,
+                                      yes = sum(seq_len(nODEParams_base)),
+                                      no = 0L)
+        }
         nDimOutput_dense <- ai(nODEParams_total <- (nODEParams_base +
                                                       nODEParams_neural +
                                                       nParams_LMat_base +
@@ -283,6 +290,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
 
         # global terms
         print("Setting up global terms...")
+        nGlobalParams <- 0L
         GlobalMeans <- GlobalLTerms <- jnp$array(0.)
         if(length(NeuralVariationalInitGlobalMean)>0){
           nGlobalParams <- length( GlobalMeans <- NeuralVariationalInitGlobalMean )
@@ -315,7 +323,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       print("Done sourcing SuperLModel_BackboneMamba.R in initialize path")
     }
     
-    print("DEBUG333")
     RNNList <- oryx$Normal(loc = 1, scale = 0.001)$sample(list(), seed = key+40L)
     
     print("Defining TSList object...")
@@ -884,7 +891,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                 xt_running[[2]], jnp$ones(list(1L,1L), dtype = xt_running[[2]]$dtype), jnp$array(c(start_idx, 0L), dtype = jnp$int32)
               )
               xt_running <- list(new_input, new_mask)
-              list(xt_running, TransformerList$DecoderProj(xt_new))
+              list(xt_running, ModelList$TSList$TSBackbone$DecoderProj(xt_new))
             }
             K_static <- as.integer(nTimesLookahead) 
             scan_out <- jax$lax$scan(
@@ -904,7 +911,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             
             # 1) Prefill KV cache once for the known prefix subset.
             #    This uses the per-layer TRY_FLASH projections (W_q/W_k/W_v/W_o).
-            print("Prefilling...")
             prefill_ret <- transformer_prefill_kv(
               xt        = xt_running[[1]],
               x_mask    = xt_running[[2]],
@@ -916,7 +922,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             last_idx   <- prefix_len - 1L                   # 0-based index of last known token
             
             # 2) First prediction y_1 uses representation at last known token.
-            y_first    <- TransformerList$DecoderProj(xt_last)  # [nOutcomes]
+            y_first    <- ModelList$TSList$TSBackbone$DecoderProj(xt_last)  # [nOutcomes]
             
             # 3) Insert xt_last as the embedding for the *next* position (prefix_len)
             insert_pos <- prefix_len                         # index to write next token (0-based)
@@ -951,7 +957,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               # Insert embed_out as the input for the next (pos+1) position and open its mask
               write_pos <- pos + 1L
               xt_next <- jax$lax$dynamic_update_slice(
-                xt_run[[1]], embed_out,
+                xt_run[[1]], jnp$expand_dims(embed_out, 0L),
                 jnp$array(c(write_pos, 0L), dtype = jnp$int32)
               )
               m_next <- jax$lax$dynamic_update_slice(
@@ -960,17 +966,12 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               )
               
               # Project to prediction (y_t at next step)
-              y_t <- ffmap(TransformerList$DecoderProj, embed_out) # [nOutcomes]
+              y_t <- ModelList$TSList$TSBackbone$DecoderProj(embed_out) # [nOutcomes]
               
               list(list(list(xt_next, m_next), cache, write_pos),
                    y_t)
             }
             
-            print("Decoding...")
-            # We already produced y_first; we still need (nTimesLookahead-1) more steps.
-            # num_steps <- jnp$maximum(GetPredSaveAtInfo[[1]] - 1L, 0L)
-            #K_tail_static <- as.integer(max(nTimesLookahead-1L, 0L))
-            print("Starting decoder scan...")
             scan_out2 <- jax$lax$scan(
               f    = decode_step_cached,
               init = list(xt_running, kv_cache, insert_pos),
@@ -978,7 +979,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             )
             y_tail <- scan_out2[[2]]  # [num_steps, nOutcomes, nFeatures]
             
-            print("Processing decoded outputs")
             # Concatenate first + tail => [nTimesLookahead, nOutcomes]
             # Goal:
             # y_first: [D]
@@ -990,8 +990,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             idxK        <- jnp$arange(K, dtype = jnp$int32)       # OK: K is static
             keep_tail   <- jnp$less(idxK, count_i32)              # [K]
             masked_tail <- jnp$where(jnp$expand_dims(keep_tail, 1L),
-                                       jnp$squeeze(scan_out2[[2]], 2L),
-                                       jnp$squeeze(jnp$zeros_like(scan_out2[[2]]), 2L))
+                                       scan_out2[[2]],
+                                       jnp$zeros_like(scan_out2[[2]]))
             y_all <- jnp$concatenate(list(jnp$expand_dims(y_first, 0L), masked_tail), 0L)
             
             y_mean  <- jax$nn$softplus(y_all)   # preserve your softplus post-proj
@@ -1146,13 +1146,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # create lower triangular matrix manually
       LMat_diag_scale <- SoftPlus( ModelList$ScaleList$ScaleBayes$LmatLocalDiagScaler )
       LMat_global_scale <- SoftPlus( ModelList$ScaleList$ScaleBayes$LmatGlobalScaler )
-      if(UseDiagonalLMatVCov){ localx_DiagOfSigma <- SoftPlus(localx_LMat_params_ODE)/LMat_diag_scale } 
-      if(!UseDiagonalLMatVCov){ 
+      if(isTRUE(UseDiagonalLMatVCov)){ localx_DiagOfSigma <- SoftPlus(localx_LMat_params_ODE)/LMat_diag_scale } 
+      if(!isTRUE(UseDiagonalLMatVCov)){ 
         OrigDiag_LMat <- jnp$diag(  LMat <- oryx$math$fill_triangular( localx_LMat_params_ODE  )   ) # XXX
         DiagMat1 <- jnp$diag(  OrigDiag_LMat )
         DiagMat2 <- jnp$diag( jnp$add(jax$nn$softplus(OrigDiag_LMat),LMat_diag_scale))
         localx_LMat <- jnp$add(jnp$subtract(LMat, DiagMat1), DiagMat2)
-        localx_LMat <- jnp$multiply( LMat, LMat_global_scale )
+        localx_LMat <- jnp$multiply( localx_LMat, LMat_global_scale )
       }
   
       # create sigma mat if needed
@@ -1164,10 +1164,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       globalLMat_global_scale <- SoftPlus( ModelList$ScaleList$ScaleBayes$globalLmatGlobalScaler )
       
       GlobalTerms <- ModelList$GlobalTerms
-      IndicesGlobalMuParams <- ai(1:length(GlobalMeans)-1L)
-      IndicesGlobalSigmaParams <- ai((max(IndicesGlobalMuParams)+1L):(GlobalTerms$shape[[1]]-1L))
-  
-      if(length(ArgNoDeps) > 0){
+      if(length(ArgNoDeps) > 0 && nGlobalParams > 0L){
+        IndicesGlobalMuParams <- ai(seq_len(nGlobalParams) - 1L)
+        IndicesGlobalSigmaParams <- ai((max(IndicesGlobalMuParams)+1L):(GlobalTerms$shape[[1]]-1L))
         globalx_mu_params_ODE <- jnp$take(GlobalTerms, jnp$array(IndicesGlobalMuParams))
         globalx_sigma_params_ODE <- jnp$take(GlobalTerms, jnp$array(IndicesGlobalSigmaParams))
   
@@ -1193,11 +1192,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # Define param distributions
       if( !prior_sampling ){
         # sample local non-neural parameters
-        if(!UseDiagonalLMatVCov){ 
+        if(!isTRUE(UseDiagonalLMatVCov)){ 
           localParamD <- oryx$MultivariateNormalTriL( loc = localx_mu_base_params_ODE, 
                                                       scale_tril = localx_LMat)
         }
-        if(UseDiagonalLMatVCov){ 
+        if(isTRUE(UseDiagonalLMatVCov)){ 
           localParamD <- oryx$MultivariateNormalDiag( loc = localx_mu_base_params_ODE, 
                                                       scale_diag = localx_DiagOfSigma)
         }
@@ -1206,16 +1205,18 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         localParamD_neural <- oryx$Normal( loc = localx_mu_neural_params_ODE,
                                            scale = localx_Diag_params_ODE)
   
-        # sample global non-neural parameters
-        globalParamD <- oryx$MultivariateNormalTriL( loc = globalx_mu_params_ODE, scale_tril = globalLMat)
-  
         # obtain fixed local (check?)
-        fixedLocal_means <- fixedLocal_sds <- jnp$array(0.)
+        fixedLocal_means <- fixedLocal_sds <- fixedlocal_x_params_samp <- jnp$array(0.)
         if(nFixedLocal > 0){
           fixedLocal_means <- jnp$take( ModelList$FixedLocalTerms[[1]], loc_indices, 0L)
           fixedLocal_sds <- SoftPlus( jnp$take( ModelList$FixedLocalTerms[[2]], loc_indices, 0L) )
+          fixedLocalParamD <- oryx$Normal( loc = fixedLocal_means, scale = fixedLocal_sds )
         }
-        fixedLocalParamD <- oryx$Normal( loc = fixedLocal_means, scale = fixedLocal_sds )
+        global_x_params_samp <- jnp$array(0.)
+        if(length(ArgNoDeps) > 0 && nGlobalParams > 0L){
+          globalParamD <- oryx$MultivariateNormalTriL(loc = globalx_mu_params_ODE,
+                                                      scale_tril = globalLMat)
+        }
       }
   
       # Define prior distributions if doing prior sampling
@@ -1224,10 +1225,15 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   
         localx_mu_params_ODE <- localPriorList[[1]]; localSigmaMat <- localPriorList[[2]]
   
-        globalx_mu_params_ODE <- globalPriorList[[1]]; globalSigmaMat <- globalPriorList[[2]]
-  
+        if(length(ArgNoDeps) > 0 && nGlobalParams > 0L){
+          globalx_mu_params_ODE <- globalPriorList[[1]]; globalSigmaMat <- globalPriorList[[2]]
+        }
+
         localParamD <- oryx$MultivariateNormalFullCovariance(loc = localx_mu_params_ODE, covariance_matrix = localSigmaMat)
-        globalParamD <- oryx$MultivariateNormalFullCovariance(loc = globalx_mu_params_ODE, covariance_matrix = globalSigmaMat)
+        if(length(ArgNoDeps) > 0 && nGlobalParams > 0L){
+          globalParamD <- oryx$MultivariateNormalFullCovariance(loc = globalx_mu_params_ODE,
+                                                                covariance_matrix = globalSigmaMat)
+        }
       }
   
       # KL divergences -- set to 0 for now
@@ -1236,7 +1242,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       #KL_TERM <- jnp$add(KL_TERM, jnp$divide(oryx$kl_divergence(globalParamD,globalParamPrior_base), jnp$array(as.numeric(nBatch ))))
       # for KL, must specify separately for l + non-l-dep params
   
-      if(testWithoutSampling <- TRUE){ warning("Testing with no sampling!")}
+      testWithoutSampling <- isTRUE(get0("testWithoutSampling", ifnotfound = FALSE))
+      if(testWithoutSampling){ warning("Testing with no sampling!")}
   
       # sample local
       if(!testWithoutSampling){ local_x_base_params_samp <- localParamD$sample(seed = jnp$add(seed, jnp$array(25L))) }
@@ -1251,12 +1258,16 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       local_x_params_samp <- jnp$concatenate( list(local_x_neural_params_samp, local_x_base_params_samp) )
   
       # sample global parameters (consider incorporating one draw for entire batch)
-      if(!testWithoutSampling){ global_x_params_samp <- globalParamD$sample(seed = jnp$add(seed, jnp$array(77245L)))  }
-      if(testWithoutSampling){ global_x_params_samp <- globalParamD$parameters$loc }
-  
+      if(length(ArgNoDeps) > 0 && nGlobalParams > 0L){
+        if(!testWithoutSampling){ global_x_params_samp <- globalParamD$sample(seed = jnp$add(seed, jnp$array(77245L)))  }
+        if(testWithoutSampling){ global_x_params_samp <- globalParamD$parameters$loc }
+      }
+
       # sample fixed local parameters
-      if(!testWithoutSampling){ fixedlocal_x_params_samp <- fixedLocalParamD$sample(seed = jnp$add(seed, jnp$array(295L))) }
-      if(testWithoutSampling){ fixedlocal_x_params_samp <- fixedLocalParamD$parameters$loc }
+      if(nFixedLocal > 0){
+        if(!testWithoutSampling){ fixedlocal_x_params_samp <- fixedLocalParamD$sample(seed = jnp$add(seed, jnp$array(295L))) }
+        if(testWithoutSampling){ fixedlocal_x_params_samp <- fixedLocalParamD$parameters$loc }
+      }
       
       # define structure of the neural networks 
       coreNeuralText <- "list('MLP' = ModelList$LocalNeural$MLP,
@@ -1551,9 +1562,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           
           # plot(np$array(GetPred_output$ODEParamsSampList$center_param)[5,,2])
           # hist(np$array(jnp$sum(likelihood_d,0L))[,1])
-
-          print2("Dropping policy learning!");likelihood_d <- jnp$expand_dims(jnp$take(likelihood_d, 0L, axis = 2L),2L)
-          print2("Dropping policy learning!");y_mask <- jnp$expand_dims(jnp$take(y_mask, 0L, axis = 2L),2L)
 
           # which(is.na(rowMeans(np$array(likelihood_d))))
           # minThis <- jnp$add(jnp$negative(jnp$sum(likelihood_d)), KL_div)

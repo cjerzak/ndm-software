@@ -8,18 +8,30 @@ if( !SimMode ){
     # reset iterator and do analysis 
     gc(); py_gc$collect()
     TFDatasetIterator_inference <- reticulate::as_iterator( TFDataset_inference )
+    inference_batch_dims <- function(batch_l){
+      if("try-error" %in% class(batch_l) || is.null(batch_l) || length(batch_l) == 0L){
+        return(integer())
+      }
+      try(vapply(batch_l, function(l_){ as.integer(np$array(l_$shape)[[1]]) }, integer(1)), TRUE)
+    }
     sl_dat <- c();ok_<-F; ok_counter_ <- 0; while(!ok_){ # !ok_ means do a batch
           ok_counter_ <- ok_counter_ + 1
           batch_l <- try(reticulate::iter_next( TFDatasetIterator_inference ), T) 
           
           # reasons not to go on 
-          if( "try-error" %in% class(batch_l) ){ ok_ <- T }
-          if( !"try-error" %in% class(batch_l) ){ 
-            if( length(batch_l)[[1]] == 0 ){ ok_ <- T } 
-            if( np$array(batch_l[[1]]$shape)[[1]] != nBatch | is.null(batch_l) ){   ok_ <- T }
-            if( any(unlist(lapply(batch_l, function(l_){ np$array(l_$shape)[[1]] } ) ) != nBatch) ){  ok_ <- T  }
-            batch_l <- TFConst2JAXArray( batch_l )
-            # lapply(batch_l,function(l_){paste0(l_$shape)})
+          if( "try-error" %in% class(batch_l) | is.null(batch_l) ){ ok_ <- T }
+          if( !ok_ ){
+            batch_dims <- inference_batch_dims(batch_l)
+            if("try-error" %in% class(batch_dims) || length(batch_dims) == 0L || batch_dims[[1]] == 0L){
+              ok_ <- T
+            }
+            if(!ok_ && any(batch_dims != batch_dims[[1]])){
+              print2("Skipping malformed inference batch in GetAnalytics_Real.R...")
+              ok_ <- T
+            }
+            if(!ok_){
+              batch_l <- TFConst2JAXArray( batch_l )
+            }
           }
           
           # if going in do this
@@ -164,7 +176,7 @@ if( !SimMode ){
                     "te_total" = te_total, 
                     "te_grads" = te_grads, 
                     "nTrainingSamplesSeen" = i*nBatch, 
-                    "Skilll8SanityCheck" = Skilll8SanityCheck, 
+                    "Skill8SanityCheck" = Skill8SanityCheck, 
                     "atEpoch" = i*nBatch/nSamplesTrain, 
                     "nParamsModel" = nParamsModel, 
                     "maxInSampleTime_id" = max( input_df_red_in$time_id ),
@@ -192,14 +204,21 @@ if( !SimMode ){
     #tapply(truth_df_red$location_id_numeric,truth_df_red$location_id_numeric,unique)
 
     #  write loss fig for debugging (note: files are re-written)
-    pdf(sprintf("./%s/diagnostics_%s_EvalTime%s_IsPretraining%s_OuterKey%s.pdf",
-                HolderFolder, rlang::hash(modelingStrategyNameKey), evaluationTime,
-                IsPretraining, OUTER_ITERATION # here, OUTER_ITERATION is more like a key
-                ), height = 10, width = 5)
+    pdf(file.path(
+      HolderFolder,
+      sprintf("diagnostics_%s_EvalTime%s_IsPretraining%s_OuterKey%s.pdf",
+              rlang::hash(modelingStrategyNameKey),
+              evaluationTime,
+              IsPretraining,
+              OUTER_ITERATION)
+    ), height = 10, width = 5)
     {
-    par(mfrow=c(2,1 + is.na(COMMAND_ARG_INPUT) )); plot(na.omit(in_loss_vec), log = "y")
-    plot(rank(na.omit(in_loss_vec)), log = "")
-    plot(na.omit(grad_norm_vec), log = "y")
+    par(mfrow=c(2,1 + is.na(COMMAND_ARG_INPUT) ))
+    loss_obs <- na.omit(in_loss_vec)
+    grad_obs <- na.omit(grad_norm_vec)
+    if(length(loss_obs) > 0L){ plot(loss_obs, log = "y") } else { plot.new() }
+    if(length(loss_obs) > 0L){ plot(rank(loss_obs), log = "") } else { plot.new() }
+    if(length(grad_obs) > 0L){ plot(grad_obs, log = "y") } else { plot.new() }
     if(is.na(COMMAND_ARG_INPUT)){
       tmp555 <- as.matrix(tmp555);try(plot(tmp555[1,],ylim = c(0,max(c(tmp555[1:10,]))),type = 'l',main="Y-hat"),T)
       for(i3 in 2:10){ try(points(tmp555[i3,],type = 'l',col = "black", lwd = 2, lty = 1),T) }
@@ -208,15 +227,19 @@ if( !SimMode ){
     dev.off(); par(mfrow = c(1,1))
     
     # save results 
-    data.table::fwrite(as.matrix(sl_dat), file = as.character(
-                   sprintf("./%s/predicted_df_out_%s_EvalTime%s_IsPretraining%s_TrainIter%sof%s_OuterIter%s.csv",
-                           HolderFolder,
-                           rlang::hash(modelingStrategyNameKey),
-                           evaluationTime,
-                           IsPretraining,
-                           i,
-                           nSGD_model,
-                           OUTER_ITERATION)) )
+    data.table::fwrite(
+      as.matrix(sl_dat),
+      file = as.character(file.path(
+        HolderFolder,
+        sprintf("predicted_df_out_%s_EvalTime%s_IsPretraining%s_TrainIter%sof%s_OuterIter%s.csv",
+                rlang::hash(modelingStrategyNameKey),
+                evaluationTime,
+                IsPretraining,
+                i,
+                nSGD_model,
+                OUTER_ITERATION)
+      ))
+    )
     print("Done with SuperLModel_GetAnalytics_Real.R")
 }
 

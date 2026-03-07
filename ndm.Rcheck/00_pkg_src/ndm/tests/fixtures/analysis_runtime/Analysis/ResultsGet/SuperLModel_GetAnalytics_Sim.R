@@ -53,7 +53,7 @@ if(SimMode == T){
   pred_l_baselineVal_mat <- matrix(1,nrow = nrow(pred_l_mean), 
                                    ncol=ncol(pred_l_mean)) * 
                                 pred_l_baselineVal
-  LastOutCor <- cor(c(l_true),c(pred_l_mean_full))
+  LastOutCor <- cor(c(l_true),c(pred_l_mean))
   # plot(c(l_true),c(pred_l_mean_full));abline(a=0,b=1)
   
   ##############################
@@ -87,17 +87,15 @@ if(SimMode == T){
 
   FNorm_Raw <- mean(sqrt((c(pred_l_mean) - c(l_true))^2))
   FNorm_Rel <- mean(sqrt((c(pred_l_mean) - c(l_true))^2)) / mean(sqrt(l_true^2))
-  FNorm_Raw_baseline <- mean(sqrt((c(pred_l_mean) - c(pred_l_baselineVal_mat))^2))
-  FNorm_Rel_baseline <- mean(sqrt((c(pred_l_mean) - c(pred_l_baselineVal_mat))^2)) / mean(sqrt(l_true^2))
+  FNorm_Raw_baseline <- mean(sqrt((c(pred_l_baselineVal_mat) - c(l_true))^2))
+  FNorm_Rel_baseline <- FNorm_Raw_baseline / mean(sqrt(l_true^2))
 
   # agg norm
   AggNorm_Raw <- mean(sqrt((rowSums(pred_l_mean) - rowSums(l_true))^2))
   AggNorm_Rel <- mean(sqrt((rowSums(pred_l_mean) - rowSums(l_true))^2)) / 
                                     mean(sqrt(rowSums(l_true)^2))
-  AggNorm_Raw_baseline <- mean(sqrt((rowSums(pred_l_mean) - rowSums(pred_l_baselineVal_mat))^2))
-  AggNorm_Rel_baseline <- mean(sqrt((rowSums(pred_l_mean) - 
-                                       rowSums(pred_l_baselineVal_mat))^2)) / 
-                                                mean(sqrt(rowSums(l_true)^2))
+  AggNorm_Raw_baseline <- mean(sqrt((rowSums(pred_l_baselineVal_mat) - rowSums(l_true))^2))
+  AggNorm_Rel_baseline <- AggNorm_Raw_baseline / mean(sqrt(rowSums(l_true)^2))
 
   # Skill measure
   #plot(l_true[rer<-sample(1:10,1),],ylim=c(0,max(l_true))); points(pred_l_mean[rer,],pch="^")
@@ -239,19 +237,14 @@ if(SimMode == T){
     {
       # get factual and counterfactual predictions
       # note: t is differnt in meaning for getting data and for modeling
-      warning("Not integrating natura/unnatural policies")
       hat_y_natural <- GetPred_inference(
         ModelList, batch2package(batch_l_natural),
-        state, PriorList, PolicyList,# PolicyList_Model_natural,
+        state, PriorList, PolicyList_Model_natural,
         GetPredSaveAtInfo_inference,
         jax$random$split(JaxKey(9L+counterf_), nBatch))[[1]]
       hat_y_unnatural <- GetPred_inference(
         ModelList, batch2package(batch_l_unnatural),
-        #ModelList, batch_l_natural$XPred, # for debugging
-
-        state, PriorList, PolicyList, # PolicyList_Model_unnatural,
-        #state, PriorList, PolicyList_Model_natural,  # for debugging
-
+        state, PriorList, PolicyList_Model_unnatural,
         GetPredSaveAtInfo_inference,
         jax$random$split(JaxKey(9L), nBatch))[[1]]
 
@@ -356,11 +349,14 @@ if(SimMode == T){
   }
   
   #  write loss fig for debugging 
-  pdf(sprintf(sprintf("./%s/diagnostics%s.pdf", HolderFolder, af)), height = 10, width = 5)
+  pdf(file.path(HolderFolder, sprintf("diagnostics%s.pdf", af)), height = 10, width = 5)
   {
-  par(mfrow=c(2,2)); plot(na.omit(in_loss_vec), log = "y")
-  plot(rank(na.omit(in_loss_vec)), log = "")
-  plot(na.omit(grad_norm_vec), log = "y")
+  par(mfrow=c(2,2))
+  loss_obs <- na.omit(in_loss_vec)
+  grad_obs <- na.omit(grad_norm_vec)
+  if(length(loss_obs) > 0L){ plot(loss_obs, log = "y") } else { plot.new() }
+  if(length(loss_obs) > 0L){ plot(rank(loss_obs), log = "") } else { plot.new() }
+  if(length(grad_obs) > 0L){ plot(grad_obs, log = "y") } else { plot.new() }
   dev.off()
   }
   par(mfrow = c(1,1))
@@ -369,8 +365,9 @@ if(SimMode == T){
   # --- Skill sanity check (aggregate RMSE vs. persistence baseline) ---
   {
     eps <- 1e-3
-    rmse_pred <- sqrt(mean(clipAt((c(pred_l_mean[,8]) - c(l_true[,8]))^2), na.rm = TRUE))
-    rmse_base <- sqrt(mean(clipAt((c(pred_l_baselineVal_mat[,8]) - c(l_true[,8]))^2), na.rm = TRUE))
+    skill_horizon <- max(1L, min(8L, ncol(pred_l_mean)))
+    rmse_pred <- sqrt(mean(clipAt((c(pred_l_mean[,skill_horizon]) - c(l_true[,skill_horizon]))^2), na.rm = TRUE))
+    rmse_base <- sqrt(mean(clipAt((c(pred_l_baselineVal_mat[,skill_horizon]) - c(l_true[,skill_horizon]))^2), na.rm = TRUE))
     Skill8SanityCheck <- 1 - (eps + rmse_pred) / (eps + rmse_base)
     print2(sprintf("Skill sanity: %.3f", Skill8SanityCheck))
   }
@@ -387,7 +384,7 @@ if(SimMode == T){
                  unlist(SimEntry),
                  colMeans(do.call(rbind,res_list))))
   print(sprintf("WRITING af of %s", af))
-  data.table::fwrite(file = sprintf("./%s/res%s_i%s.csv", HolderFolder, af, i), res_vec)
-  save.image( file = sprintf("./%s/res%s_i%s.Rdata", HolderFolder, af, i) )
+  data.table::fwrite(file = file.path(HolderFolder, sprintf("res%s_i%s.csv", af, i)), res_vec)
+  save.image(file = file.path(HolderFolder, sprintf("res%s_i%s.Rdata", af, i)))
   print("Done with SuperLModel_GetAnalytics_Sim.R")
 }
