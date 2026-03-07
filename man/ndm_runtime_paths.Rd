@@ -2,25 +2,25 @@
 % Please edit documentation in R/runtime_bundle.R
 \name{ndm_runtime_paths}
 \alias{ndm_runtime_paths}
-\title{Inspect the vendored runtime bundle}
+\title{Inspect a local analysis runtime bundle}
 \usage{
 ndm_runtime_paths(analysis_root = .ndm_default_analysis_root())
 }
 \arguments{
-\item{analysis_root}{Retained for API compatibility. The current
-implementation always resolves paths from the vendored runtime bundle.}
+\item{analysis_root}{Path to the local analysis runtime root.}
 }
 \value{
 `ndm_runtime_paths()` returns a named list of normalized file paths
-  for the extracted runtime bundle.
+  for the requested local runtime bundle.
 }
 \description{
-ndm vendors the active Phase 1 runtime files under `inst/extracted`
-so the package can load the historical analysis code without depending on an
-external checkout.
+`ndm` no longer vendors the executable analysis runtime. Callers must point
+the runtime helpers at a local `Analysis` or `Analysis2` tree.
 }
 \examples{
-paths <- ndm_runtime_paths()
+\dontrun{
+paths <- ndm_runtime_paths("~/Dropbox/CovidSuperlearner/Analysis2")
 names(paths)
+}
 
 }

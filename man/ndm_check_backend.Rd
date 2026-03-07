@@ -68,7 +68,7 @@ be imported when it is available in the selected environment.}
 
 `ndm_initialize_backend()` returns an object of class
   `ndm_backend`. The returned list contains imported Python modules, the
-  configured float type, and a small compatibility shim used by the vendored
+  configured float type, and a small compatibility shim used by the legacy
   runtime.
 
 `ndm_backend_modules()` returns the currently initialized

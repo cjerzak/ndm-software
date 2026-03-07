@@ -94,7 +94,7 @@ ndm_test_fit_sim_case <- function(model_type,
   config <- ndm_create_config(
     model_type = model_type,
     backbone = "transformer",
-    analysis_root = ndm_runtime_paths()$analysis_root,
+    analysis_root = runtime_fixture_analysis_root(),
     float_type = "32",
     force_to_gpu = FALSE,
     resave_tfrecords = TRUE
@@ -231,6 +231,7 @@ test_that("simulated pandemic fits improve across model families and endogeneity
   skip_if_not_installed("progress")
   skip_if_not_installed("zip")
   skip_if_not_installed("zoo")
+  skip_if(is.null(runtime_fixture_analysis_root()), "Set `NDM_TEST_ANALYSIS_ROOT` or `options(ndm.test_analysis_root=...)` for the integration fit test.")
 
   backend_ready <- ndm_check_backend(
     conda_env = "jax_cpu",

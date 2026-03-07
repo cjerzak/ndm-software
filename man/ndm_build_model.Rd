@@ -6,7 +6,7 @@
 \alias{ndm_train}
 \alias{print.ndm_trained_model}
 \alias{ndm_fit}
-\title{Build and train models with the vendored runtime}
+\title{Build and train models with a local runtime}
 \usage{
 ndm_build_model(
   runtime_env,
@@ -39,21 +39,19 @@ ndm_fit(
 \item{runtime_env}{Runtime environment containing the sourced legacy helper
 code and data globals.}
 
-\item{analysis_root}{Root directory for the legacy analysis runtime. The
-current implementation resolves runtime files from the vendored package
-bundle.}
+\item{analysis_root}{Root directory for the local analysis runtime.}
 
 \item{model_type}{Model family to build. Either `"DecoderOnly"` or
 `"NeuralODE"`.}
 
 \item{model_spec}{Optional `ndm_model_spec` object used to override the model
-TeX specification supplied to the vendored builder.}
+TeX specification supplied to the runtime model builder.}
 
 \item{backbone}{Backbone family. Phase 1 supports `"transformer"` only.}
 
 \item{runtime_globals}{Named list of additional globals assigned during the
 relevant runtime stage. `ndm_build_model()` uses them before building the
-model, while `ndm_fit()` uses them before sourcing the vendored runtime.}
+model, while `ndm_fit()` uses them before sourcing the runtime.}
 
 \item{x}{Either an `ndm_model`, an `ndm_trained_model`, or a prepared runtime
 environment, depending on the function being called.}
@@ -69,7 +67,7 @@ should be sourced.}
 \item{config}{An object of class `ndm_config`, usually created by
 `ndm_create_config()`.}
 
-\item{data_generator}{Which extracted data generator to source before calling
+\item{data_generator}{Which local data generator to source before calling
 `ndm_build_model()` inside `ndm_fit()`.}
 
 \item{data_globals}{Named list of globals assigned before sourcing the data
@@ -93,7 +91,7 @@ training in `ndm_fit()`.}
   `ndm_trained_model` object and invisibly returns `x`.
 }
 \description{
-These wrappers layer a small R API over the extracted Phase 1 model build and
+These wrappers layer a small R API over local Phase 1 model build and
 training scripts.
 }
 \examples{

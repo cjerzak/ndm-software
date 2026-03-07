@@ -8,6 +8,7 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_s3_class(cfg, "ndm_config")
   expect_equal(cfg$model_type, "DecoderOnly")
   expect_equal(cfg$backbone, "transformer")
+  expect_equal(cfg$analysis_root, normalizePath("/tmp/example", winslash = "/", mustWork = FALSE))
   expect_setequal(
     names(cfg),
     c(

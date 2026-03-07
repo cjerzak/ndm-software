@@ -3,27 +3,28 @@
 \name{ndm_run_analysis2_real}
 \alias{ndm_run_analysis2_real}
 \alias{ndm_run_analysis2_sim}
-\title{Run the packaged Analysis2 orchestration scripts}
+\title{Deprecated Analysis2 package runners}
 \usage{
 ndm_run_analysis2_real(args = commandArgs(TRUE))
 
 ndm_run_analysis2_sim(args = commandArgs(TRUE))
 }
 \arguments{
-\item{args}{Character vector of command line style arguments, usually of the
-form `"--key=value"`.}
+\item{args}{Character vector of command-line-style arguments. Retained only
+for compatibility with the previous function signatures.}
 }
 \value{
-The invisible result returned by the underlying Analysis2 driver.
+These functions do not return; they always error with migration
+  guidance.
 }
 \description{
-These wrappers expose the migrated Analysis2 entry points from within the R
-package. They are primarily intended for script-style execution.
+`ndm` no longer owns runnable Analysis2 orchestration. Use the local
+`Analysis2/SuperLModel_MasterReal.R` and `Analysis2/SuperLModel_MasterSim.R`
+entrypoints in the project checkout instead.
 }
 \examples{
 \dontrun{
-ndm_run_analysis2_real(c("--dry_run=TRUE"))
-ndm_run_analysis2_sim(c("--dry_run=TRUE"))
+ndm_run_analysis2_real()
 }
 
 }

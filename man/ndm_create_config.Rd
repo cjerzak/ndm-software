@@ -25,7 +25,7 @@ ndm_create_config(
 \item{backbone}{Backbone family. Phase 1 supports `"transformer"` only.}
 
 \item{analysis_root}{Optional analysis root recorded on the configuration
-object for compatibility with the historical runtime interface.}
+object for the local runtime interface.}
 
 \item{float_type}{Floating point precision used when initializing the backend.
 Use `"32"` or `"64"`.}
@@ -34,10 +34,10 @@ Use `"32"` or `"64"`.}
 to place arrays on GPU when available.}
 
 \item{resave_tfrecords}{Logical scalar preserved for compatibility with the
-extracted runtime.}
+legacy runtime.}
 
-\item{gpu_mem_frac}{Optional GPU memory fraction forwarded into the vendored
-runtime bootstrap code.}
+\item{gpu_mem_frac}{Optional GPU memory fraction forwarded into the runtime
+bootstrap code.}
 
 \item{...}{Unused; included for S3 method compatibility.}
 
