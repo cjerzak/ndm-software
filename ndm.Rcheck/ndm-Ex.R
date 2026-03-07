@@ -25,7 +25,7 @@ flush(stderr()); flush(stdout())
 
 base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 ### Name: ndm_build_model
-### Title: Build and train models with the vendored runtime
+### Title: Build and train models with a local runtime
 ### Aliases: ndm_build_model print.ndm_model ndm_train
 ###   print.ndm_trained_model ndm_fit
 
@@ -210,7 +210,7 @@ flush(stderr()); flush(stdout())
 
 base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 ### Name: ndm_prepare_runtime
-### Title: Prepare the vendored runtime for execution
+### Title: Prepare a local runtime for execution
 ### Aliases: ndm_prepare_runtime ndm_prepare_data
 
 ### ** Examples
@@ -257,14 +257,13 @@ flush(stderr()); flush(stdout())
 
 base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 ### Name: ndm_run_analysis2_real
-### Title: Run the packaged Analysis2 orchestration scripts
+### Title: Deprecated Analysis2 package runners
 ### Aliases: ndm_run_analysis2_real ndm_run_analysis2_sim
 
 ### ** Examples
 
 ## Not run: 
-##D ndm_run_analysis2_real(c("--dry_run=TRUE"))
-##D ndm_run_analysis2_sim(c("--dry_run=TRUE"))
+##D ndm_run_analysis2_real()
 ## End(Not run)
 
 
@@ -280,13 +279,15 @@ flush(stderr()); flush(stdout())
 
 base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 ### Name: ndm_runtime_paths
-### Title: Inspect the vendored runtime bundle
+### Title: Inspect a local analysis runtime bundle
 ### Aliases: ndm_runtime_paths
 
 ### ** Examples
 
-paths <- ndm_runtime_paths()
-names(paths)
+## Not run: 
+##D paths <- ndm_runtime_paths("~/Dropbox/CovidSuperlearner/Analysis2")
+##D names(paths)
+## End(Not run)
 
 
 
@@ -301,7 +302,7 @@ flush(stderr()); flush(stdout())
 
 base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 ### Name: ndm_source_runtime_helper_fxns
-### Title: Source vendored runtime components
+### Title: Source local runtime components
 ### Aliases: ndm_source_runtime_helper_fxns ndm_source_runtime_backend
 ###   ndm_load_runtime ndm_source_runtime_data
 ###   ndm_source_runtime_calibration ndm_source_runtime_results_get
@@ -311,7 +312,7 @@ base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 
 ## Not run: 
 ##D env <- ndm_new_runtime_env()
-##D ndm_load_runtime(env = env)
+##D ndm_load_runtime("~/Dropbox/CovidSuperlearner/Analysis2", env = env)
 ## End(Not run)
 
 

@@ -180,7 +180,7 @@ ndm_build_backend <- function(conda_env = "ndm_software_env",
 #'
 #' @returns `ndm_initialize_backend()` returns an object of class
 #'   `ndm_backend`. The returned list contains imported Python modules, the
-#'   configured float type, and a small compatibility shim used by the vendored
+#'   configured float type, and a small compatibility shim used by the legacy
 #'   runtime.
 #'
 #' @examples

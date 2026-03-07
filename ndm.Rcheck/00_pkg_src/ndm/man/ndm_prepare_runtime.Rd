@@ -3,7 +3,7 @@
 \name{ndm_prepare_runtime}
 \alias{ndm_prepare_runtime}
 \alias{ndm_prepare_data}
-\title{Prepare the vendored runtime for execution}
+\title{Prepare a local runtime for execution}
 \usage{
 ndm_prepare_runtime(
   config = ndm_create_config(),
@@ -28,21 +28,19 @@ objects.}
 \item{runtime_globals}{Named list of additional bindings to assign before the
 runtime code is sourced.}
 
-\item{analysis_root}{Root directory for the legacy analysis runtime. The
-current implementation resolves runtime files from the vendored package
-bundle.}
+\item{analysis_root}{Root directory for the local analysis runtime.}
 
-\item{generator}{Which extracted data generator to source into `runtime_env`.}
+\item{generator}{Which data generator to source into `runtime_env`.}
 }
 \value{
 `ndm_prepare_runtime()` invisibly returns `runtime_env` after
-  loading the vendored helper and backend code.
+  loading the helper and backend code from `config$analysis_root`.
 
 `ndm_prepare_data()` invisibly returns `runtime_env` after sourcing
   the requested data generator.
 }
 \description{
-These wrappers load the extracted runtime scripts into an isolated
+These wrappers load caller-supplied runtime scripts into an isolated
 environment and then source the selected data generator.
 }
 \examples{

@@ -19,7 +19,7 @@ ndm_loss(
 }
 \arguments{
 \item{x}{Either an `ndm_model`, an `ndm_trained_model`, or a prepared runtime
-environment that already contains the required vendored objects.}
+environment that already contains the required runtime objects.}
 
 \item{batch}{Optional batch object. Supply either a named TFRecord-style list
 or the four-element packaged list returned by `ndm_batch_to_model_inputs()`.
@@ -39,16 +39,15 @@ omitted, `YTrue_out` is inferred from `batch`.}
 \item{y_mask}{Optional outcome mask tensor passed to `ndm_loss()`. When
 omitted, `YTrue_out_mask` is inferred from `batch`.}
 
-\item{iteration}{Training iteration number forwarded to the vendored loss
+\item{iteration}{Training iteration number forwarded to the runtime loss
 function.}
 }
 \value{
 `ndm_predict()` returns the prediction object produced by the
-  vendored runtime. `ndm_loss()` returns the loss object produced by the
-  vendored runtime.
+  runtime. `ndm_loss()` returns the loss object produced by the runtime.
 }
 \description{
-These helpers call the vendored prediction and loss functions stored in a
+These helpers call the runtime prediction and loss functions stored in a
 prepared runtime environment.
 }
 \examples{

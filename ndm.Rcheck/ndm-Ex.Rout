@@ -44,7 +44,7 @@ Type 'q()' to quit R.
 > 
 > base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_build_model
-> ### Title: Build and train models with the vendored runtime
+> ### Title: Build and train models with a local runtime
 > ### Aliases: ndm_build_model print.ndm_model ndm_train
 > ###   print.ndm_trained_model ndm_fit
 > 
@@ -204,7 +204,7 @@ Type 'q()' to quit R.
   dynamic_beta: NA
   dynamic_global: NA
   multi_outcome: NA
-  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpRAXWgH/working_dir/RtmpbHTtE9/filed58a7c921b49.tex
+  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpADuPUa/working_dir/Rtmp62PPD1/file140b81cd5dc2e.tex
 > 
 > spec <- ndm_model_spec()
 > tex <- ndm_model_spec_to_tex(spec)
@@ -270,7 +270,7 @@ Type 'q()' to quit R.
 > 
 > base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_prepare_runtime
-> ### Title: Prepare the vendored runtime for execution
+> ### Title: Prepare a local runtime for execution
 > ### Aliases: ndm_prepare_runtime ndm_prepare_data
 > 
 > ### ** Examples
@@ -303,7 +303,7 @@ Type 'q()' to quit R.
 > ### ** Examples
 > 
 > ndm_print("starting")
-[2026-03-06 13:05:15] starting
+[2026-03-07 13:57:30] starting
 > 
 > 
 > 
@@ -318,14 +318,13 @@ Type 'q()' to quit R.
 > 
 > base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_run_analysis2_real
-> ### Title: Run the packaged Analysis2 orchestration scripts
+> ### Title: Deprecated Analysis2 package runners
 > ### Aliases: ndm_run_analysis2_real ndm_run_analysis2_sim
 > 
 > ### ** Examples
 > 
 > ## Not run: 
-> ##D ndm_run_analysis2_real(c("--dry_run=TRUE"))
-> ##D ndm_run_analysis2_sim(c("--dry_run=TRUE"))
+> ##D ndm_run_analysis2_real()
 > ## End(Not run)
 > 
 > 
@@ -341,18 +340,15 @@ Type 'q()' to quit R.
 > 
 > base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_runtime_paths
-> ### Title: Inspect the vendored runtime bundle
+> ### Title: Inspect a local analysis runtime bundle
 > ### Aliases: ndm_runtime_paths
 > 
 > ### ** Examples
 > 
-> paths <- ndm_runtime_paths()
-> names(paths)
- [1] "analysis_root"       "project_root"        "helper_fxns"        
- [4] "master_imports"      "calibrate_ml"        "data_sim"           
- [7] "data_real"           "build_model"         "train_define"       
-[10] "train_do"            "results_get"         "results_analyze"    
-[13] "model_structure_dir"
+> ## Not run: 
+> ##D paths <- ndm_runtime_paths("~/Dropbox/CovidSuperlearner/Analysis2")
+> ##D names(paths)
+> ## End(Not run)
 > 
 > 
 > 
@@ -367,7 +363,7 @@ Type 'q()' to quit R.
 > 
 > base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_source_runtime_helper_fxns
-> ### Title: Source vendored runtime components
+> ### Title: Source local runtime components
 > ### Aliases: ndm_source_runtime_helper_fxns ndm_source_runtime_backend
 > ###   ndm_load_runtime ndm_source_runtime_data
 > ###   ndm_source_runtime_calibration ndm_source_runtime_results_get
@@ -377,7 +373,7 @@ Type 'q()' to quit R.
 > 
 > ## Not run: 
 > ##D env <- ndm_new_runtime_env()
-> ##D ndm_load_runtime(env = env)
+> ##D ndm_load_runtime("~/Dropbox/CovidSuperlearner/Analysis2", env = env)
 > ## End(Not run)
 > 
 > 
@@ -458,7 +454,7 @@ location_id_numeric     time_id_numeric               YTrue          YTrue_mask
 > cleanEx()
 > options(digits = 7L)
 > base::cat("Time elapsed: ", proc.time() - base::get("ptime", pos = 'CheckExEnv'),"\n")
-Time elapsed:  1.316 0.083 3.226 1.273 0.361 
+Time elapsed:  1.98 0.153 4.97 2.039 0.566 
 > grDevices::dev.off()
 null device 
           1 

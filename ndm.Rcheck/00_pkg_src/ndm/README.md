@@ -1,58 +1,59 @@
 # ndm
 
-`ndm` is an R-first package for neural disease modeling with a
-reticulate-managed JAX backend.
+`ndm` is an R package for neural disease modeling with a `reticulate`-managed
+JAX backend. It provides backend/bootstrap helpers, built-in epidemic model
+specifications, TFRecord readers, and runtime/model wrappers that operate on a
+caller-supplied local `Analysis` or `Analysis2` tree.
 
-Phase 1 in this repository is intentionally conservative:
+`ndm` no longer ships a runnable analysis checkout and no longer owns
+`Analysis2` orchestration. The full analysis suite should stay in the project
+repo; reusable modeling and data primitives live in `ndm` and `ndmdatasets`.
 
-- preserve both `DecoderOnly` and `NeuralODE` model types
-- default to `DecoderOnly`
-- support transformer backbones only
-- exclude latent attention and Mamba
-- preserve the established `.tex` epidemic specification workflow through import and
-  export helpers
-- consume existing TFRecords rather than regenerating them
-- vendor the active runtime code into the package so `ndm` is
-  self-contained at execution time
+## Installation
 
-## Current package surface
+Install both packages from local checkouts:
 
-- `ndm_create_config()`: build explicit runtime configuration objects
-- `ndm_build_backend()` / `ndm_initialize_backend()`: provision and initialize
-  the Python JAX environment
-- `ndm_model_spec_*()`: work with built-in and custom epidemic model specs
-- `ndm_read_tfrecord_dataset()` / `ndm_load_tfrecord_bundle()`: read existing
-  TFRecords for training and inference
-- `ndm_prepare_runtime()` / `ndm_prepare_data()`: load the vendored runtime into
-  an isolated environment
-- `ndm_build_model()` / `ndm_train()` / `ndm_predict()` / `ndm_loss()`: wrappers
-  over the vendored modeling pipeline
-- `ndm_fit()`: end-to-end orchestration wrapper around runtime, data, build, and
-  train steps
+```r
+install.packages(c("remotes", "reticulate"))
+remotes::install_local("~/Documents/ndm-datasets")
+remotes::install_local("~/Documents/ndm-software")
+```
 
-## Built-in model presets
+## Runtime usage
 
-The package ships these built-in epidemic specs under
-`inst/extdata/model_specs/`:
+Point `ndm` at a local analysis root explicitly:
 
-- `seir_fixed`
-- `seirs_dynamic_beta`
-- `seirs_dynamic_beta_multi_outcome`
-- `seirs_dynamic_beta_dynamic_global`
-- `seirs_dynamic_beta_dynamic_global_multi_outcome`
+```r
+library(ndm)
 
-The structured `ndm_model_spec` object is the canonical internal
-representation. `.tex` remains a supported import/export format for
-compatibility with the established workflow.
+cfg <- ndm_create_config(
+  model_type = "DecoderOnly",
+  analysis_root = "/path/to/CovidSuperlearner/Analysis2",
+  float_type = "32",
+  force_to_gpu = FALSE
+)
 
-## Testing status
+runtime_env <- ndm_prepare_runtime(cfg)
+ndm_prepare_data(runtime_env, analysis_root = cfg$analysis_root, generator = "sim")
+model <- ndm_build_model(runtime_env, analysis_root = cfg$analysis_root)
+trained <- ndm_train(model, analysis_root = cfg$analysis_root)
+```
 
-The repository currently includes package tests for:
+The runtime helpers now honor `analysis_root` end-to-end, including
+`ndm_source_runtime_calibration()`, `ndm_source_runtime_results_get()`, and
+`ndm_source_runtime_results_analyze()`.
 
-- configuration defaults
-- built-in spec registration and import/export
-- TFRecord field and dtype contracts
-- packaged runtime path resolution and isolated environment setup
+## Analysis2
 
-Phase 1 parity tests against full historical runs still need real run-specific
-configurations and TFRecord locations.
+The package runners are deprecated:
+
+- `ndm_run_analysis2_real()`
+- `ndm_run_analysis2_sim()`
+
+Run the project-local entrypoints instead:
+
+- `/path/to/CovidSuperlearner/Analysis2/SuperLModel_MasterReal.R`
+- `/path/to/CovidSuperlearner/Analysis2/SuperLModel_MasterSim.R`
+
+Those local scripts should use `ndm_create_config(..., analysis_root = <project>/Analysis2)`
+and the runtime sourcing helpers from this package.

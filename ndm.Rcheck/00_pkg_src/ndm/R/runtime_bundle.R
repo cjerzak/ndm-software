@@ -1,22 +1,22 @@
-#' Inspect the vendored runtime bundle
+#' Inspect a local analysis runtime bundle
 #'
-#' ndm vendors the active Phase 1 runtime files under `inst/extracted`
-#' so the package can load the historical analysis code without depending on an
-#' external checkout.
+#' `ndm` no longer vendors the executable analysis runtime. Callers must point
+#' the runtime helpers at a local `Analysis` or `Analysis2` tree.
 #'
-#' @param analysis_root Retained for API compatibility. The current
-#'   implementation always resolves paths from the vendored runtime bundle.
+#' @param analysis_root Path to the local analysis runtime root.
 #'
 #' @returns `ndm_runtime_paths()` returns a named list of normalized file paths
-#'   for the extracted runtime bundle.
+#'   for the requested local runtime bundle.
 #'
 #' @examples
-#' paths <- ndm_runtime_paths()
+#' \dontrun{
+#' paths <- ndm_runtime_paths("~/Dropbox/CovidSuperlearner/Analysis2")
 #' names(paths)
+#' }
 #'
 #' @export
 ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
-  analysis_root <- .ndm_extracted_analysis_dir()
+  analysis_root <- .ndm_resolve_analysis_root(analysis_root, must_work = TRUE)
   project_root <- dirname(analysis_root)
 
   paths <- list(
@@ -38,16 +38,26 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
   check_names <- setdiff(names(paths), c("project_root", "analysis_root"))
   missing <- check_names[!file.exists(unlist(paths[check_names], use.names = FALSE))]
   if (length(missing) > 0L) {
-    stop("Missing legacy analysis files: ", paste(missing, collapse = ", "), call. = FALSE)
+    stop(
+      "Missing analysis runtime files under `analysis_root`: ",
+      paste(missing, collapse = ", "),
+      call. = FALSE
+    )
   }
 
   paths
 }
 
-.ndm_install_runtime_helpers <- function(env) {
+.ndm_install_runtime_helpers <- function(env, analysis_root = NULL) {
   stopifnot(is.environment(env))
 
-  assign("NDM_INTERNAL_ANALYSIS_DIR", .ndm_extracted_analysis_dir(), envir = env)
+  if (!is.null(analysis_root) && nzchar(analysis_root)) {
+    analysis_root <- .ndm_resolve_analysis_root(analysis_root, must_work = TRUE)
+  } else {
+    analysis_root <- NULL
+  }
+
+  assign("NDM_INTERNAL_ANALYSIS_DIR", analysis_root, envir = env)
   assign(
     "ndm_source_extracted",
     function(relative_path, env_target = NULL, ...) {
@@ -57,8 +67,17 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
           env_target <- env
         }
       }
+
+      root <- get("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE)
+      if (is.null(root) || !nzchar(root)) {
+        stop(
+          "`NDM_INTERNAL_ANALYSIS_DIR` is not set. Install runtime helpers with a valid analysis_root first.",
+          call. = FALSE
+        )
+      }
+
       sys.source(
-        file.path(get("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE), relative_path),
+        file.path(root, relative_path),
         envir = env_target,
         keep.source = FALSE
       )
@@ -72,8 +91,8 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
 
 #' Create and populate runtime environments
 #'
-#' These helpers manage isolated environments used to source the vendored model
-#' runtime and seed it with R values.
+#' These helpers manage isolated environments used to source local model runtime
+#' code and seed it with R values.
 #'
 #' @param parent Parent environment for a new runtime environment.
 #' @param env Runtime environment that should receive new bindings.
@@ -93,7 +112,7 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
 ndm_new_runtime_env <- function(parent = baseenv()) {
   env <- new.env(parent = parent)
   class(env) <- c("ndm_runtime_env", class(env))
-  .ndm_install_runtime_helpers(env)
+  .ndm_install_runtime_helpers(env, analysis_root = NULL)
   env
 }
 
@@ -124,23 +143,23 @@ ndm_set_runtime_globals <- function(env, values, overwrite = TRUE) {
   invisible(env)
 }
 
-#' Source vendored runtime components
+#' Source local runtime components
 #'
-#' These helpers source the extracted legacy runtime files into a dedicated
+#' These helpers source caller-supplied analysis runtime files into a dedicated
 #' environment. They are lower-level building blocks used by
 #' `ndm_prepare_runtime()` and `ndm_fit()`.
 #'
 #' @inheritParams ndm_runtime_paths
 #' @param env Runtime environment that should receive the sourced objects.
-#' @param float_type Floating point precision passed into the vendored backend
-#'   bootstrap code. Use `"32"` or `"64"`.
+#' @param float_type Floating point precision passed into the runtime bootstrap
+#'   code. Use `"32"` or `"64"`.
 #' @param force_to_gpu Logical scalar indicating whether the runtime should try
 #'   to place arrays on a GPU device when available.
-#' @param gpu_mem_frac Optional GPU memory fraction forwarded to the vendored
-#'   backend bootstrap code.
+#' @param gpu_mem_frac Optional GPU memory fraction forwarded to the runtime
+#'   bootstrap code.
 #' @param resave_tfrecords Logical scalar preserved for compatibility with the
 #'   legacy runtime setup.
-#' @param generator Which extracted data generator script to source.
+#' @param generator Which data generator script to source.
 #'
 #' @returns Each function on this page invisibly returns `env` after sourcing the
 #'   requested runtime component.
@@ -148,13 +167,13 @@ ndm_set_runtime_globals <- function(env, values, overwrite = TRUE) {
 #' @examples
 #' \dontrun{
 #' env <- ndm_new_runtime_env()
-#' ndm_load_runtime(env = env)
+#' ndm_load_runtime("~/Dropbox/CovidSuperlearner/Analysis2", env = env)
 #' }
 #'
 #' @export
 ndm_source_runtime_helper_fxns <- function(analysis_root = .ndm_default_analysis_root(),
                                           env = ndm_new_runtime_env()) {
-  .ndm_install_runtime_helpers(env)
+  .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   .ndm_source_runtime_file(paths$helper_fxns, env)
 }
@@ -167,7 +186,7 @@ ndm_source_runtime_backend <- function(analysis_root = .ndm_default_analysis_roo
                                       force_to_gpu = TRUE,
                                       gpu_mem_frac = NULL,
                                       resave_tfrecords = FALSE) {
-  .ndm_install_runtime_helpers(env)
+  .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   ndm_set_runtime_globals(
     env,
@@ -184,11 +203,11 @@ ndm_source_runtime_backend <- function(analysis_root = .ndm_default_analysis_roo
 #' @rdname ndm_source_runtime_helper_fxns
 #' @export
 ndm_load_runtime <- function(analysis_root = .ndm_default_analysis_root(),
-                                    env = ndm_new_runtime_env(),
-                                    float_type = "32",
-                                    force_to_gpu = TRUE,
-                                    gpu_mem_frac = NULL,
-                                    resave_tfrecords = FALSE) {
+                             env = ndm_new_runtime_env(),
+                             float_type = "32",
+                             force_to_gpu = TRUE,
+                             gpu_mem_frac = NULL,
+                             resave_tfrecords = FALSE) {
   ndm_source_runtime_helper_fxns(analysis_root = analysis_root, env = env)
   ndm_source_runtime_backend(
     analysis_root = analysis_root,
@@ -205,7 +224,7 @@ ndm_load_runtime <- function(analysis_root = .ndm_default_analysis_root(),
 ndm_source_runtime_data <- function(analysis_root = .ndm_default_analysis_root(),
                                    env = ndm_new_runtime_env(),
                                    generator = c("sim", "real")) {
-  .ndm_install_runtime_helpers(env)
+  .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   generator <- match.arg(generator)
   paths <- ndm_runtime_paths(analysis_root)
   source_path <- if (identical(generator, "sim")) paths$data_sim else paths$data_real
@@ -216,7 +235,7 @@ ndm_source_runtime_data <- function(analysis_root = .ndm_default_analysis_root()
 #' @export
 ndm_source_runtime_calibration <- function(analysis_root = .ndm_default_analysis_root(),
                                           env = ndm_new_runtime_env()) {
-  .ndm_install_runtime_helpers(env)
+  .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   .ndm_source_runtime_file(paths$calibrate_ml, env)
 }
@@ -225,7 +244,7 @@ ndm_source_runtime_calibration <- function(analysis_root = .ndm_default_analysis
 #' @export
 ndm_source_runtime_results_get <- function(analysis_root = .ndm_default_analysis_root(),
                                           env = ndm_new_runtime_env()) {
-  .ndm_install_runtime_helpers(env)
+  .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   .ndm_source_runtime_file(paths$results_get, env)
 }
@@ -234,7 +253,7 @@ ndm_source_runtime_results_get <- function(analysis_root = .ndm_default_analysis
 #' @export
 ndm_source_runtime_results_analyze <- function(analysis_root = .ndm_default_analysis_root(),
                                               env = ndm_new_runtime_env()) {
-  .ndm_install_runtime_helpers(env)
+  .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   .ndm_source_runtime_file(paths$results_analyze, env)
 }

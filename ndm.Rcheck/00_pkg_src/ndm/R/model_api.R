@@ -1,6 +1,6 @@
-#' Prepare the vendored runtime for execution
+#' Prepare a local runtime for execution
 #'
-#' These wrappers load the extracted runtime scripts into an isolated
+#' These wrappers load caller-supplied runtime scripts into an isolated
 #' environment and then source the selected data generator.
 #'
 #' @param config An object of class `ndm_config`, usually created by
@@ -11,7 +11,7 @@
 #'   runtime code is sourced.
 #'
 #' @returns `ndm_prepare_runtime()` invisibly returns `runtime_env` after
-#'   loading the vendored helper and backend code.
+#'   loading the helper and backend code from `config$analysis_root`.
 #'
 #' @examples
 #' env <- ndm_new_runtime_env()
@@ -42,10 +42,8 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
 
 #' @rdname ndm_prepare_runtime
 #'
-#' @param analysis_root Root directory for the legacy analysis runtime. The
-#'   current implementation resolves runtime files from the vendored package
-#'   bundle.
-#' @param generator Which extracted data generator to source into `runtime_env`.
+#' @param analysis_root Root directory for the local analysis runtime.
+#' @param generator Which data generator to source into `runtime_env`.
 #'
 #' @returns `ndm_prepare_data()` invisibly returns `runtime_env` after sourcing
 #'   the requested data generator.
@@ -132,33 +130,31 @@ ndm_prepare_data <- function(runtime_env,
   )
 }
 
-#' Build and train models with the vendored runtime
+#' Build and train models with a local runtime
 #'
-#' These wrappers layer a small R API over the extracted Phase 1 model build and
+#' These wrappers layer a small R API over local Phase 1 model build and
 #' training scripts.
 #'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.
 #' @param runtime_env Runtime environment containing the sourced legacy helper
 #'   code and data globals.
-#' @param analysis_root Root directory for the legacy analysis runtime. The
-#'   current implementation resolves runtime files from the vendored package
-#'   bundle.
+#' @param analysis_root Root directory for the local analysis runtime.
 #' @param model_type Model family to build. Either `"DecoderOnly"` or
 #'   `"NeuralODE"`.
 #' @param model_spec Optional `ndm_model_spec` object used to override the model
-#'   TeX specification supplied to the vendored builder.
+#'   TeX specification supplied to the runtime model builder.
 #' @param backbone Backbone family. Phase 1 supports `"transformer"` only.
 #' @param runtime_globals Named list of additional globals assigned during the
 #'   relevant runtime stage. `ndm_build_model()` uses them before building the
-#'   model, while `ndm_fit()` uses them before sourcing the vendored runtime.
+#'   model, while `ndm_fit()` uses them before sourcing the runtime.
 #' @param x Either an `ndm_model`, an `ndm_trained_model`, or a prepared runtime
 #'   environment, depending on the function being called.
 #' @param run_define Logical scalar indicating whether the training definition
 #'   script should be sourced.
 #' @param run_loop Logical scalar indicating whether the training loop script
 #'   should be sourced.
-#' @param data_generator Which extracted data generator to source before calling
+#' @param data_generator Which local data generator to source before calling
 #'   `ndm_build_model()` inside `ndm_fit()`.
 #' @param data_globals Named list of globals assigned before sourcing the data
 #'   generator in `ndm_fit()`.
@@ -193,12 +189,12 @@ ndm_build_model <- function(runtime_env,
     stop("`runtime_env` must be an environment returned by ndm_load_runtime() or prepared manually.", call. = FALSE)
   }
 
-  .ndm_install_runtime_helpers(runtime_env)
   model_type <- match.arg(model_type)
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
 
+  .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_set_runtime_globals(
@@ -221,13 +217,13 @@ ndm_build_model <- function(runtime_env,
   }
 
   tryCatch(
-    .ndm_source_runtime_file(paths$build_model, runtime_env),
-    error = function(e) {
-      stop(
-        "Failed to source the packaged model builder. This assumes the upstream setup and data globals are already present in `runtime_env`.\n",
-        "Original error: ", conditionMessage(e),
-        call. = FALSE
-      )
+      .ndm_source_runtime_file(paths$build_model, runtime_env),
+      error = function(e) {
+        stop(
+          "Failed to source the model builder from `analysis_root`. This assumes the upstream setup and data globals are already present in `runtime_env`.\n",
+          "Original error: ", conditionMessage(e),
+          call. = FALSE
+        )
     }
   )
 
@@ -269,11 +265,11 @@ print.ndm_model <- function(x, ...) {
 
 #' Generate predictions or evaluate the training loss
 #'
-#' These helpers call the vendored prediction and loss functions stored in a
+#' These helpers call the runtime prediction and loss functions stored in a
 #' prepared runtime environment.
 #'
 #' @param x Either an `ndm_model`, an `ndm_trained_model`, or a prepared runtime
-#'   environment that already contains the required vendored objects.
+#'   environment that already contains the required runtime objects.
 #' @param batch Optional batch object. Supply either a named TFRecord-style list
 #'   or the four-element packaged list returned by `ndm_batch_to_model_inputs()`.
 #'   When `NULL`, the runtime must already contain `batch_l_cal`.
@@ -286,12 +282,11 @@ print.ndm_model <- function(x, ...) {
 #'   omitted, `YTrue_out` is inferred from `batch`.
 #' @param y_mask Optional outcome mask tensor passed to `ndm_loss()`. When
 #'   omitted, `YTrue_out_mask` is inferred from `batch`.
-#' @param iteration Training iteration number forwarded to the vendored loss
+#' @param iteration Training iteration number forwarded to the runtime loss
 #'   function.
 #'
 #' @returns `ndm_predict()` returns the prediction object produced by the
-#'   vendored runtime. `ndm_loss()` returns the loss object produced by the
-#'   vendored runtime.
+#'   runtime. `ndm_loss()` returns the loss object produced by the runtime.
 #'
 #' @examples
 #' \dontrun{
@@ -408,15 +403,15 @@ ndm_train <- function(x,
     stop("`x` must be an `ndm_model` or a prepared runtime environment.", call. = FALSE)
   }
 
-  .ndm_install_runtime_helpers(runtime_env)
   analysis_root <- analysis_root %||% if (inherits(x, "ndm_model")) x$analysis_root else .ndm_default_analysis_root()
+  .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
 
   if (isTRUE(run_define)) {
     tryCatch(
       .ndm_source_runtime_file(paths$train_define, runtime_env),
       error = function(e) {
-        stop("Failed while sourcing packaged training definition code: ", conditionMessage(e), call. = FALSE)
+        stop("Failed while sourcing training definition code from `analysis_root`: ", conditionMessage(e), call. = FALSE)
       }
     )
   }
@@ -425,7 +420,7 @@ ndm_train <- function(x,
     tryCatch(
       .ndm_source_runtime_file(paths$train_do, runtime_env),
       error = function(e) {
-        stop("Failed while sourcing packaged training loop code: ", conditionMessage(e), call. = FALSE)
+        stop("Failed while sourcing training loop code from `analysis_root`: ", conditionMessage(e), call. = FALSE)
       }
     )
   }

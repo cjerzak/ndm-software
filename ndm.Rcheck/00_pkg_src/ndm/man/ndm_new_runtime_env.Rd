@@ -24,8 +24,8 @@ should be overwritten.}
   `ndm_runtime_env`. `ndm_set_runtime_globals()` invisibly returns `env`.
 }
 \description{
-These helpers manage isolated environments used to source the vendored model
-runtime and seed it with R values.
+These helpers manage isolated environments used to source local model runtime
+code and seed it with R values.
 }
 \examples{
 env <- ndm_new_runtime_env()
