@@ -19,10 +19,10 @@ Type 'q()' to quit R.
 > library(ndm)
 > 
 > test_check("ndm")
-[2026-03-07 21:48:03] Starting Analysis2 SuperLModel_MasterReal.R
-[2026-03-07 21:48:03] Starting Analysis2 SuperLModel_MasterSim.R
-[2026-03-07 21:48:03] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
-[ FAIL 0 | WARN 0 | SKIP 4 | PASS 79 ]
+[2026-03-08 14:43:59] Starting Analysis2 SuperLModel_MasterReal.R
+[2026-03-08 14:43:59] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-08 14:43:59] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
+[ FAIL 0 | WARN 0 | SKIP 4 | PASS 89 ]
 
 ══ Skipped tests (4) ═══════════════════════════════════════════════════════════
 • On CRAN (3): 'test-sim-fit.R:268:3', 'test-sim-fit.R:297:3',
@@ -30,8 +30,8 @@ Type 'q()' to quit R.
 • README.md is not available in the current test environment. (1):
   'test-readme-tutorial.R:2:3'
 
-[ FAIL 0 | WARN 0 | SKIP 4 | PASS 79 ]
+[ FAIL 0 | WARN 0 | SKIP 4 | PASS 89 ]
 > 
 > proc.time()
    user  system elapsed 
-  0.633   0.079   0.711 
+  0.886   0.111   0.992 

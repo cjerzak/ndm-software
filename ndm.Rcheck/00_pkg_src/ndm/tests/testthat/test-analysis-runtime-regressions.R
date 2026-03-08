@@ -1,7 +1,32 @@
+analysis2_runtime_root <- function() {
+  source_root <- test_path("..", "..", "inst", "extdata", "analysis_runtime", "Analysis2")
+  if (dir.exists(source_root)) {
+    return(source_root)
+  }
+
+  pkg_root <- system.file(package = "ndm")
+  if (nzchar(pkg_root)) {
+    installed_root <- file.path(pkg_root, "extdata", "analysis_runtime", "Analysis2")
+    if (dir.exists(installed_root)) {
+      return(installed_root)
+    }
+  }
+
+  stop("Could not locate the Analysis2 runtime bundle for regression tests.", call. = FALSE)
+}
+
+analysis2_runtime_path <- function(...) {
+  file.path(analysis2_runtime_root(), ...)
+}
+
+analysis2_runtime_lines <- function(...) {
+  readLines(analysis2_runtime_path(...))
+}
+
 test_that("legacy runtime scripts no longer hard-disable intended branches", {
-  build_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ModelDefiners", "SuperLModel_BuildML.R"))
-  train_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ModelTrainers", "SuperLModel_TrainDo.R"))
-  real_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ResultsGet", "SuperLModel_GetAnalytics_Real.R"))
+  build_lines <- analysis2_runtime_lines("ModelDefiners", "SuperLModel_BuildML.R")
+  train_lines <- analysis2_runtime_lines("ModelTrainers", "SuperLModel_TrainDo.R")
+  real_lines <- analysis2_runtime_lines("ResultsGet", "SuperLModel_GetAnalytics_Real.R")
 
   expect_false(any(grepl("if\\(testWithoutSampling <- TRUE\\)", build_lines)))
   expect_false(any(grepl("if\\(UseDiagonalLMatVCov <- T\\)", build_lines)))
@@ -11,8 +36,8 @@ test_that("legacy runtime scripts no longer hard-disable intended branches", {
 })
 
 test_that("decoder cache path uses model decoder projections and rank-safe writes", {
-  build_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ModelDefiners", "SuperLModel_BuildML.R"))
-  backbone_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ModelDefiners", "SuperLModel_BackboneTransformer.R"))
+  build_lines <- analysis2_runtime_lines("ModelDefiners", "SuperLModel_BuildML.R")
+  backbone_lines <- analysis2_runtime_lines("ModelDefiners", "SuperLModel_BackboneTransformer.R")
 
   expect_true(any(grepl("ModelList\\$TSList\\$TSBackbone\\$DecoderProj\\(xt_last\\)", build_lines)))
   expect_true(any(grepl("ModelList\\$TSList\\$TSBackbone\\$DecoderProj\\(embed_out\\)", build_lines)))
@@ -36,7 +61,7 @@ test_that("ode pair dedup keeps lhs and rhs aligned", {
 })
 
 test_that("sim analytics baseline metrics and policy routes target the correct objects", {
-  sim_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ResultsGet", "SuperLModel_GetAnalytics_Sim.R"))
+  sim_lines <- analysis2_runtime_lines("ResultsGet", "SuperLModel_GetAnalytics_Sim.R")
 
   expect_true(any(grepl("LastOutCor <- cor\\(c\\(l_true\\),c\\(pred_l_mean\\)\\)", sim_lines)))
   expect_true(any(grepl("FNorm_Raw_baseline <- mean\\(sqrt\\(\\(c\\(pred_l_baselineVal_mat\\) - c\\(l_true\\)\\)\\^2\\)\\)", sim_lines)))
@@ -55,9 +80,9 @@ test_that("sim analytics baseline metrics and policy routes target the correct o
 })
 
 test_that("trainer and calibration scripts keep shared save paths and vectorized outcome transforms", {
-  train_define_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ModelTrainers", "SuperLModel_TrainDefine.R"))
-  train_do_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "ModelTrainers", "SuperLModel_TrainDo.R"))
-  calibrate_lines <- readLines(test_path("..", "fixtures", "analysis_runtime", "Analysis", "SetupData", "SuperLModel_CalibrateML.R"))
+  train_define_lines <- analysis2_runtime_lines("ModelTrainers", "SuperLModel_TrainDefine.R")
+  train_do_lines <- analysis2_runtime_lines("ModelTrainers", "SuperLModel_TrainDo.R")
+  calibrate_lines <- analysis2_runtime_lines("SetupData", "SuperLModel_CalibrateML.R")
 
   expect_true(any(grepl("SavedModelDir <- sprintf", train_define_lines, fixed = TRUE)))
   expect_true(any(grepl("SavedModelDir <- get0", train_do_lines, fixed = TRUE)))
@@ -68,4 +93,21 @@ test_that("trainer and calibration scripts keep shared save paths and vectorized
   tmppp <- c(0.5, 200)
   calibrated <- ifelse(tmppp > 100, tmppp, tmppp + 1)
   expect_equal(calibrated, c(1.5, 200))
+})
+
+test_that("special-token and time-horizon settings remain runtime-driven", {
+  build_lines <- analysis2_runtime_lines("ModelDefiners", "SuperLModel_BuildML.R")
+  parse_lines <- analysis2_runtime_lines("ModelDefiners", "SuperLModel_ParseDynamicODE.R")
+  api_lines <- analysis2_runtime_lines("SetupEnv", "Analysis2_api.R")
+
+  expect_false(any(grepl("AppendPlaceEmbeds <- TRUE", build_lines, fixed = TRUE)))
+  expect_false(any(grepl("AppendTimeEmbeds <- TRUE", build_lines, fixed = TRUE)))
+  expect_true(any(grepl("AppendPlaceEmbeds = TRUE", api_lines, fixed = TRUE)))
+  expect_true(any(grepl("AppendTimeEmbeds = TRUE", api_lines, fixed = TRUE)))
+  expect_true(any(grepl("AppendPlaceEmbeds = FALSE", api_lines, fixed = TRUE)))
+  expect_true(any(grepl("AppendTimeEmbeds = FALSE", api_lines, fixed = TRUE)))
+  expect_false(any(grepl("nTimes<-120L", build_lines, fixed = TRUE)))
+  expect_true(any(grepl("MaxTimeIndex", build_lines, fixed = TRUE)))
+  expect_false(any(grepl("NTimeGlobalNeuralMax <- 200L", parse_lines, fixed = TRUE)))
+  expect_true(any(grepl("0L:NTimeGlobalNeuralMax", parse_lines, fixed = TRUE)))
 })

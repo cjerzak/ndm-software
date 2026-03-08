@@ -1,5 +1,22 @@
+analysis2_runtime_root <- function() {
+  source_root <- test_path("..", "..", "inst", "extdata", "analysis_runtime", "Analysis2")
+  if (dir.exists(source_root)) {
+    return(source_root)
+  }
+
+  pkg_root <- system.file(package = "ndm")
+  if (nzchar(pkg_root)) {
+    installed_root <- file.path(pkg_root, "extdata", "analysis_runtime", "Analysis2")
+    if (dir.exists(installed_root)) {
+      return(installed_root)
+    }
+  }
+
+  stop("Could not locate the Analysis2 runtime bundle for regression tests.", call. = FALSE)
+}
+
 analysis2_runtime_path <- function(...) {
-  test_path("..", "..", "inst", "extdata", "analysis_runtime", "Analysis2", ...)
+  file.path(analysis2_runtime_root(), ...)
 }
 
 analysis2_runtime_lines <- function(...) {

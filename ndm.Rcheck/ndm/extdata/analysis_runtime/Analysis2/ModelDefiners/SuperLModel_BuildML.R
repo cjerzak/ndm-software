@@ -5,8 +5,8 @@ DisappList <- function(.){ret_<-.;if(is.list(.)){if(length(unlist(.))==0){ret_ <
 
 # Special tokens config 
 doGeoInfo <- FALSE
-AppendPlaceEmbeds <- TRUE; 
-AppendTimeEmbeds <- TRUE; 
+AppendPlaceEmbeds <- isTRUE(get0("AppendPlaceEmbeds", ifnotfound = TRUE))
+AppendTimeEmbeds <- isTRUE(get0("AppendTimeEmbeds", ifnotfound = TRUE))
 
 # Latent Attention config
 DecodingInNeuralODE <- FALSE
@@ -229,8 +229,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       
       # time embedding 
       print2("Setting up time embeddings...")
+      MaxTimeIndex <- ai(max(c(0L, f2n(get0("MaxTimeIndex", ifnotfound = nTimesTotal - 1L))), na.rm = TRUE))
       InitProcessList$TimeEmbeds <- jnp$array( # Initialize TimeEmbeds with sinusoidal positional encoding
-                                  do.call(rbind, lapply(0:((nTimes<-120L) - 1L), function(pos) {
+                                  do.call(rbind, lapply(0:MaxTimeIndex, function(pos) {
                                     frequencies <- 1 / (10000^(seq(0, ModelDims - 1L, by = 2L) / ModelDims))
                                     pos_vector <- numeric(ModelDims)
                                     pos_vector[seq(1, ModelDims, by = 2L)] <- sin(pos * frequencies)
@@ -1302,7 +1303,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                            stepsize_controller = stepsize_controller_optim )
         dynamicglobal_x0_samp <- jnp$take(dynamicglobal_x_params_samp$ys$Neural2, time_indices, axis = 0L)
         # plot( np$array(dynamicglobal_x_params_samp$ys$Neural2)[,sample(1:100,1)] )
-        # note: time 0 means 1 time step has been executed
+        # saveat is zero-based so time_indices line up directly with the solved path
       }
   
       # sampling parameters
