@@ -10,7 +10,7 @@
 \usage{
 ndm_build_model(
   runtime_env,
-  analysis_root = .ndm_default_analysis_root(),
+  analysis_root = NULL,
   model_type = c("DecoderOnly", "NeuralODE"),
   model_spec = NULL,
   backbone = "transformer",

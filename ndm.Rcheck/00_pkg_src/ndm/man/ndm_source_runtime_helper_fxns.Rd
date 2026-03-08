@@ -85,7 +85,7 @@ environment. They are lower-level building blocks used by
 \examples{
 \dontrun{
 env <- ndm_new_runtime_env()
-ndm_load_runtime("~/Dropbox/CovidSuperlearner/Analysis2", env = env)
+ndm_load_runtime(env = env)
 }
 
 }

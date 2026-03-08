@@ -17,7 +17,8 @@ The underlying workflow result, including dry-run previews.
 }
 \description{
 These wrappers preserve the old `ndm_run_analysis2_*()` entrypoints while
-routing them to the package-owned runtime bundle. They no longer depend on an
+routing them to the package-owned runtime bundle. They accept the same
+command-line-style argument vectors as before, but no longer depend on an
 external `Analysis2` checkout.
 }
 \examples{

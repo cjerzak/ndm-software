@@ -123,12 +123,5 @@ make_runtime_fixture <- function() {
 }
 
 runtime_fixture_analysis_root <- function() {
-  path <- Sys.getenv("NDM_TEST_ANALYSIS_ROOT", unset = "")
-  if (!nzchar(path)) {
-    path <- getOption("ndm.test_analysis_root", default = "")
-  }
-  if (!nzchar(path)) {
-    return(NULL)
-  }
-  normalizePath(path, winslash = "/", mustWork = TRUE)
+  ndm:::.ndm_internal_analysis_root()
 }

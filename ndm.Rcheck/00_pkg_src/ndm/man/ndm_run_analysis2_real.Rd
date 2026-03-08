@@ -3,28 +3,27 @@
 \name{ndm_run_analysis2_real}
 \alias{ndm_run_analysis2_real}
 \alias{ndm_run_analysis2_sim}
-\title{Deprecated Analysis2 package runners}
+\title{Legacy Analysis2-compatible package runners}
 \usage{
 ndm_run_analysis2_real(args = commandArgs(TRUE))
 
 ndm_run_analysis2_sim(args = commandArgs(TRUE))
 }
 \arguments{
-\item{args}{Character vector of command-line-style arguments. Retained only
-for compatibility with the previous function signatures.}
+\item{args}{Character vector of command-line-style arguments.}
 }
 \value{
-These functions do not return; they always error with migration
-  guidance.
+The underlying workflow result, including dry-run previews.
 }
 \description{
-`ndm` no longer owns runnable Analysis2 orchestration. Use the local
-`Analysis2/SuperLModel_MasterReal.R` and `Analysis2/SuperLModel_MasterSim.R`
-entrypoints in the project checkout instead.
+These wrappers preserve the old `ndm_run_analysis2_*()` entrypoints while
+routing them to the package-owned runtime bundle. They accept the same
+command-line-style argument vectors as before, but no longer depend on an
+external `Analysis2` checkout.
 }
 \examples{
 \dontrun{
-ndm_run_analysis2_real()
+ndm_run_analysis2_real("--help")
 }
 
 }

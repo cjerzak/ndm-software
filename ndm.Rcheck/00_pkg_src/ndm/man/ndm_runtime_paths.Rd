@@ -14,12 +14,13 @@ ndm_runtime_paths(analysis_root = .ndm_default_analysis_root())
   for the requested local runtime bundle.
 }
 \description{
-`ndm` no longer vendors the executable analysis runtime. Callers must point
-the runtime helpers at a local `Analysis` or `Analysis2` tree.
+`ndm` ships a package-owned executable analysis runtime bundle. Callers may
+still override `analysis_root`, but the default now resolves to the bundled
+internal runtime.
 }
 \examples{
 \dontrun{
-paths <- ndm_runtime_paths("~/Dropbox/CovidSuperlearner/Analysis2")
+paths <- ndm_runtime_paths()
 names(paths)
 }
 

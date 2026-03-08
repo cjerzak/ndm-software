@@ -1,0 +1,15 @@
+# Default manifest for package-backed real-data runs.
+mode: real
+analysis_name: RealApril15
+grid_file: Data/RunGrids/RealGrids/RealGrid_RealApril15.csv
+outer:
+  - 3
+model_type: null
+respect_grid_model_type: false
+resave_tfrecords: false
+run_figures: false
+raw_data_dir: Data/MainData
+tfrecord_dir: Data/RunTFRecords/RealTFRecords/RealApril15
+outcome_metric: inc_death
+data_subset: high_income
+dry_run: false

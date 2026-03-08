@@ -15,7 +15,7 @@ ndm_runtime_paths(analysis_root = .ndm_default_analysis_root())
 }
 \description{
 `ndm` ships a package-owned executable analysis runtime bundle. Callers may
-still override `analysis_root`, but the default resolves to the bundled
+still override `analysis_root`, but the default now resolves to the bundled
 internal runtime.
 }
 \examples{

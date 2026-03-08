@@ -1,0 +1,12 @@
+# Default manifest for package-backed simulation runs.
+mode: sim
+analysis_name: BigSimsLatest
+grid_file: Data/RunGrids/SimGrids/SimGrid_BigSimsLatest.csv
+outer:
+  - 1
+model_type: null
+respect_grid_model_type: false
+resave_tfrecords: true
+run_figures: false
+tfrecord_dir: Data/RunTFRecords/SimTFRecords/BigSimsLatest
+dry_run: false

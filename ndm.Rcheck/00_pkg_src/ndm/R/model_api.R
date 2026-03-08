@@ -242,7 +242,7 @@ ndm_prepare_data <- function(runtime_env,
 #'
 #' @export
 ndm_build_model <- function(runtime_env,
-                            analysis_root = .ndm_default_analysis_root(),
+                            analysis_root = NULL,
                             model_type = c("DecoderOnly", "NeuralODE"),
                             model_spec = NULL,
                             backbone = "transformer",

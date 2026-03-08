@@ -25,7 +25,7 @@ ndm_create_config(
 \item{backbone}{Backbone family. Phase 1 supports `"transformer"` only.}
 
 \item{analysis_root}{Optional analysis root recorded on the configuration
-object. By default this resolves to the bundled internal runtime.}
+object for the local runtime interface.}
 
 \item{float_type}{Floating point precision used when initializing the backend.
 Use `"32"` or `"64"`.}

@@ -1,7 +1,6 @@
 # Content of SuperLModel_GenFigs.R
 {
-  rm(  list= ls() );options(error=NULL)
-  setwd("~/Dropbox/CovidSuperlearner/")
+  options(error = NULL)
   # install.packages( "~/Documents/helpeRs-software/helpeRs",repos = NULL, type = "source",force = F)
   print("Starting SuperLModel_GenFigs.R")
 
@@ -20,7 +19,9 @@
     ndm_source_extracted("SetupEnv/SuperLModel_helperFxns.R")
     
     # other key hyperparameters
-    SaveFolder <- "./Figures/"; cexAxis <- 1.5; cexLab <- 2; cexMain = 2
+    SaveFolder <- get0("SaveFolder", inherits = TRUE, ifnotfound = "./Figures/")
+    dir.create(SaveFolder, recursive = TRUE, showWarnings = FALSE)
+    cexAxis <- 1.5; cexLab <- 2; cexMain = 2
     
     # load csvs
     print2("---Loading in csv's---")
@@ -734,7 +735,7 @@
                     which.min(abs(x-sort(unique(f2n(res_mat$i_in_sgd)))))]})
     v_ct_ <- 0; for(v_ in v_seq){ 
       v_ct_ <- v_ct_ + 1 
-      pdf(sprintf("~/Dropbox/CovidSuperlearner/Figures/SkillAnimation_%s_%s.pdf",FiguresTag, v_ct_))
+      pdf(file.path(SaveFolder, sprintf("SkillAnimation_%s_%s.pdf", FiguresTag, v_ct_)))
       par(mar=c(5,5,3,1))
       hist( ifelse(f2n(res_mat[j_<-res_mat$i_in_sgd==v_,]$SkillSummary)<0,0,
                    f2n(res_mat$SkillSummary)[j_]), xlim = c(0,1), 

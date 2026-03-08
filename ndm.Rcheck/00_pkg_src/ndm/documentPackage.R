@@ -38,6 +38,15 @@
     invisible(output)
   }
 
+  cleanup_rdpdf_dirs <- function(path) {
+    rd2pdf_dirs <- list.files(path, pattern = "^\\.Rd2pdf", all.files = TRUE, full.names = TRUE)
+    rd2pdf_dirs <- rd2pdf_dirs[dir.exists(rd2pdf_dirs)]
+
+    if (length(rd2pdf_dirs) > 0L) {
+      unlink(rd2pdf_dirs, recursive = TRUE, force = TRUE)
+    }
+  }
+
   script_path <- resolve_script_path()
   package_path <- dirname(script_path)
   setwd(package_path)
@@ -63,7 +72,11 @@
     file.remove(pdf_path)
   }
 
-  run_system_step(c("CMD", "Rd2pdf", sprintf("--output=%s", basename(pdf_path)), package_path))
+  cleanup_rdpdf_dirs(package_path)
+  tryCatch(
+    run_system_step(c("CMD", "Rd2pdf", sprintf("--output=%s", basename(pdf_path)), package_path)),
+    finally = cleanup_rdpdf_dirs(package_path)
+  )
 
   devtools::check(package_path)
 

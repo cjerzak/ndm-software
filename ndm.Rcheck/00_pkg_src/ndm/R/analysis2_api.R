@@ -1,35 +1,26 @@
-#' Deprecated Analysis2 package runners
+#' Legacy Analysis2-compatible package runners
 #'
-#' `ndm` no longer owns runnable Analysis2 orchestration. Use the local
-#' `Analysis2/SuperLModel_MasterReal.R` and `Analysis2/SuperLModel_MasterSim.R`
-#' entrypoints in the project checkout instead.
+#' These wrappers preserve the old `ndm_run_analysis2_*()` entrypoints while
+#' routing them to the package-owned runtime bundle. They accept the same
+#' command-line-style argument vectors as before, but no longer depend on an
+#' external `Analysis2` checkout.
 #'
-#' @param args Character vector of command-line-style arguments. Retained only
-#'   for compatibility with the previous function signatures.
+#' @param args Character vector of command-line-style arguments.
 #'
-#' @returns These functions do not return; they always error with migration
-#'   guidance.
+#' @returns The underlying workflow result, including dry-run previews.
 #'
 #' @examples
 #' \dontrun{
-#' ndm_run_analysis2_real()
+#' ndm_run_analysis2_real("--help")
 #' }
 #'
 #' @export
 ndm_run_analysis2_real <- function(args = commandArgs(TRUE)) {
-  stop(
-    "`ndm_run_analysis2_real()` is deprecated. Run the project-local ",
-    "`Analysis2/SuperLModel_MasterReal.R` entrypoint instead.",
-    call. = FALSE
-  )
+  .ndm_invoke_legacy_analysis2_runner("real", args = args)
 }
 
 #' @rdname ndm_run_analysis2_real
 #' @export
 ndm_run_analysis2_sim <- function(args = commandArgs(TRUE)) {
-  stop(
-    "`ndm_run_analysis2_sim()` is deprecated. Run the project-local ",
-    "`Analysis2/SuperLModel_MasterSim.R` entrypoint instead.",
-    call. = FALSE
-  )
+  .ndm_invoke_legacy_analysis2_runner("sim", args = args)
 }
