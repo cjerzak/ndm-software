@@ -29,13 +29,32 @@ ndm_print <- function(text, quiet = FALSE) {
   invisible(text)
 }
 
-.ndm_default_analysis_root <- function() {
-  option_root <- getOption("ndm.analysis_root")
-  env_root <- Sys.getenv("NDM_ANALYSIS_ROOT", unset = "")
-  if (nzchar(env_root)) {
-    return(env_root)
+.ndm_internal_analysis_root <- function() {
+  analysis_root <- .ndm_inst_path("extdata", "analysis_runtime", "Analysis2")
+  if (!nzchar(analysis_root) || !dir.exists(analysis_root)) {
+    stop(
+      "Internal analysis runtime bundle is missing. Expected: ",
+      analysis_root,
+      call. = FALSE
+    )
   }
-  option_root
+  .ndm_normalize_path(analysis_root, must_work = TRUE)
+}
+
+.ndm_internal_analysis2_api_path <- function() {
+  api_path <- file.path(.ndm_internal_analysis_root(), "SetupEnv", "Analysis2_api.R")
+  if (!file.exists(api_path)) {
+    stop(
+      "Internal Analysis2 API bundle is missing. Expected: ",
+      api_path,
+      call. = FALSE
+    )
+  }
+  .ndm_normalize_path(api_path, must_work = TRUE)
+}
+
+.ndm_default_analysis_root <- function() {
+  .ndm_internal_analysis_root()
 }
 
 .ndm_normalize_path <- function(path, must_work = TRUE) {
@@ -78,11 +97,7 @@ ndm_print <- function(text, quiet = FALSE) {
 .ndm_resolve_analysis_root <- function(analysis_root = .ndm_default_analysis_root(),
                                        must_work = TRUE) {
   if (is.null(analysis_root) || !nzchar(analysis_root)) {
-    stop(
-      "`analysis_root` must point to a local Analysis or Analysis2 directory. ",
-      "Set it explicitly or via `options(ndm.analysis_root=...)` / `NDM_ANALYSIS_ROOT`.",
-      call. = FALSE
-    )
+    return(.ndm_default_analysis_root())
   }
 
   .ndm_normalize_path(analysis_root, must_work = must_work)
@@ -135,7 +150,9 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
 
-  if (!is.null(analysis_root) && nzchar(analysis_root)) {
+  if (is.null(analysis_root) || !nzchar(analysis_root)) {
+    analysis_root <- .ndm_default_analysis_root()
+  } else {
     analysis_root <- .ndm_resolve_analysis_root(analysis_root, must_work = FALSE)
   }
 

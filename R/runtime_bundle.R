@@ -1,7 +1,8 @@
 #' Inspect a local analysis runtime bundle
 #'
-#' `ndm` no longer vendors the executable analysis runtime. Callers must point
-#' the runtime helpers at a local `Analysis` or `Analysis2` tree.
+#' `ndm` ships a package-owned executable analysis runtime bundle. Callers may
+#' still override `analysis_root`, but the default now resolves to the bundled
+#' internal runtime.
 #'
 #' @param analysis_root Path to the local analysis runtime root.
 #'
@@ -10,7 +11,7 @@
 #'
 #' @examples
 #' \dontrun{
-#' paths <- ndm_runtime_paths("~/Dropbox/CovidSuperlearner/Analysis2")
+#' paths <- ndm_runtime_paths()
 #' names(paths)
 #' }
 #'
@@ -167,7 +168,7 @@ ndm_set_runtime_globals <- function(env, values, overwrite = TRUE) {
 #' @examples
 #' \dontrun{
 #' env <- ndm_new_runtime_env()
-#' ndm_load_runtime("~/Dropbox/CovidSuperlearner/Analysis2", env = env)
+#' ndm_load_runtime(env = env)
 #' }
 #'
 #' @export

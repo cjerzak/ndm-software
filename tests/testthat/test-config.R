@@ -32,3 +32,9 @@ test_that("NeuralODE remains a supported model type", {
 
   expect_equal(cfg$model_type, "NeuralODE")
 })
+
+test_that("default configs use the bundled internal runtime", {
+  cfg <- ndm_create_config()
+
+  expect_equal(cfg$analysis_root, ndm:::.ndm_internal_analysis_root())
+})

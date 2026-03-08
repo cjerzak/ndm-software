@@ -1,0 +1,452 @@
+\documentclass[11pt,letterpaper]{article}
+
+%% === margins ===
+\addtolength{\hoffset}{-0.8in} \addtolength{\voffset}{-0.8in}
+\addtolength{\textwidth}{1.6in} \addtolength{\textheight}{1.6in}
+
+%% JASA format with 12pt, spacingset = 1.83
+%\addtolength{\hoffset}{-0.3in} \addtolength{\voffset}{-1.2in}
+%\addtolength{\textwidth}{.6in} \addtolength{\textheight}{2.1in}
+\pdfminorversion=4
+
+%% === basic packages ===
+\usepackage{lmodern}% http://ctan.org/pkg/lm
+\usepackage{latexsym,multirow}
+\usepackage{amssymb,amsmath,bm}
+\usepackage{bigints}
+\usepackage{comment}
+\usepackage{bbm} % for a indicator function
+\usepackage{graphicx,subfigure}
+\usepackage[color,all,import,arrow]{xy}
+\usepackage{enumerate}
+\usepackage{verbatim}
+\usepackage{mathtools}
+\usepackage{longtable}
+\usepackage{fancyvrb}
+\newcommand{\Neural1}[1]{\textsf{Neural}_1\{#1\}}
+\newcommand{\Neural2}[1]{\textsf{Neural}_2\{#1\}}
+
+% bold symbol in headers
+\usepackage{unicode-math}
+
+
+%% === graphical packages ===
+\usepackage{placeins}
+
+%% === bibliography packages ===
+%\usepackage{natbib}
+\usepackage[natbib=true,minnames=15,maxnames=15,backend=biber,style=authoryear-luh-ipw]{biblatex}
+\addbibresource{mybib.bib}
+% \bibliographystyle{pa}
+
+%% === hyperref options ===
+% \usepackage{color}
+\usepackage[pdftex, bookmarksopen=true, bookmarksnumbered=true,
+pdfstartview=FitH, breaklinks=true, urlbordercolor={0 1 0}, citebordercolor={0 0 1}]{hyperref}
+\usepackage{colortbl}
+\usepackage{subfigure}
+
+%% ==clean up hanging first page==
+\usepackage{atbegshi}% http://ctan.org/pkg/atbegshi
+\AtBeginDocument{\AtBeginShipoutNext{\AtBeginShipoutDiscard}}
+
+% === dcolumn package ===
+\usepackage{dcolumn}
+\newcolumntype{.}{D{.}{.}{-1}}
+\newcolumntype{d}[1]{D{.}{.}{#1}}
+
+% === figure path ===
+\graphicspath{{./Figures/}}
+
+% === caption ===
+\usepackage{caption}
+
+% == tikzpicture ==
+\usepackage[T1]{fontenc}
+\usepackage{tikz}
+\usepackage{qtree}
+\usepackage{comment}
+\usetikzlibrary{arrows}
+\usetikzlibrary{positioning}
+\usetikzlibrary{matrix}
+\usetikzlibrary{bayesnet}
+
+% == Algorithm
+%\usepackage[ruled,vlined]{algorithm2e}
+%FOR ALGORITHM 
+\usepackage{algorithmicx}
+\usepackage{algorithm} 
+\newcommand*\Let[2]{\State #1 $\gets$ #2}
+\algrenewcommand\alglinenumber[1]{
+    {\sf\footnotesize\addfontfeatures{Colour=888888,Numbers=Monospaced}#1}}
+\algrenewcommand\algorithmicrequire{\textbf{Precondition:}}
+\algrenewcommand\algorithmicensure{\textbf{Postcondition:}}
+\usepackage[noend]{algpseudocode}
+%END FOR ALGORITHM 
+
+% === theorem package ===
+\usepackage{theorem}
+\theoremstyle{plain}
+\theoremheaderfont{\scshape}
+\newtheorem{assumption}{Assumption}
+\newtheorem{example}{Example}
+\newtheorem{definition}{Definition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{property}{Property}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{defi}{Definition}
+\newtheorem{thm}{Theorem}
+\newtheorem{lemma}{Lemma}
+
+% === some special symbols
+\newcommand{\iid}{\stackrel{\rm i.i.d.}{\sim}}
+%\newcommand{\indep}{\stackrel{\rm indep.}{\sim}}
+\newcommand{\indep}{\mbox{$\perp\!\!\!\perp$}}
+\newcommand{\qed}{\hfill \ensuremath{\Box}}
+\newcommand{\ind}{\mbox{$\perp\!\!\!\perp$}}
+\newcommand{\nind}{\mbox{$\not\perp\!\!\!\perp$}}
+\def\independenT#1#2{\mathrel{\rlap{$#1#2$}\mkern2mu{#1#2}}}
+\DeclareMathOperator{\sgn}{sgn}
+\DeclareMathOperator{\diag}{diag}
+\providecommand{\norm}[1]{\lVert#1\rVert}
+
+% ==== rotating package ===
+\usepackage{rotating}
+
+% ==== dotted lines in tables ===
+\usepackage{arydshln}
+
+% == spacing between sections and subsections
+\usepackage[compact]{titlesec}
+%\usepackage{times}
+
+% == control space within footnote
+\usepackage{setspace}
+\usepackage[bottom]{footmisc}
+\renewcommand{\footnotelayout}{\setstretch{1.1}}% Footnotes are \setstretch{1.5}
+\setlength{\footnotemargin}{1mm}
+
+
+\allowdisplaybreaks
+
+\newcommand\spacingset[1]{\renewcommand{\baselinestretch}%
+{#1}\small\normalsize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% === submission
+\newcommand{\blind}{1}
+
+\def\letas{\mathrel{\mathop{=}\limits^{\triangle}}}
+
+\newcommand*{\QEDB}{\hfill\ensuremath{\square}}
+\newcommand{\SimDateOne}{2022DASH09DASH30}
+\newcommand{\SimDateTwo}{2022DASH08DASH10}
+\newcommand{\red}{\color{red}}
+\newcommand{\blue}{\color{blue}}
+\newcommand{\Beta}{\textsf{Beta}}
+\newcommand{\Binomial}{\text{Binomial}}
+\newcommand{\Bern}{\textsf{Bernoulli}}
+\newcommand{\Expo}{\textsf{Expo}}
+\newcommand{\Pois}{\textsf{Pois}}
+\newcommand{\Unif}{\textsf{Uniform}}
+\newcommand{\Normal}{\mathcal{N}}
+\newcommand{\Gammad}{\textsf{Gamma}}
+\newcommand{\logit}{\text{logit}}
+\newcommand{\expit}{\text{expit}}
+\newcommand{\mexpit}{\text{mexpit}}
+\newcommand{\Dir}{\textsf{Dirichlet}}
+\newcommand{\Multi}{\textsf{Multi}}
+\newcommand{\Cat}{\textsf{Categorical}}
+\newcommand{\Neural}[1]{\textsf{Neural}\{#1\}}
+
+\newcommand{\pr}{\text{pr}}
+\newcommand{\Var}{\textrm{Var}}
+\newcommand{\Cov}{\text{Cov}}
+\newcommand{\softmax}{\textrm{softmax}}
+\newcommand{\sumN}{\sum_{i=1}^N}
+\newcommand{\wt}{\widetilde}
+
+\newcommand{\Prr}{\textrm{Pr}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\bX}{\mathbf{X}}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\bW}{\mathbf{W}}
+\newcommand{\bw}{\mathbf{w}}
+\newcommand{\bs}{\mathbf{s}}
+\newcommand{\bc}{\mathbf{c}}
+\newcommand{\bI}{\mathbf{I}}
+\newcommand{\bZero}{\mathbf{0}}
+\newcommand{\bM}{\mathbf{M}}
+\newcommand{\bo}{\mathbf{o}}
+\newcommand{\bO}{\mathbf{O}}
+\newcommand{\SoftPlus}{\textrm{SoftPlus}}
+\newcommand{\Sigmoid}{\textrm{Sigmoid}}
+\newcommand{\InvSoftMax}{\textrm{InvSoftMax}}
+\newcommand{\InvSoftPlus}{\textrm{InvSoftPlus}}
+\newcommand{\InvSigmoid}{\textrm{InvSigmoid}}
+\newcommand{\InvSoftMax}{\textrm{InvSoftMax}}
+\newcommand{\bQ}{\mathbf{Q}}
+\newcommand{\bV}{\mathbf{V}}
+\newcommand{\bU}{\mathbf{U}}
+\newcommand{\bu}{\mathbf{u}}
+\newcommand{\bp}{\textbf{p}}
+\newcommand{\bP}{\textbf{P}}
+\newcommand{\ATE}{\textsf{ATE}}
+\newcommand{\bepsilon}{\bm{\epsilon}}
+\newcommand{\boldeta}{\bm{\eta}}
+\newcommand{\Dist}[1]{\textrm{#1}}
+\newcommand{\Evolve}[1]{\frac{\textrm{d}#1}{\textrm{d}t}}
+\newcommand{\Observe}[1]{\textrm{Observed data }#1}
+\newcommand{\bpi}{\boldsymbol{\pi}}
+\newcommand{\bPi}{\boldsymbol{\Pi}}
+\newcommand{\gst}{g_{\textrm{s.t.}}}
+\newcommand{\balpha}{\boldsymbol{\alpha}}
+\newcommand{\btheta}{\boldsymbol{\theta}}
+\newcommand{\bTheta}{\boldsymbol{\Theta}}
+\newcommand{\bgamma}{\boldsymbol{\gamma}}
+\newcommand{\ob}{^\textrm{Obs}}
+\newcommand{\bv}{\mathbf{v}}
+\newcommand{\bC}{\mathbf{C}}
+\newcommand{\bz}{\mathbf{z}}
+\newcommand{\bZ}{\mathbf{Z}}
+\newcommand{\bY}{\mathbf{Y}}
+\newcommand{\by}{\mathbf{y}}
+\newcommand{\dd}{\textrm{d}}
+\newcommand{\bT}{\mathbf{T}}
+\newcommand{\bt}{\mathbf{t}}
+
+\newcommand{\bA}{\bm{A}}
+\newcommand{\ba}{\bm{a}}
+\newcommand{\bh}{\bm{h}}
+\newcommand{\bD}{\bm{D}}
+\newcommand{\bd}{\bm{d}}
+\newcommand{\bd}{\bm{d}}
+\newcommand{\cI}{\mathcal{I}}
+\newcommand{\cL}{\mathcal{L}}
+\newcommand{\cU}{\mathcal{U}}
+\newcommand{\cW}{\mathcal{W}}
+\newcommand{\cV}{\mathcal{V}}
+\newcommand{\cZ}{\mathcal{Z}}
+\newcommand{\cD}{\mathcal{D}}
+\newcommand{\oD}{\overline{D}}
+\newcommand{\oY}{\overline{Y}}
+\newcommand{\bone}{\mathbf{1}}
+
+\newcommand{\bbeta}{\boldsymbol{\beta}}
+\newcommand{\bsigma}{\boldsymbol{\sigma}}
+\newcommand{\blambda}{\boldsymbol{\lambda}}
+\newcommand{\bphi}{\boldsymbol{\phi}}
+\newcommand{\bpsi}{\boldsymbol{\psi}}
+
+% ==Cross Referencing Different Docs
+\usepackage{xr}
+%\externaldocument{causalprob-app}
+
+\begin{document} 
+
+\newcommand{\tit}{The Bayesian Modeling of Epidemiological Systems: Combining Machine Learning and Prior Science}
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+\spacingset{1.25}
+
+\if0\blind
+
+{\title{\bf\tit\thanks{Thank you to X, Y, and Z for helpful comments on previous versions of this paper.}}
+  \author{Author A\thanks{Assistant Professor, Department of
+      Government, University of Texas at Austin.
+158 W 21st, Austin, TX 78712.
+      Email:
+      \href{mailto:connor.jerzak@austin.utexas.edu}{connor.jerzak@austin.utexas.edu} URL:
+      \href{https://www.connorjerzak.com}{ConnorJerzak.com}}
+\and
+Authors
+
+  \date{
+    \today
+  }
+}
+}
+
+\fi
+
+
+\if1\blind
+\title{\bf \tit}
+\fi
+
+\maketitle
+
+\pdfbookmark[1]{Title Page}{Title Page}
+
+\thispagestyle{empty}
+\setcounter{page}{0}
+         
+\begin{abstract}
+\noindent Abstract here 
+\vspace{.25in}
+\\ \noindent {\bf Keywords:}  Epidemiological modeling; Machine learning; COVID-19; Bayesian methods  \end{abstract}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\clearpage
+\spacingset{1.83}
+\singlespacing 
+\tableofcontents
+
+\section{Introduction} 
+Let $\gst(a)$ return the $q$ that solves 
+\begin{align*}
+X &\sim \textrm{Distribution}(q)
+\\\textrm{s.t. } \mathbb{E}[X] &= a.
+\end{align*}
+Why do we need something like this? Because $\E[f(X)] \ne \E[X]$, and the way we impose constraints on the parameters (e.g., to be positive) act like $f(\cdot)$'s.
+\\ \vspace{0.1cm}
+\\ \Verb|%%%START BAYES ODE%%%|
+%%%START BAYES ODE%%%
+
+%%%Priors 
+\begin{itemize}
+\item $N \leftarrow 10000$  % population scaling factor
+\item $\InvSoftPlus(\beta_{l}) \sim \Dist{Normal}(\gst(1/5),0.1)$ % transmission rate (# of people infected infects per time unit, or more precisely, fraction of population infected by a person times scaling rate ) (?)
+\item $\InvSoftPlus(\sigma) \sim \Dist{Normal}(\gst(1/2),0.1)$ % time rate, exposed to infected (1 over latency time)
+\item $\InvSoftPlus(\gamma) \sim \Dist{Normal}(\gst(1/1),0.1)$ % time rate, infected to recovered (1 over recovery time)
+\item $\InvSoftPlus(\xi) \sim \Dist{Normal}(\gst(1/20),0.3)$ % time rate, recovered to sus (1 over immune time)
+\item $\InvSigmoid(\delta) \sim \Dist{Normal}(\gst(0.01),0.0001)$ % mortality rate (assumed to be the same as the birth rate)
+  \item $s_{l0} \sim \Dist{Normal}(0, 0.1)$ % initial sus frac (multiply by N to get number) 
+\item $e_{l0} \sim \Dist{Normal}(0, 0.1)$ % initial exposed frac (multiply by N to get total number) 
+\item $i_{l0}\sim \Dist{Normal}(0, 0.1)$ % initial infected frac (multiply by N to get total number) 
+\item $r_{l0} \sim \Dist{Normal}(0, 0.1)$  %initial recovered frac (multiply by N to get total number) 
+\item $\Evolve{s_l} = -\SoftPlus( \beta_{l} ) \cdot i_l \cdot s_l \cdot \frac{1}{N} + \xi \cdot r_l$ 
+\item $\Evolve{e_l} = \SoftPlus( \beta_{l} ) \cdot  i_l \cdot  s_l \cdot \frac{1}{N} - \sigma \cdot  e_l$
+\item $\Evolve{i_l} = \sigma \cdot e_l - \gamma \cdot  i_l$ % if set too small, values clipped
+\item $\Evolve{r_l} = \gamma \cdot  i_l - \xi \cdot r_l$
+ \item $\Evolve{\beta_l} = \Neural1{ p_l , \beta_l , s_l , e_l , i_l , r_l }$
+ \item $\Evolve{p_l} = \Neural1{ p_l , \beta_l , s_l , e_l , i_l , r_l }$
+\item $\Observe = \Sigmoid( \delta ) \cdot i_l $ % deaths 
+%\item $\Observe = p_l$
+\end{itemize}
+%%%END BAYES ODE%%%
+
+\Verb|%%%END BAYES ODE%%%|
+
+\subsection{Additional Information} 
+\begin{itemize}
+\item Surrogate posterior mean for parameters (e.g., $\sigma$) and initial conditions (e.g., $i_o$) obtained via $f(\mathbf{D})$, where $f$ is a parametric machine learning model  and $\mathbf{D}$ is input data.
+\begin{itemize}
+\item Current $f(\cdot)$ is a transformer + LSTM + dense neural network 
+\end{itemize}
+\item For time-dependent parameters (e.g., $\beta_t$): 
+\begin{itemize}
+\item Cannot easily apply continuous time $\beta_t$ since unclear how prior would be incorporated across continuous time domain 
+\item Instead: discrete resolution $\beta_t$ 
+\begin{itemize}
+\item Example: in a year, predict (1st, 2nd, 3rd, 4th quarter $\beta$ values)
+\item Interpolation used between $t$ slices 
+\end{itemize}
+\end{itemize}
+\end{itemize}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.45\linewidth]{Screenshot 2023-01-04 at
+     8.54.33 AM.png}
+   \includegraphics[width=0.45\linewidth]{Screenshot 2023-01-04 at 8.55.10 AM.png}
+\end{center}
+\caption{Predicted $\beta_t$'s. }%\label{fig}
+\end{figure}
+
+
+
+{\sc Prior Calibration}
+\begin{itemize}
+\item Priors are important 
+\item Reasonable priors over parameters may induce unreasonable prior predictive distribution 
+\begin{itemize}
+\item Complex aggregation of parameters not easy to conceptualize via individual parameter priors 
+\item Adding joint correlations in prior usually not done due to a lack of information
+\item One way to explore ``effects'' of prior on induced predictive distribution: 
+\begin{itemize}
+\item Calculate $\E_{\textrm{Prior}}\left[ \sum_{i=1}^N \log(p(Y_i))\right]$;
+\begin{itemize}
+\item This is the expected likelihood of the data under the prior specification. 
+\item Hopefully, the priors are good and $\E_{\textrm{Prior}}[ p(Y_i)]$ is large 
+\end{itemize}
+\item Calculate $\nabla_{\textrm{Prior Parameters}} \E_{\textrm{Prior}}\left[ \sum_{i=1}^N \log(p(Y_i))\right]$
+\begin{itemize}
+\item {\it ``Derivative of the expected likelihood, with respect to the parameters specifying the priors'' }
+\item This quantifies how sensitive the expected likelihood is to changes in a given prior parameter. 
+\item In the example from the real data, we see that the expected likelihood is most sensitive to choice of $\sigma$ 
+\item If priors happened to be at their optimal values $\leadsto$ small gradient values 
+\item Big gradient values indicate possibility of poor prior misspecification 
+\item Calculated via automatic differentiation with re-parameterized sampling (approach also used in variational inference estimation of approximate posterior)
+\end{itemize}
+\end{itemize}
+\end{itemize}
+\end{itemize}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 8.44.37 AM.png}
+\end{center}
+\caption{Some of the model specifications. }%\label{fig}
+\end{figure}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 8.42.51 AM.png}
+\end{center}
+\caption{Model results on the real data. Prior period +cumulative infections/hospitalizations/deaths, as well as stringency index used in ML model. $\beta_t$ here has a resolution of 6 (6 distinct $\beta_t$'s predicted, interpolations for in-between periods) }%\label{fig}
+\end{figure}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 8.42.57 AM.png}
+\end{center}
+\caption{Model results on the real data. Prior period +cumulative infections/hospitalizations/deaths, as well as stringency index used in ML model. }%\label{fig}
+\end{figure}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 8.43.05 AM.png}
+\end{center}
+\caption{Model results on the real data. Prior period +cumulative infections/hospitalizations/deaths, as well as stringency index used in ML model. }%\label{fig}
+\end{figure}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 8.43.28 AM.png}
+\end{center}
+\caption{Model results on the real data. Prior period +cumulative infections/hospitalizations/deaths, as well as stringency index used in ML model. }%\label{fig}
+\end{figure}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 8.43.46 AM.png}
+\end{center}
+\caption{Model results on the real data. Prior period +cumulative infections/hospitalizations/deaths, as well as stringency index used in ML model. }%\label{fig}
+\end{figure}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 12.22.08 PM.png}
+\end{center}
+\caption{Gradient analysis for prior mean terms. }%\label{fig}
+\end{figure}
+
+\begin{figure}[H]
+ \begin{center}
+   \includegraphics[width=0.95\linewidth]{Screenshot 2023-01-04 at 1.02.37 PM.png}
+\end{center}
+\caption{Gradient analysis for prior variance-covariance terms. }%\label{fig}
+\end{figure}
+
+\end{document}
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: t
+%%% End:

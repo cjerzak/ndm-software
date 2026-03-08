@@ -260,7 +260,6 @@ ndm_skip_if_no_sim_backend <- function() {
   skip_if_not_installed("progress")
   skip_if_not_installed("zip")
   skip_if_not_installed("zoo")
-  skip_if(is.null(runtime_fixture_analysis_root()), "Set `NDM_TEST_ANALYSIS_ROOT` or `options(ndm.test_analysis_root=...)` for the integration fit test.")
 
   backend_ready <- ndm_check_backend(
     conda_env = "jax_cpu",

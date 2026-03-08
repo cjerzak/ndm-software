@@ -78,14 +78,15 @@ Each function on this page invisibly returns `env` after sourcing the
   requested runtime component.
 }
 \description{
-These helpers source caller-supplied analysis runtime files into a dedicated
-environment. They are lower-level building blocks used by
+These helpers source analysis runtime files into a dedicated
+environment. By default they resolve to the package-owned internal runtime
+bundle. They are lower-level building blocks used by
 `ndm_prepare_runtime()` and `ndm_fit()`.
 }
 \examples{
 \dontrun{
 env <- ndm_new_runtime_env()
-ndm_load_runtime("~/Dropbox/CovidSuperlearner/Analysis2", env = env)
+ndm_load_runtime(env = env)
 }
 
 }

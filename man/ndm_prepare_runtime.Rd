@@ -40,8 +40,9 @@ runtime code is sourced.}
   the requested data generator.
 }
 \description{
-These wrappers load caller-supplied runtime scripts into an isolated
-environment and then source the selected data generator.
+These wrappers load the analysis runtime scripts into an isolated
+environment and then source the selected data generator. By default they use
+the package-owned bundled runtime.
 }
 \examples{
 env <- ndm_new_runtime_env()
