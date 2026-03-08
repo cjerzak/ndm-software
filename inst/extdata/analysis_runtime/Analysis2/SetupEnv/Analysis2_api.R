@@ -1500,6 +1500,13 @@ analysis2_real_runtime_globals <- function(row_values,
   diffrax <- runtime_env$diffrax
   vi_total_times <- n_times_lookahead
   n_time_steps_sim <- (n_times_lookahead + abs(max_times_past)) * 2L
+  max_time_index <- if ("time_id" %in% names(state$truth_df_red)) {
+    analysis2_as_int(max(state$truth_df_red$time_id, na.rm = TRUE))
+  } else if ("time_id" %in% names(state$input_df_red_full)) {
+    analysis2_as_int(max(state$input_df_red_full$time_id, na.rm = TRUE))
+  } else {
+    max(0L, max_times_past + n_times_lookahead - 1L)
+  }
 
   globals <- list(
     AnalysisName = analysis_name,
@@ -1552,7 +1559,10 @@ analysis2_real_runtime_globals <- function(row_values,
     specificOptState = TRUE,
     SharedListNames = c("TS"),
     nOutcomes = 1L,
+    AppendTimeEmbeds = TRUE,
+    AppendPlaceEmbeds = TRUE,
     nPlaces = length(unique(state$truth_df_red$location_id)),
+    MaxTimeIndex = max_time_index,
     useLSTM = FALSE,
     doGrid = TRUE,
     nRealGridSeed = 128L,
@@ -1624,6 +1634,7 @@ analysis2_sim_runtime_globals <- function(row_values,
   n_time_steps_sim <- as.integer((n_times_past + n_times_lookahead) * 4L)
   jnp <- runtime_env$jnp
   diffrax <- runtime_env$diffrax
+  max_time_index <- max(0L, n_time_steps_sim - 1L)
 
   list(
     AnalysisName = analysis_name,
@@ -1658,6 +1669,7 @@ analysis2_sim_runtime_globals <- function(row_values,
     nOutcomes = 1L,
     AppendTimeEmbeds = FALSE,
     AppendPlaceEmbeds = FALSE,
+    MaxTimeIndex = max_time_index,
     nPlaces = 1L,
     nTimesPast = n_times_past,
     nTimesLookahead = n_times_lookahead,

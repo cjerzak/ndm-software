@@ -6,7 +6,8 @@
 
   # clean environment
   gc();py_gc$collect()
-  NTimeGlobalNeuralMax <- 200L
+  NTimeGlobalNeuralMax <- ai(max(c(0L, f2n(get0("MaxTimeIndex", ifnotfound = nTimesTotal - 1L))), na.rm = TRUE))
+  NTimeGlobalNeuralSteps <- NTimeGlobalNeuralMax + 1L
 
   # initializers
   NeuralODEClipAt <- jnp$array(100.)
@@ -15,10 +16,10 @@
   NeuralODE_InitScaler_PandemicContext <- InvSoftPlus( 1 * 1/sqrt( GlobalNeuralEmbedDim ) )$tolist() 
 
   NeuralODE_NonLinearPathScaler_SliceContext <- InvSoftPlus(  1 * 1/sqrt( nTimesTotal)  )$tolist()
-  NeuralODE_NonLinearPathScaler_PandemicContext <- InvSoftPlus( 1 * 1/sqrt( NTimeGlobalNeuralMax )  )$tolist()
+  NeuralODE_NonLinearPathScaler_PandemicContext <- InvSoftPlus( 1 * 1/sqrt( NTimeGlobalNeuralSteps )  )$tolist()
 
   NeuralODE_OutputScaler_SliceContext <- InvSoftPlus( 1 * 1/sqrt(  nTimesTotal ) )$tolist()
-  NeuralODE_OutputScaler_PandemicContext <- InvSoftPlus( 1 * 1/sqrt( NTimeGlobalNeuralMax ) )$tolist()
+  NeuralODE_OutputScaler_PandemicContext <- InvSoftPlus( 1 * 1/sqrt( NTimeGlobalNeuralSteps ) )$tolist()
 
   PriorText <- unlist(read.table(model_tex_loc, header = F,  sep="\t"))
   names(PriorText) <- NULL
@@ -239,7 +240,7 @@
       )
 
       # setup ODE
-      VI_SaveAt_ODE_GlobalNeural <- diffrax$SaveAt(ts = jnp$array(  1:(NTimeGlobalNeuralMax )))
+      VI_SaveAt_ODE_GlobalNeural <- diffrax$SaveAt(ts = jnp$array(  0L:NTimeGlobalNeuralMax ))
     }
   }
   if(temporalModelType == "linearInterpolation"){
