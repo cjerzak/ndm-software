@@ -19,19 +19,19 @@ Type 'q()' to quit R.
 > library(ndm)
 > 
 > test_check("ndm")
-[2026-03-07 18:33:11] Starting Analysis2 SuperLModel_MasterReal.R
-[2026-03-07 18:33:11] Starting Analysis2 SuperLModel_MasterSim.R
-[2026-03-07 18:33:11] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
-[2026-03-07 18:33:11] Starting Analysis2 SuperLModel_MasterReal.R
-[2026-03-07 18:33:11] Starting Analysis2 SuperLModel_MasterSim.R
-[ FAIL 0 | WARN 0 | SKIP 3 | PASS 99 ]
+[2026-03-07 21:48:03] Starting Analysis2 SuperLModel_MasterReal.R
+[2026-03-07 21:48:03] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-07 21:48:03] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
+[ FAIL 0 | WARN 0 | SKIP 4 | PASS 79 ]
 
-══ Skipped tests (3) ═══════════════════════════════════════════════════════════
-• On CRAN (3): 'test-sim-fit.R:272:3', 'test-sim-fit.R:301:3',
-  'test-sim-fit.R:333:3'
+══ Skipped tests (4) ═══════════════════════════════════════════════════════════
+• On CRAN (3): 'test-sim-fit.R:268:3', 'test-sim-fit.R:297:3',
+  'test-sim-fit.R:329:3'
+• README.md is not available in the current test environment. (1):
+  'test-readme-tutorial.R:2:3'
 
-[ FAIL 0 | WARN 0 | SKIP 3 | PASS 99 ]
+[ FAIL 0 | WARN 0 | SKIP 4 | PASS 79 ]
 > 
 > proc.time()
    user  system elapsed 
-  0.591   0.074   0.664 
+  0.633   0.079   0.711 

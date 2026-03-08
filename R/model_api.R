@@ -11,7 +11,7 @@
 #'   runtime code is sourced.
 #'
 #' @returns `ndm_prepare_runtime()` invisibly returns `runtime_env` after
-#'   loading the helper and backend code from `config$analysis_root`.
+#'   loading the package-owned helper and backend code.
 #'
 #' @examples
 #' env <- ndm_new_runtime_env()
@@ -31,7 +31,7 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
   ndm_set_runtime_globals(runtime_env, as.list(config))
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_load_runtime(
-    analysis_root = config$analysis_root,
+    analysis_root = .ndm_internal_analysis_root(),
     env = runtime_env,
     float_type = config$float_type,
     force_to_gpu = config$force_to_gpu,
@@ -42,7 +42,6 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
 
 #' @rdname ndm_prepare_runtime
 #'
-#' @param analysis_root Root directory for the local analysis runtime.
 #' @param generator Which data generator to source into `runtime_env`.
 #'
 #' @returns `ndm_prepare_data()` invisibly returns `runtime_env` after sourcing
@@ -54,7 +53,6 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
 #'
 #' @export
 ndm_prepare_data <- function(runtime_env,
-                             analysis_root = .ndm_default_analysis_root(),
                              generator = c("sim", "real"),
                              runtime_globals = list()) {
   if (!is.environment(runtime_env)) {
@@ -64,7 +62,7 @@ ndm_prepare_data <- function(runtime_env,
   generator <- match.arg(generator)
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_source_runtime_data(
-    analysis_root = analysis_root,
+    analysis_root = .ndm_internal_analysis_root(),
     env = runtime_env,
     generator = generator
   )
@@ -83,21 +81,6 @@ ndm_prepare_data <- function(runtime_env,
   }
 
   stop("`", arg, "` must be an `ndm_model`, an `ndm_trained_model`, or a prepared runtime environment.", call. = FALSE)
-}
-
-.ndm_runtime_analysis_root <- function(env, analysis_root = NULL) {
-  if (!is.null(analysis_root) && nzchar(analysis_root)) {
-    return(.ndm_resolve_analysis_root(analysis_root, must_work = TRUE))
-  }
-
-  if (is.environment(env) && exists("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE)) {
-    env_root <- get("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE)
-    if (is.character(env_root) && length(env_root) == 1L && nzchar(env_root)) {
-      return(.ndm_resolve_analysis_root(env_root, must_work = TRUE))
-    }
-  }
-
-  .ndm_default_analysis_root()
 }
 
 .ndm_require_runtime_bindings <- function(env, names, context) {
@@ -201,7 +184,6 @@ ndm_prepare_data <- function(runtime_env,
 #'   `ndm_create_config()`.
 #' @param runtime_env Runtime environment containing the sourced legacy helper
 #'   code and data globals.
-#' @param analysis_root Root directory for the local analysis runtime.
 #' @param model_type Model family to build. Either `"DecoderOnly"` or
 #'   `"NeuralODE"`.
 #' @param model_spec Optional `ndm_model_spec` object used to override the model
@@ -242,7 +224,6 @@ ndm_prepare_data <- function(runtime_env,
 #'
 #' @export
 ndm_build_model <- function(runtime_env,
-                            analysis_root = NULL,
                             model_type = c("DecoderOnly", "NeuralODE"),
                             model_spec = NULL,
                             backbone = "transformer",
@@ -254,7 +235,7 @@ ndm_build_model <- function(runtime_env,
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
 
-  analysis_root <- .ndm_runtime_analysis_root(runtime_env, analysis_root = analysis_root)
+  analysis_root <- .ndm_internal_analysis_root()
   .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   ndm_set_runtime_globals(runtime_env, runtime_globals)
@@ -281,7 +262,7 @@ ndm_build_model <- function(runtime_env,
       .ndm_source_runtime_file(paths$build_model, runtime_env),
       error = function(e) {
         stop(
-          "Failed to source the model builder from `analysis_root`. This assumes the upstream setup and data globals are already present in `runtime_env`.\n",
+          "Failed to load the package-owned model builder. This assumes the upstream setup and data globals are already present in `runtime_env`.\n",
           "Original error: ", conditionMessage(e),
           call. = FALSE
         )
@@ -306,7 +287,6 @@ ndm_build_model <- function(runtime_env,
   structure(
     list(
       env = runtime_env,
-      analysis_root = paths$analysis_root,
       model_type = model_type,
       backbone = backbone,
       model_spec = model_spec,
@@ -485,15 +465,11 @@ ndm_loss <- function(x,
 #' @rdname ndm_build_model
 #' @export
 ndm_train <- function(x,
-                      analysis_root = NULL,
                       run_define = TRUE,
                       run_loop = TRUE) {
   runtime_env <- .ndm_runtime_env_from_object(x)
 
-  analysis_root <- .ndm_runtime_analysis_root(
-    runtime_env,
-    analysis_root = analysis_root %||% if (inherits(x, "ndm_model")) x$analysis_root else NULL
-  )
+  analysis_root <- .ndm_internal_analysis_root()
   .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
 
@@ -507,7 +483,7 @@ ndm_train <- function(x,
     tryCatch(
       .ndm_source_runtime_file(paths$train_define, runtime_env),
       error = function(e) {
-        stop("Failed while sourcing training definition code from `analysis_root`: ", conditionMessage(e), call. = FALSE)
+        stop("Failed while loading package-owned training definition code: ", conditionMessage(e), call. = FALSE)
       }
     )
   }
@@ -516,7 +492,7 @@ ndm_train <- function(x,
     tryCatch(
       .ndm_source_runtime_file(paths$train_do, runtime_env),
       error = function(e) {
-        stop("Failed while sourcing training loop code from `analysis_root`: ", conditionMessage(e), call. = FALSE)
+        stop("Failed while loading package-owned training loop code: ", conditionMessage(e), call. = FALSE)
       }
     )
   }
@@ -532,7 +508,6 @@ ndm_train <- function(x,
   structure(
     list(
       env = runtime_env,
-      analysis_root = paths$analysis_root,
       model = if (exists("ModelList", envir = runtime_env, inherits = FALSE)) {
         get("ModelList", envir = runtime_env, inherits = FALSE)
       } else {
@@ -589,13 +564,11 @@ ndm_fit <- function(config = ndm_create_config(),
   )
   ndm_prepare_data(
     runtime_env = runtime_env,
-    analysis_root = config$analysis_root,
     generator = data_generator,
     runtime_globals = data_globals
   )
   model <- ndm_build_model(
     runtime_env = runtime_env,
-    analysis_root = config$analysis_root,
     model_type = config$model_type,
     model_spec = model_spec,
     backbone = config$backbone,
@@ -606,7 +579,6 @@ ndm_fit <- function(config = ndm_create_config(),
   }
   ndm_train(
     model,
-    analysis_root = config$analysis_root,
     run_define = run_define,
     run_loop = run_loop
   )

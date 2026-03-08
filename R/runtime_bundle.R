@@ -15,7 +15,7 @@
 #' names(paths)
 #' }
 #'
-#' @export
+#' @noRd
 ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
   analysis_root <- .ndm_resolve_analysis_root(analysis_root, must_work = TRUE)
   project_root <- dirname(analysis_root)
@@ -171,7 +171,7 @@ ndm_set_runtime_globals <- function(env, values, overwrite = TRUE) {
 #' ndm_load_runtime(env = env)
 #' }
 #'
-#' @export
+#' @noRd
 ndm_source_runtime_helper_fxns <- function(analysis_root = .ndm_default_analysis_root(),
                                           env = ndm_new_runtime_env()) {
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
@@ -180,7 +180,7 @@ ndm_source_runtime_helper_fxns <- function(analysis_root = .ndm_default_analysis
 }
 
 #' @rdname ndm_source_runtime_helper_fxns
-#' @export
+#' @noRd
 ndm_source_runtime_backend <- function(analysis_root = .ndm_default_analysis_root(),
                                       env = ndm_new_runtime_env(),
                                       float_type = "32",
@@ -202,7 +202,7 @@ ndm_source_runtime_backend <- function(analysis_root = .ndm_default_analysis_roo
 }
 
 #' @rdname ndm_source_runtime_helper_fxns
-#' @export
+#' @noRd
 ndm_load_runtime <- function(analysis_root = .ndm_default_analysis_root(),
                              env = ndm_new_runtime_env(),
                              float_type = "32",
@@ -221,7 +221,7 @@ ndm_load_runtime <- function(analysis_root = .ndm_default_analysis_root(),
 }
 
 #' @rdname ndm_source_runtime_helper_fxns
-#' @export
+#' @noRd
 ndm_source_runtime_data <- function(analysis_root = .ndm_default_analysis_root(),
                                    env = ndm_new_runtime_env(),
                                    generator = c("sim", "real")) {
@@ -233,7 +233,7 @@ ndm_source_runtime_data <- function(analysis_root = .ndm_default_analysis_root()
 }
 
 #' @rdname ndm_source_runtime_helper_fxns
-#' @export
+#' @noRd
 ndm_source_runtime_calibration <- function(analysis_root = .ndm_default_analysis_root(),
                                           env = ndm_new_runtime_env()) {
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
@@ -242,7 +242,7 @@ ndm_source_runtime_calibration <- function(analysis_root = .ndm_default_analysis
 }
 
 #' @rdname ndm_source_runtime_helper_fxns
-#' @export
+#' @noRd
 ndm_source_runtime_results_get <- function(analysis_root = .ndm_default_analysis_root(),
                                           env = ndm_new_runtime_env()) {
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
@@ -251,7 +251,7 @@ ndm_source_runtime_results_get <- function(analysis_root = .ndm_default_analysis
 }
 
 #' @rdname ndm_source_runtime_helper_fxns
-#' @export
+#' @noRd
 ndm_source_runtime_results_analyze <- function(analysis_root = .ndm_default_analysis_root(),
                                               env = ndm_new_runtime_env()) {
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)

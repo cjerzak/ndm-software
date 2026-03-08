@@ -117,8 +117,6 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param model_type Model family metadata. Use `"DecoderOnly"` or
 #'   `"NeuralODE"`.
 #' @param backbone Backbone family. Phase 1 supports `"transformer"` only.
-#' @param analysis_root Optional analysis root recorded on the configuration
-#'   object for the local runtime interface.
 #' @param float_type Floating point precision used when initializing the backend.
 #'   Use `"32"` or `"64"`.
 #' @param force_to_gpu Logical scalar indicating whether the runtime should try
@@ -138,7 +136,6 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @export
 ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               backbone = "transformer",
-                              analysis_root = .ndm_default_analysis_root(),
                               float_type = c("32", "64"),
                               force_to_gpu = TRUE,
                               resave_tfrecords = FALSE,
@@ -150,17 +147,10 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
 
-  if (is.null(analysis_root) || !nzchar(analysis_root)) {
-    analysis_root <- .ndm_default_analysis_root()
-  } else {
-    analysis_root <- .ndm_resolve_analysis_root(analysis_root, must_work = FALSE)
-  }
-
   extras <- list(...)
   config <- list(
     model_type = model_type,
     backbone = backbone,
-    analysis_root = analysis_root,
     float_type = float_type,
     force_to_gpu = isTRUE(force_to_gpu),
     resave_tfrecords = isTRUE(resave_tfrecords),
@@ -185,9 +175,6 @@ print.ndm_config <- function(x, ...) {
   cat(sprintf("  model_type: %s\n", x$model_type %||% NA_character_))
   cat(sprintf("  backbone: %s\n", x$backbone %||% NA_character_))
   cat(sprintf("  float_type: %s\n", x$float_type %||% NA_character_))
-  if (!is.null(x$analysis_root)) {
-    cat(sprintf("  analysis_root: %s\n", x$analysis_root))
-  }
   invisible(x)
 }
 

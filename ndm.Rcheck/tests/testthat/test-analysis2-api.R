@@ -38,29 +38,9 @@ test_that("package-native run configs support self-contained dry runs", {
   expect_equal(multidisease$grid_rows, 2L)
 })
 
-test_that("legacy Analysis2 runners route to the internal package bundle", {
-  grid_file <- tempfile("ndm-legacy-grid-", fileext = ".csv")
-  utils::write.csv(ndm_test_dry_run_grid(), grid_file, row.names = FALSE)
+test_that("legacy Analysis2-branded entrypoints are not exported", {
+  exports <- getNamespaceExports("ndm")
 
-  real <- ndm_run_analysis2_real(
-    c(
-      sprintf("--project_root=%s", tempdir()),
-      sprintf("--grid_file=%s", grid_file),
-      "--outer=1",
-      "--dry_run=TRUE"
-    )
-  )
-  sim <- ndm_run_analysis2_sim(
-    c(
-      sprintf("--project_root=%s", tempdir()),
-      sprintf("--grid_file=%s", grid_file),
-      "--outer=1",
-      "--dry_run=TRUE"
-    )
-  )
-
-  expect_equal(real$run_spec$mode, "real")
-  expect_equal(sim$run_spec$mode, "sim")
-  expect_match(real$run_spec$analysis_name, "Real")
-  expect_match(sim$run_spec$analysis_name, "BigSims")
+  expect_false("ndm_run_analysis2_real" %in% exports)
+  expect_false("ndm_run_analysis2_sim" %in% exports)
 })

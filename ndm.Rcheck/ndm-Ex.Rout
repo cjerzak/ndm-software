@@ -118,7 +118,6 @@ Type 'q()' to quit R.
   model_type: DecoderOnly
   backbone: transformer
   float_type: 32
-  analysis_root: /Users/cjerzak/Documents/ndm-software/ndm.Rcheck/ndm/extdata/analysis_runtime/Analysis2
 > 
 > 
 > 
@@ -235,7 +234,7 @@ Type 'q()' to quit R.
   dynamic_beta: NA
   dynamic_global: NA
   multi_outcome: NA
-  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/Rtmpq2alu4/working_dir/RtmpFRR5Kt/file1db215e0bad8.tex
+  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpcztXod/working_dir/Rtmpuze0Bz/file1402470e045fb.tex
 > 
 > spec <- ndm_model_spec()
 > tex <- ndm_model_spec_to_tex(spec)
@@ -334,84 +333,13 @@ Type 'q()' to quit R.
 > ### ** Examples
 > 
 > ndm_print("starting")
-[2026-03-07 18:33:10] starting
+[2026-03-07 21:48:02] starting
 > 
 > 
 > 
 > 
 > base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
 > base::cat("ndm_print", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
-> cleanEx()
-> nameEx("ndm_run_analysis2_real")
-> ### * ndm_run_analysis2_real
-> 
-> flush(stderr()); flush(stdout())
-> 
-> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
-> ### Name: ndm_run_analysis2_real
-> ### Title: Legacy Analysis2-compatible package runners
-> ### Aliases: ndm_run_analysis2_real ndm_run_analysis2_sim
-> 
-> ### ** Examples
-> 
-> ## Not run: 
-> ##D ndm_run_analysis2_real("--help")
-> ## End(Not run)
-> 
-> 
-> 
-> 
-> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
-> base::cat("ndm_run_analysis2_real", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
-> cleanEx()
-> nameEx("ndm_runtime_paths")
-> ### * ndm_runtime_paths
-> 
-> flush(stderr()); flush(stdout())
-> 
-> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
-> ### Name: ndm_runtime_paths
-> ### Title: Inspect a local analysis runtime bundle
-> ### Aliases: ndm_runtime_paths
-> 
-> ### ** Examples
-> 
-> ## Not run: 
-> ##D paths <- ndm_runtime_paths()
-> ##D names(paths)
-> ## End(Not run)
-> 
-> 
-> 
-> 
-> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
-> base::cat("ndm_runtime_paths", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
-> cleanEx()
-> nameEx("ndm_source_runtime_helper_fxns")
-> ### * ndm_source_runtime_helper_fxns
-> 
-> flush(stderr()); flush(stdout())
-> 
-> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
-> ### Name: ndm_source_runtime_helper_fxns
-> ### Title: Source local runtime components
-> ### Aliases: ndm_source_runtime_helper_fxns ndm_source_runtime_backend
-> ###   ndm_load_runtime ndm_source_runtime_data
-> ###   ndm_source_runtime_calibration ndm_source_runtime_results_get
-> ###   ndm_source_runtime_results_analyze
-> 
-> ### ** Examples
-> 
-> ## Not run: 
-> ##D env <- ndm_new_runtime_env()
-> ##D ndm_load_runtime(env = env)
-> ## End(Not run)
-> 
-> 
-> 
-> 
-> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
-> base::cat("ndm_source_runtime_helper_fxns", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_tf_batch_to_r")
 > ### * ndm_tf_batch_to_r
@@ -485,7 +413,7 @@ location_id_numeric     time_id_numeric               YTrue          YTrue_mask
 > cleanEx()
 > options(digits = 7L)
 > base::cat("Time elapsed: ", proc.time() - base::get("ptime", pos = 'CheckExEnv'),"\n")
-Time elapsed:  1.364 0.091 3.106 1.279 0.339 
+Time elapsed:  1.303 0.098 3.314 1.396 0.396 
 > grDevices::dev.off()
 null device 
           1 

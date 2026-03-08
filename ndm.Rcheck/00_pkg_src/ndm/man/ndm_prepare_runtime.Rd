@@ -13,7 +13,6 @@ ndm_prepare_runtime(
 
 ndm_prepare_data(
   runtime_env,
-  analysis_root = .ndm_default_analysis_root(),
   generator = c("sim", "real"),
   runtime_globals = list()
 )
@@ -28,13 +27,11 @@ objects.}
 \item{runtime_globals}{Named list of additional bindings to assign before the
 runtime code is sourced.}
 
-\item{analysis_root}{Root directory for the local analysis runtime.}
-
 \item{generator}{Which data generator to source into `runtime_env`.}
 }
 \value{
 `ndm_prepare_runtime()` invisibly returns `runtime_env` after
-  loading the helper and backend code from `config$analysis_root`.
+  loading the package-owned helper and backend code.
 
 `ndm_prepare_data()` invisibly returns `runtime_env` after sourcing
   the requested data generator.

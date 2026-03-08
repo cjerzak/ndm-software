@@ -1,27 +1,30 @@
 # ndm
 
 `ndm` is an R package for neural disease modeling with an R-first interface to
-a `reticulate`-managed JAX runtime. The repository now ships its own bundled
-analysis runtime, so model build/train/predict flows no longer depend on a
-separate `Analysis` or `Analysis2` checkout.
+a `reticulate`-managed JAX runtime. Model build, train, and predict flows are
+package-native and no longer require callers to supply an executable
+`Analysis2` checkout.
 
 It provides:
 
 - backend setup helpers for the Python/JAX environment
 - built-in compartment-model specifications
 - TFRecord utilities
-- self-contained runtime/model helpers
+- package-owned runtime/model helpers
 - package-native real, sim, and multidisease run APIs
 
 ## Installation
 
+`ndm` imports `ndmdatasets`, so install that package before installing
+`ndm`:
+
 ```r
 install.packages(c("remotes", "reticulate"))
-remotes::install_local("~/Documents/ndm-datasets")
-remotes::install_local("~/Documents/ndm-software")
+remotes::install_local("/path/to/ndm-datasets")
+remotes::install_local("/path/to/ndm-software")
 ```
 
-If you need the Python/JAX backend for execution:
+If you need the Python/JAX backend for model execution:
 
 ```r
 library(ndm)
@@ -30,11 +33,17 @@ ndm_build_backend()
 ndm_check_backend()
 ```
 
-## Model Workflow
+## Quick Tutorial
 
-The default configuration now uses the bundled internal runtime:
+The code blocks below are part of the automated test suite. Blocks marked with
+`# readme-test: tutorial` are executed directly from `README.md`, so this
+tutorial is expected to run as written.
+
+The first step is to create a model config and pick a built-in model
+specification:
 
 ```r
+# readme-test: tutorial
 library(ndm)
 
 cfg <- ndm_create_config(
@@ -42,40 +51,77 @@ cfg <- ndm_create_config(
   float_type = "32",
   force_to_gpu = FALSE
 )
+specs <- ndm_model_spec_presets()
+spec <- ndm_model_spec(
+  preset = "seirs_dynamic_beta",
+  model_type = cfg$model_type
+)
 
-trained <- ndm_fit(
-  config = cfg,
-  model_spec = ndm_model_spec(
-    preset = "seirs_dynamic_beta",
-    model_type = cfg$model_type
-  ),
-  data_generator = "sim"
+stopifnot(
+  inherits(cfg, "ndm_config"),
+  nrow(specs) >= 1L,
+  inherits(spec, "ndm_model_spec"),
+  identical(spec$model_type, cfg$model_type)
 )
 ```
 
-If you need explicit control, the same path is available via
-`ndm_prepare_runtime()`, `ndm_prepare_data()`, `ndm_build_model()`, and
-`ndm_train()`.
-
-## Package-Native Run APIs
-
-The maintained orchestration surface is now package-only:
+The maintained orchestration surface is package-native. You can preview real,
+simulation, and multidisease runs with an in-memory grid and `dry_run = TRUE`:
 
 ```r
-library(ndm)
-
-sim_cfg <- ndm_create_sim_run_config(
-  project_root = getwd(),
-  grid_file = "Data/RunGrids/SimGrids/SimGrid_BigSimsLatest.csv",
-  outer = 1L,
-  dry_run = TRUE
+# readme-test: tutorial
+grid <- data.frame(
+  BaseID = c(1L, 2L),
+  ModelType = c("DecoderOnly", "NeuralODE"),
+  stringsAsFactors = FALSE
 )
 
-preview <- ndm_run_sim(sim_cfg)
-preview$grid_preview
+sim_preview <- ndm_run_sim(
+  ndm_create_sim_run_config(
+    project_root = tempdir(),
+    grid = grid,
+    outer = 1:2,
+    dry_run = TRUE
+  )
+)
+
+real_preview <- ndm_run_real(
+  ndm_create_real_run_config(
+    project_root = tempdir(),
+    grid = grid,
+    outer = 1:2,
+    dry_run = TRUE
+  )
+)
+
+multidisease_preview <- ndm_run_multidisease(
+  ndm_create_multidisease_run_config(
+    project_root = tempdir(),
+    grid = grid,
+    outer = 1:2,
+    dry_run = TRUE
+  )
+)
+
+stopifnot(
+  identical(sim_preview$run_spec$mode, "sim"),
+  identical(real_preview$run_spec$mode, "real"),
+  identical(multidisease_preview$run_spec$mode, "multidisease"),
+  identical(sim_preview$grid_rows, 2L),
+  identical(real_preview$grid_rows, 2L),
+  identical(multidisease_preview$grid_rows, 2L)
+)
+
+sim_preview$grid_preview
 ```
 
-Equivalent helpers exist for real-data and multidisease workflows:
+For full execution rather than dry runs, the package also exposes
+`ndm_prepare_runtime()`, `ndm_prepare_data()`, `ndm_build_model()`,
+`ndm_train()`, `ndm_predict()`, and `ndm_fit()`. Those workflows need backend
+setup plus runtime globals and data inputs beyond the lightweight tutorial
+above.
+
+Equivalent run helpers exist for each orchestration mode:
 
 - `ndm_create_real_run_config()` + `ndm_run_real()`
 - `ndm_create_sim_run_config()` + `ndm_run_sim()`

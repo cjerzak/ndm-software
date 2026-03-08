@@ -15,8 +15,6 @@
 #' @param respect_grid_model_type Logical scalar indicating whether grid rows
 #'   should be allowed to override the requested model type.
 #' @param resave_tfrecords Logical scalar controlling TFRecord regeneration.
-#' @param run_figures Logical scalar controlling whether figure-generation code
-#'   should be sourced after analytics complete.
 #' @param tfrecord_dir Optional TFRecord output directory.
 #' @param raw_data_dir Real-data input directory.
 #' @param outcome_metric Outcome metric name for real-data or multidisease runs.
@@ -37,7 +35,6 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        model_type = NULL,
                                        respect_grid_model_type = FALSE,
                                        resave_tfrecords = FALSE,
-                                       run_figures = FALSE,
                                        tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords", analysis_name),
                                        raw_data_dir = file.path("Data", "MainData"),
                                        outcome_metric = "inc_death",
@@ -56,7 +53,6 @@ ndm_create_real_run_config <- function(project_root = getwd(),
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
-    run_figures = run_figures,
     tfrecord_dir = tfrecord_dir,
     raw_data_dir = raw_data_dir,
     outcome_metric = outcome_metric,
@@ -75,7 +71,6 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       model_type = NULL,
                                       respect_grid_model_type = FALSE,
                                       resave_tfrecords = TRUE,
-                                      run_figures = FALSE,
                                       tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
                                       dry_run = FALSE) {
   if (!is.null(grid)) {
@@ -91,7 +86,6 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
-    run_figures = run_figures,
     tfrecord_dir = tfrecord_dir,
     dry_run = dry_run
   )
@@ -107,7 +101,6 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                model_type = NULL,
                                                respect_grid_model_type = FALSE,
                                                resave_tfrecords = FALSE,
-                                               run_figures = FALSE,
                                                tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords", analysis_name),
                                                outcome_metric = "CountValue",
                                                data_subset = "all",
@@ -127,7 +120,6 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
-    run_figures = run_figures,
     tfrecord_dir = tfrecord_dir,
     outcome_metric = outcome_metric,
     data_subset = data_subset,
@@ -146,7 +138,6 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                  model_type = NULL,
                                  respect_grid_model_type = FALSE,
                                  resave_tfrecords = FALSE,
-                                 run_figures = FALSE,
                                  tfrecord_dir = NULL,
                                  raw_data_dir = NULL,
                                  outcome_metric = NULL,
@@ -187,7 +178,6 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
       model_type = model_type,
       respect_grid_model_type = isTRUE(respect_grid_model_type),
       resave_tfrecords = isTRUE(resave_tfrecords),
-      run_figures = isTRUE(run_figures),
       tfrecord_dir = tfrecord_dir,
       raw_data_dir = raw_data_dir,
       outcome_metric = outcome_metric,
@@ -225,7 +215,7 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     sprintf("--outer=%s", paste(config$outer, collapse = ",")),
     sprintf("--respect_grid_model_type=%s", toupper(as.character(isTRUE(config$respect_grid_model_type)))),
     sprintf("--resave_tfrecords=%s", toupper(as.character(isTRUE(config$resave_tfrecords)))),
-    sprintf("--run_figures=%s", toupper(as.character(isTRUE(config$run_figures)))),
+    "--run_figures=FALSE",
     sprintf("--dry_run=%s", toupper(as.character(isTRUE(config$dry_run))))
   )
 

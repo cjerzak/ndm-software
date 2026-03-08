@@ -98,7 +98,6 @@ ndm_test_fit_sim_case <- function(model_type,
   config <- ndm_create_config(
     model_type = model_type,
     backbone = "transformer",
-    analysis_root = runtime_fixture_analysis_root(),
     float_type = "32",
     force_to_gpu = FALSE,
     resave_tfrecords = TRUE
@@ -186,7 +185,6 @@ ndm_test_fit_sim_case <- function(model_type,
   suppressWarnings(
     ndm_prepare_data(
       runtime_env = runtime_env,
-      analysis_root = config$analysis_root,
       generator = "sim"
     )
   )
@@ -201,7 +199,6 @@ ndm_test_fit_sim_case <- function(model_type,
   model <- suppressWarnings(
     ndm_build_model(
       runtime_env = runtime_env,
-      analysis_root = config$analysis_root,
       model_type = model_type,
       model_spec = model_spec,
       backbone = "transformer"
@@ -210,7 +207,6 @@ ndm_test_fit_sim_case <- function(model_type,
   trained <- suppressWarnings(
     ndm_train(
       model,
-      analysis_root = config$analysis_root,
       run_define = TRUE,
       run_loop = TRUE
     )

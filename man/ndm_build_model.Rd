@@ -10,7 +10,6 @@
 \usage{
 ndm_build_model(
   runtime_env,
-  analysis_root = NULL,
   model_type = c("DecoderOnly", "NeuralODE"),
   model_spec = NULL,
   backbone = "transformer",
@@ -19,7 +18,7 @@ ndm_build_model(
 
 \method{print}{ndm_model}(x, ...)
 
-ndm_train(x, analysis_root = NULL, run_define = TRUE, run_loop = TRUE)
+ndm_train(x, run_define = TRUE, run_loop = TRUE)
 
 \method{print}{ndm_trained_model}(x, ...)
 
@@ -38,8 +37,6 @@ ndm_fit(
 \arguments{
 \item{runtime_env}{Runtime environment containing the sourced legacy helper
 code and data globals.}
-
-\item{analysis_root}{Root directory for the local analysis runtime.}
 
 \item{model_type}{Model family to build. Either `"DecoderOnly"` or
 `"NeuralODE"`.}

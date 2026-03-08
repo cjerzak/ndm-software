@@ -18,7 +18,6 @@ ndm_create_real_run_config(
   model_type = NULL,
   respect_grid_model_type = FALSE,
   resave_tfrecords = FALSE,
-  run_figures = FALSE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords",
     analysis_name),
   raw_data_dir = file.path("Data", "MainData"),
@@ -37,7 +36,6 @@ ndm_create_sim_run_config(
   model_type = NULL,
   respect_grid_model_type = FALSE,
   resave_tfrecords = TRUE,
-  run_figures = FALSE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords",
     analysis_name),
   dry_run = FALSE
@@ -53,7 +51,6 @@ ndm_create_multidisease_run_config(
   model_type = NULL,
   respect_grid_model_type = FALSE,
   resave_tfrecords = FALSE,
-  run_figures = FALSE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords",
     analysis_name),
   outcome_metric = "CountValue",
@@ -85,8 +82,6 @@ ndm_run_multidisease(config = ndm_create_multidisease_run_config())
 \item{respect_grid_model_type}{Logical scalar indicating whether grid rows may override the requested model type.}
 
 \item{resave_tfrecords}{Logical scalar controlling TFRecord regeneration.}
-
-\item{run_figures}{Logical scalar controlling whether figure-generation code should be sourced after analytics complete.}
 
 \item{tfrecord_dir}{Optional TFRecord output directory.}
 

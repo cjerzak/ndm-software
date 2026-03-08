@@ -15,11 +15,6 @@ ndm_predict             Generate predictions or evaluate the training
                         loss
 ndm_prepare_runtime     Prepare a local runtime for execution
 ndm_print               Print a timestamped diagnostic message
-ndm_run_analysis2_real
-                        Legacy Analysis2-compatible package runners
-ndm_runtime_paths       Inspect a local analysis runtime bundle
-ndm_source_runtime_helper_fxns
-                        Source local runtime components
 ndm_tf_batch_to_r       Convert and bundle TFRecord batches
 ndm_tfrecord_fields_real
                         Inspect TFRecord field contracts

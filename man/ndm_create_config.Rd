@@ -8,7 +8,6 @@
 ndm_create_config(
   model_type = c("DecoderOnly", "NeuralODE"),
   backbone = "transformer",
-  analysis_root = .ndm_default_analysis_root(),
   float_type = c("32", "64"),
   force_to_gpu = TRUE,
   resave_tfrecords = FALSE,
@@ -23,9 +22,6 @@ ndm_create_config(
 `"NeuralODE"`.}
 
 \item{backbone}{Backbone family. Phase 1 supports `"transformer"` only.}
-
-\item{analysis_root}{Optional analysis root recorded on the configuration
-object for the local runtime interface.}
 
 \item{float_type}{Floating point precision used when initializing the backend.
 Use `"32"` or `"64"`.}
