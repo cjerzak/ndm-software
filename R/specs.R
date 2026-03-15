@@ -1,12 +1,4 @@
 .ndm_builtin_spec_registry <- function() {
-  base_dir <- .ndm_inst_path("extdata", "model_specs")
-  if (!nzchar(base_dir)) {
-    stop("Built-in model specs are not available. Install the package before using built-in presets.", call. = FALSE)
-  }
-  if (!dir.exists(base_dir)) {
-    stop("Built-in model spec directory is missing: ", base_dir, call. = FALSE)
-  }
-
   list(
     seir_fixed = list(
       file = "bayes_ode_SEIRS_FixedBeta_FixedGlobal.tex",
@@ -52,7 +44,7 @@
 }
 
 .ndm_spec_with_path <- function(entry) {
-  entry$source_path <- file.path(.ndm_inst_path("extdata", "model_specs"), entry$file)
+  entry$source_path <- .ndm_embedded_model_spec_path(entry$file)
   entry
 }
 

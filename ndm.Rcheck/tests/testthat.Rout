@@ -19,19 +19,21 @@ Type 'q()' to quit R.
 > library(ndm)
 > 
 > test_check("ndm")
-[2026-03-08 14:43:59] Starting Analysis2 SuperLModel_MasterReal.R
-[2026-03-08 14:43:59] Starting Analysis2 SuperLModel_MasterSim.R
-[2026-03-08 14:43:59] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
-[ FAIL 0 | WARN 0 | SKIP 4 | PASS 89 ]
+[2026-03-15 15:42:48] Starting Analysis2 SuperLModel_MasterReal.R
+[2026-03-15 15:42:48] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-15 15:42:48] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
+[ FAIL 0 | WARN 0 | SKIP 5 | PASS 111 ]
 
-══ Skipped tests (4) ═══════════════════════════════════════════════════════════
+══ Skipped tests (5) ═══════════════════════════════════════════════════════════
 • On CRAN (3): 'test-sim-fit.R:268:3', 'test-sim-fit.R:297:3',
   'test-sim-fit.R:329:3'
 • README.md is not available in the current test environment. (1):
   'test-readme-tutorial.R:2:3'
+• Set NDM_MULTIDISEASE_PROJECT_ROOT to run the multidisease smoke test. (1):
+  'test-multidisease-model-api.R:230:3'
 
-[ FAIL 0 | WARN 0 | SKIP 4 | PASS 89 ]
+[ FAIL 0 | WARN 0 | SKIP 5 | PASS 111 ]
 > 
 > proc.time()
    user  system elapsed 
-  0.886   0.111   0.992 
+  0.952   0.131   1.089 

@@ -13,7 +13,7 @@ ndm_prepare_runtime(
 
 ndm_prepare_data(
   runtime_env,
-  generator = c("sim", "real"),
+  generator = c("sim", "real", "multidisease"),
   runtime_globals = list()
 )
 }

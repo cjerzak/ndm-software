@@ -53,7 +53,7 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
 #'
 #' @export
 ndm_prepare_data <- function(runtime_env,
-                             generator = c("sim", "real"),
+                             generator = c("sim", "real", "multidisease"),
                              runtime_globals = list()) {
   if (!is.environment(runtime_env)) {
     stop("`runtime_env` must be an environment.", call. = FALSE)
@@ -61,11 +61,15 @@ ndm_prepare_data <- function(runtime_env,
 
   generator <- match.arg(generator)
   ndm_set_runtime_globals(runtime_env, runtime_globals)
-  ndm_source_runtime_data(
-    analysis_root = .ndm_internal_analysis_root(),
-    env = runtime_env,
-    generator = generator
-  )
+  if (identical(generator, "multidisease")) {
+    .ndm_prepare_multidisease_data(runtime_env)
+  } else {
+    ndm_source_runtime_data(
+      analysis_root = .ndm_internal_analysis_root(),
+      env = runtime_env,
+      generator = generator
+    )
+  }
 }
 
 .ndm_runtime_env_from_object <- function(x, arg = "x") {
@@ -479,22 +483,32 @@ ndm_train <- function(x,
     context = "training setup"
   )
 
-  if (isTRUE(run_define)) {
-    tryCatch(
-      .ndm_source_runtime_file(paths$train_define, runtime_env),
-      error = function(e) {
-        stop("Failed while loading package-owned training definition code: ", conditionMessage(e), call. = FALSE)
-      }
-    )
-  }
+  project_root <- .ndm_runtime_project_root(runtime_env)
+  run_training <- function() {
+    .ndm_prepare_train_environment(runtime_env)
 
-  if (isTRUE(run_loop)) {
-    tryCatch(
-      .ndm_source_runtime_file(paths$train_do, runtime_env),
-      error = function(e) {
-        stop("Failed while loading package-owned training loop code: ", conditionMessage(e), call. = FALSE)
-      }
-    )
+    if (isTRUE(run_define)) {
+      tryCatch(
+        .ndm_source_runtime_file(paths$train_define, runtime_env),
+        error = function(e) {
+          stop("Failed while loading package-owned training definition code: ", conditionMessage(e), call. = FALSE)
+        }
+      )
+    }
+
+    if (isTRUE(run_loop)) {
+      tryCatch(
+        .ndm_source_runtime_file(paths$train_do, runtime_env),
+        error = function(e) {
+          stop("Failed while loading package-owned training loop code: ", conditionMessage(e), call. = FALSE)
+        }
+      )
+    }
+  }
+  if (is.null(project_root)) {
+    run_training()
+  } else {
+    .ndm_with_working_directory(project_root, run_training)
   }
 
   if (isTRUE(run_loop)) {
@@ -546,7 +560,7 @@ print.ndm_trained_model <- function(x, ...) {
 #' @export
 ndm_fit <- function(config = ndm_create_config(),
                     model_spec = NULL,
-                    data_generator = c("sim", "real"),
+                    data_generator = c("sim", "real", "multidisease"),
                     runtime_globals = list(),
                     data_globals = list(),
                     build_globals = list(),

@@ -37,7 +37,22 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
   )
 
   check_names <- setdiff(names(paths), c("project_root", "analysis_root"))
-  missing <- check_names[!file.exists(unlist(paths[check_names], use.names = FALSE))]
+  runtime_relative <- c(
+    helper_fxns = "SetupEnv/SuperLModel_helperFxns.R",
+    master_imports = "SetupEnv/SuperLModel_MasterImports.R",
+    calibrate_ml = "SetupData/SuperLModel_CalibrateML.R",
+    data_sim = "SetupData/SuperLModel_DataGenerator_Sim.R",
+    data_real = "SetupData/SuperLModel_DataGenerator_Real.R",
+    build_model = "ModelDefiners/SuperLModel_BuildML.R",
+    train_define = "ModelTrainers/SuperLModel_TrainDefine.R",
+    train_do = "ModelTrainers/SuperLModel_TrainDo.R",
+    results_get = "ResultsGet/SuperLModel_GetAnalytics.R",
+    results_analyze = "ResultsAnalyze/SuperLModel_GenFigs.R"
+  )
+  missing <- check_names[!vapply(check_names, function(name) {
+    file.exists(paths[[name]]) ||
+      (.ndm_has_embedded_runtime_relative(runtime_relative[[name]]))
+  }, logical(1))]
   if (length(missing) > 0L) {
     stop(
       "Missing analysis runtime files under `analysis_root`: ",
@@ -55,7 +70,7 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
   if (!is.null(analysis_root) && nzchar(analysis_root)) {
     analysis_root <- .ndm_resolve_analysis_root(analysis_root, must_work = TRUE)
   } else {
-    analysis_root <- NULL
+    analysis_root <- .ndm_internal_analysis_root()
   }
 
   assign("NDM_INTERNAL_ANALYSIS_DIR", analysis_root, envir = env)
@@ -70,18 +85,16 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
       }
 
       root <- get("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE)
-      if (is.null(root) || !nzchar(root)) {
+      if ((is.null(root) || !nzchar(root)) &&
+          !.ndm_has_embedded_runtime_relative(relative_path)) {
         stop(
-          "`NDM_INTERNAL_ANALYSIS_DIR` is not set. Install runtime helpers with a valid analysis_root first.",
+          "`NDM_INTERNAL_ANALYSIS_DIR` is not set and the requested runtime component is not embedded: ",
+          relative_path,
           call. = FALSE
         )
       }
 
-      sys.source(
-        file.path(root, relative_path),
-        envir = env_target,
-        keep.source = FALSE
-      )
+      .ndm_eval_runtime_path(relative_path, env = env_target, analysis_root = root)
       invisible(env_target)
     },
     envir = env
@@ -113,7 +126,7 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
 ndm_new_runtime_env <- function(parent = baseenv()) {
   env <- new.env(parent = parent)
   class(env) <- c("ndm_runtime_env", class(env))
-  .ndm_install_runtime_helpers(env, analysis_root = NULL)
+  .ndm_install_runtime_helpers(env, analysis_root = .ndm_internal_analysis_root())
   env
 }
 
@@ -140,7 +153,8 @@ ndm_set_runtime_globals <- function(env, values, overwrite = TRUE) {
 }
 
 .ndm_source_runtime_file <- function(path, env) {
-  sys.source(path, envir = env, keep.source = FALSE)
+  analysis_root <- get0("NDM_INTERNAL_ANALYSIS_DIR", envir = env, inherits = FALSE, ifnotfound = NULL)
+  .ndm_eval_runtime_path(path, env = env, analysis_root = analysis_root)
   invisible(env)
 }
 

@@ -1,18 +1,5 @@
 analysis2_runtime_root <- function() {
-  source_root <- test_path("..", "..", "inst", "extdata", "analysis_runtime", "Analysis2")
-  if (dir.exists(source_root)) {
-    return(source_root)
-  }
-
-  pkg_root <- system.file(package = "ndm")
-  if (nzchar(pkg_root)) {
-    installed_root <- file.path(pkg_root, "extdata", "analysis_runtime", "Analysis2")
-    if (dir.exists(installed_root)) {
-      return(installed_root)
-    }
-  }
-
-  stop("Could not locate the Analysis2 runtime bundle for regression tests.", call. = FALSE)
+  ndm:::.ndm_internal_analysis_root()
 }
 
 analysis2_runtime_path <- function(...) {
@@ -20,8 +7,16 @@ analysis2_runtime_path <- function(...) {
 }
 
 analysis2_runtime_lines <- function(...) {
-  readLines(analysis2_runtime_path(...))
+  ndm:::.ndm_embedded_runtime_lines(file.path(...))
 }
+
+test_that("embedded runtime materializes package-owned analysis files", {
+  runtime_root <- analysis2_runtime_root()
+
+  expect_true(dir.exists(runtime_root))
+  expect_true(file.exists(file.path(runtime_root, "SetupEnv", "Analysis2_api.R")))
+  expect_true(length(analysis2_runtime_lines("SetupEnv", "Analysis2_api.R")) > 0L)
+})
 
 test_that("legacy runtime scripts no longer hard-disable intended branches", {
   build_lines <- analysis2_runtime_lines("ModelDefiners", "SuperLModel_BuildML.R")

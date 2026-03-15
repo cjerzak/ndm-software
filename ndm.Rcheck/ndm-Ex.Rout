@@ -221,7 +221,7 @@ Type 'q()' to quit R.
   dynamic_beta: FALSE
   dynamic_global: FALSE
   multi_outcome: FALSE
-  source_path: /Users/cjerzak/Documents/ndm-software/ndm.Rcheck/ndm/extdata/model_specs/bayes_ode_SEIRS_FixedBeta_FixedGlobal.tex
+  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpQq3gGs/working_dir/RtmpFr7REl/ndm_embedded_model_specs/bayes_ode_SEIRS_FixedBeta_FixedGlobal.tex
 > 
 > spec <- ndm_model_spec()
 > tex_path <- tempfile(fileext = ".tex")
@@ -234,7 +234,7 @@ Type 'q()' to quit R.
   dynamic_beta: NA
   dynamic_global: NA
   multi_outcome: NA
-  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpY4MYXJ/working_dir/RtmpdFO4qG/file13aad54707bf2.tex
+  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpQq3gGs/working_dir/RtmpFr7REl/file352247949377.tex
 > 
 > spec <- ndm_model_spec()
 > tex <- ndm_model_spec_to_tex(spec)
@@ -333,7 +333,7 @@ Type 'q()' to quit R.
 > ### ** Examples
 > 
 > ndm_print("starting")
-[2026-03-08 14:43:58] starting
+[2026-03-15 15:42:46] starting
 > 
 > 
 > 
@@ -413,7 +413,7 @@ location_id_numeric     time_id_numeric               YTrue          YTrue_mask
 > cleanEx()
 > options(digits = 7L)
 > base::cat("Time elapsed: ", proc.time() - base::get("ptime", pos = 'CheckExEnv'),"\n")
-Time elapsed:  2.086 0.143 4.774 1.985 0.53 
+Time elapsed:  2.085 0.213 5.185 1.983 0.524 
 > grDevices::dev.off()
 null device 
           1 

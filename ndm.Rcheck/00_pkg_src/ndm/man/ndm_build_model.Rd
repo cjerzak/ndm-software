@@ -25,7 +25,7 @@ ndm_train(x, run_define = TRUE, run_loop = TRUE)
 ndm_fit(
   config = ndm_create_config(),
   model_spec = NULL,
-  data_generator = c("sim", "real"),
+  data_generator = c("sim", "real", "multidisease"),
   runtime_globals = list(),
   data_globals = list(),
   build_globals = list(),
