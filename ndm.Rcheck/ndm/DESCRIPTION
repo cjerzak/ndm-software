@@ -22,5 +22,5 @@ Encoding: UTF-8
 Config/testthat/edition: 3
 RoxygenNote: 7.3.3
 NeedsCompilation: no
-Packaged: 2026-03-15 22:44:34 UTC; cjerzak
-Built: R 4.5.2; ; 2026-03-15 22:44:43 UTC; unix
+Packaged: 2026-03-15 23:20:02 UTC; cjerzak
+Built: R 4.5.2; ; 2026-03-15 23:20:12 UTC; unix

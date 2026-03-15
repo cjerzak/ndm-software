@@ -19,15 +19,15 @@ Type 'q()' to quit R.
 > library(ndm)
 > 
 > test_check("ndm")
-[2026-03-15 18:45:09] Starting Analysis2 SuperLModel_MasterReal.R
-[2026-03-15 18:45:09] Starting Analysis2 SuperLModel_MasterSim.R
-[2026-03-15 18:45:09] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
+[2026-03-15 19:20:39] Starting Analysis2 SuperLModel_MasterReal.R
+[2026-03-15 19:20:39] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-15 19:20:39] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
 Environment 'jax_cpu' is ready.
 Driver 590.12 detected (>=580): installing JAX CUDA 13 wheels.
 Environment 'jax_cpu' is ready.
 Environment 'jax_cpu' is ready.
-W0315 18:45:16.932548 11450433 cpp_gen_intrinsics.cc:74] Empty bitcode string provided for eigen. Optimizations relying on this IR will be disabled.
-[1] "[2026-03-15 18:45:17] Done loading helper functions..."
+W0315 19:20:46.789733 11487104 cpp_gen_intrinsics.cc:74] Empty bitcode string provided for eigen. Optimizations relying on this IR will be disabled.
+[1] "[2026-03-15 19:20:47] Done loading helper functions..."
 [ FAIL 0 | WARN 0 | SKIP 6 | PASS 188 ]
 
 ══ Skipped tests (6) ═══════════════════════════════════════════════════════════
@@ -41,4 +41,4 @@ W0315 18:45:16.932548 11450433 cpp_gen_intrinsics.cc:74] Empty bitcode string pr
 > 
 > proc.time()
    user  system elapsed 
-  9.502   1.943  11.752 
+  9.708   2.038  12.161 
