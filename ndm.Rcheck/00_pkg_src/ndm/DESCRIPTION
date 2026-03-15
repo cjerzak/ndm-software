@@ -15,10 +15,11 @@ Description: Provides an R-first interface for neural disease modeling with a
     package-native orchestration helpers for model execution.
 Depends: R (>= 4.1.0)
 Imports: data.table, ndmdatasets, rlang, reticulate, utils
-Suggests: testthat (>= 3.0.0)
+Suggests: fastmatch, progress, rrapply, testthat (>= 3.0.0), yaml, zip,
+        zoo
 License: GPL-3
 Encoding: UTF-8
 Config/testthat/edition: 3
 RoxygenNote: 7.3.3
 NeedsCompilation: no
-Packaged: 2026-03-15 20:07:43 UTC; cjerzak
+Packaged: 2026-03-15 22:27:36 UTC; cjerzak

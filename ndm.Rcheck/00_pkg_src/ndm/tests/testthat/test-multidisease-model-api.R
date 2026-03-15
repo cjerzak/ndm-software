@@ -15,23 +15,66 @@ ndm_test_write_ihme_fixture <- function(project_root) {
   )
   dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
 
-  fixture <- data.frame(
-    sex_name = c("Both", "Both", "Both", "Both", "Male"),
-    age_name = c("All ages", "All ages", "All ages", "All ages", "All ages"),
-    cause_name = c(
-      "HIV/AIDS and sexually transmitted infections",
-      "HIV/AIDS and sexually transmitted infections",
-      "HIV/AIDS and sexually transmitted infections",
-      "All causes",
-      "HIV/AIDS and sexually transmitted infections"
+  prevalence_rows <- do.call(
+    rbind,
+    lapply(2000:2007, function(year_) {
+      year_offset <- year_ - 2000L
+      data.frame(
+        sex_name = c("Both", "Both"),
+        age_name = c("All ages", "All ages"),
+        cause_name = c(
+          "HIV/AIDS and sexually transmitted infections",
+          "HIV/AIDS and sexually transmitted infections"
+        ),
+        measure_name = c("Prevalence", "Prevalence"),
+        metric_name = c("Rate", "Rate"),
+        val = c(100 + 5 * year_offset, 120 + 5 * year_offset),
+        location_id = c(1L, 2L),
+        location_name = c("Loc1", "Loc2"),
+        year = c(year_, year_),
+        stringsAsFactors = FALSE
+      )
+    })
+  )
+
+  fixture <- rbind(
+    prevalence_rows,
+    data.frame(
+      sex_name = "Both",
+      age_name = "All ages",
+      cause_name = "HIV/AIDS and sexually transmitted infections",
+      measure_name = "Prevalence",
+      metric_name = "Percent",
+      val = 2,
+      location_id = 1L,
+      location_name = "Loc1",
+      year = 2000L,
+      stringsAsFactors = FALSE
     ),
-    measure_name = c("Prevalence", "Prevalence", "Incidence", "Prevalence", "Prevalence"),
-    metric_name = c("Rate", "Percent", "Rate", "Rate", "Rate"),
-    val = c(100, 2, 50, 200, 999),
-    location_id = c(1L, 2L, 1L, 1L, 1L),
-    location_name = c("Loc1", "Loc2", "Loc1", "Loc1", "Loc1"),
-    year = c(2000L, 2001L, 2000L, 2000L, 2000L),
-    stringsAsFactors = FALSE
+    data.frame(
+      sex_name = "Both",
+      age_name = "All ages",
+      cause_name = "HIV/AIDS and sexually transmitted infections",
+      measure_name = "Incidence",
+      metric_name = "Rate",
+      val = 50,
+      location_id = 1L,
+      location_name = "Loc1",
+      year = 2000L,
+      stringsAsFactors = FALSE
+    ),
+    data.frame(
+      sex_name = "Male",
+      age_name = "All ages",
+      cause_name = "HIV/AIDS and sexually transmitted infections",
+      measure_name = "Prevalence",
+      metric_name = "Rate",
+      val = 999,
+      location_id = 1L,
+      location_name = "Loc1",
+      year = 2000L,
+      stringsAsFactors = FALSE
+    )
   )
 
   utils::write.csv(
@@ -84,18 +127,7 @@ ndm_test_write_tycho_fixture <- function(project_root) {
 
 ndm_skip_if_no_multidisease_backend <- function() {
   skip_on_cran()
-  skip_if_not_installed("reticulate")
-  skip_if_not_installed("fastmatch")
-  skip_if_not_installed("rrapply")
-  skip_if_not_installed("progress")
-  skip_if_not_installed("zip")
-  skip_if_not_installed("zoo")
-
-  backend_ready <- ndm_check_backend(
-    conda_env = "jax_cpu",
-    modules = c("jax", "numpy", "optax", "equinox", "diffrax", "tensorflow")
-  )
-  skip_if(is.null(backend_ready), "jax_cpu with JAX/TensorFlow is required for the multidisease fit test.")
+  ndm_require_backend_test_stack("multidisease tests")
 }
 
 test_that("multidisease preparation validates required globals early", {
@@ -177,6 +209,22 @@ test_that("Tycho bundle loading normalizes counts by population", {
   expect_true(all(bundle$truth_df_red$CountValue < 1))
 })
 
+test_that("IHME bundle loading honors desired_measure overrides", {
+  project_root <- ndm_test_multidisease_project_root()
+  ndm_test_write_ihme_fixture(project_root)
+
+  bundle <- ndm:::.ndm_load_multidisease_bundle(
+    project_root = project_root,
+    data_format = "IHME",
+    disease_names = "hiv",
+    desired_measure = "Incidence"
+  )
+
+  expect_equal(bundle$resolved_diseases, "HIV/AIDS and sexually transmitted infections")
+  expect_equal(nrow(bundle$truth_df_red), 1L)
+  expect_equal(bundle$truth_df_red$CountValue, 50 / 1e5)
+})
+
 test_that("multidisease training calibrates and runs under project_root", {
   project_root <- ndm_test_multidisease_project_root()
   env <- ndm_new_runtime_env()
@@ -225,17 +273,115 @@ test_that("multidisease training calibrates and runs under project_root", {
   expect_equal(trained$state$stage, "trained")
 })
 
-test_that("opt-in multidisease smoke fit reaches the package-native path", {
-  project_root <- Sys.getenv("NDM_MULTIDISEASE_PROJECT_ROOT", unset = "")
-  skip_if(!nzchar(project_root), "Set NDM_MULTIDISEASE_PROJECT_ROOT to run the multidisease smoke test.")
-  skip_if(!dir.exists(project_root), "NDM_MULTIDISEASE_PROJECT_ROOT does not exist.")
-
-  ihme_paths <- c(
-    file.path(project_root, "Data", "MultiDiseaseRuns", "IHMEData", "IHME-GBD_2021_DATA-ea2ad67b-1", "IHME-GBD_2021_DATA-ea2ad67b-1.csv"),
-    file.path(project_root, "Data", "MultiDiseaseRuns", "DiseasePool", "IHMEData", "IHME-GBD_2021_DATA-ea2ad67b-1", "IHME-GBD_2021_DATA-ea2ad67b-1.csv")
-  )
-  skip_if(!any(file.exists(ihme_paths)), "IHME multidisease data was not found under the supplied project root.")
+test_that("multidisease preparation validates requested inputs and high_income fallback", {
+  project_root <- ndm_test_multidisease_project_root()
+  ndm_test_write_ihme_fixture(project_root)
   ndm_skip_if_no_multidisease_backend()
+  old_backend <- ndm:::ndm_env$backend
+  on.exit(assign("backend", old_backend, envir = ndm:::ndm_env), add = TRUE)
+  ndm_initialize_backend(
+    conda_env = ndm_backend_test_conda_env(),
+    float_type = "32",
+    import_tensorflow = TRUE
+  )
+  env <- ndm_prepare_runtime(
+    config = ndm_create_config(
+      model_type = "DecoderOnly",
+      backbone = "transformer",
+      float_type = "32",
+      force_to_gpu = FALSE
+    ),
+    runtime_env = ndm_new_runtime_env(parent = globalenv()),
+    runtime_globals = list(
+      project_root = project_root,
+      AnalysisName = "FixturePrep",
+      AnalysisDate = Sys.Date(),
+      COMMAND_ARG_INPUT = "test"
+    )
+  )
+  old_warning <- getOption("warn")
+  on.exit(options(warn = old_warning), add = TRUE)
+  options(warn = 1)
+
+  ndm_set_runtime_globals(
+    env,
+    list(
+      project_root = project_root,
+      ContextLength = 8L,
+      evaluationTime = 1L,
+      dataInputs = "all",
+      initialTransform = "none",
+      initialNormType = "all",
+      paddingMethod = "left",
+      OSSType = "OutOfTime",
+      nSamplesTrain = 2L,
+      disease_names = "hiv",
+      data_format = "IHME",
+      data_subset = "high_income",
+      nBatch = 2L,
+      nCheckpoints = 0L,
+      nEpochesMax = 1L,
+      ModelDepth = 1L,
+      ModelDims = 8L,
+      HolderFolder = tempfile("ndm-md-results-")
+    )
+  )
+  dir.create(env$HolderFolder, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(env$HolderFolder, recursive = TRUE, force = TRUE), add = TRUE)
+
+  local_mocked_bindings(
+    ndm_source_runtime_data = function(...) invisible(env),
+    .package = "ndm"
+  )
+  expect_warning(
+    ndm_prepare_data(env, generator = "multidisease"),
+    "high_income subset requested but LOC2_region_name not available"
+  )
+  expect_equal(sort(unique(env$truth_df_red$location_id)), c("1", "2"))
+
+  env_bad <- ndm_prepare_runtime(
+    config = ndm_create_config(
+      model_type = "DecoderOnly",
+      backbone = "transformer",
+      float_type = "32",
+      force_to_gpu = FALSE
+    ),
+    runtime_env = ndm_new_runtime_env(parent = globalenv()),
+    runtime_globals = list(
+      project_root = project_root,
+      AnalysisName = "FixturePrepBad",
+      AnalysisDate = Sys.Date(),
+      COMMAND_ARG_INPUT = "test"
+    )
+  )
+  ndm_set_runtime_globals(
+    env_bad,
+    as.list(env)
+  )
+  ndm_set_runtime_globals(env_bad, list(dataInputs = "MissingInput"))
+
+  bundle <- ndm:::.ndm_load_multidisease_bundle(
+    project_root = project_root,
+    data_format = "IHME",
+    disease_names = "hiv"
+  )
+  expect_error(
+    ndm:::.ndm_multidisease_set_default_globals(env_bad, bundle = bundle),
+    "Requested multidisease `dataInputs` are not present"
+  )
+})
+
+test_that("fixture-backed multidisease smoke fit reaches the package-native path", {
+  project_root <- ndm_test_multidisease_project_root()
+  ndm_test_write_ihme_fixture(project_root)
+  ndm_skip_if_no_multidisease_backend()
+  old_backend <- ndm:::ndm_env$backend
+  on.exit(assign("backend", old_backend, envir = ndm:::ndm_env), add = TRUE)
+  ndm_initialize_backend(
+    conda_env = ndm_backend_test_conda_env(),
+    float_type = "32",
+    import_tensorflow = TRUE
+  )
 
   analysis_name <- sprintf("TestMultidisease_%s", as.integer(Sys.time()))
   analysis_date <- Sys.Date()
@@ -271,50 +417,98 @@ test_that("opt-in multidisease smoke fit reaches the package-native path", {
     preset = "seirs_dynamic_beta",
     model_type = "DecoderOnly"
   )
+  orig_source_runtime_file <- ndm:::.ndm_source_runtime_file
+  local_mocked_bindings(
+    .ndm_source_runtime_file = function(path, env) {
+      file_name <- basename(path)
+      if (identical(file_name, "SuperLModel_BuildML.R")) {
+        assign("ModelList", list(model = TRUE), envir = env)
+        assign("state", list(stage = "built"), envir = env)
+        assign("PriorList", list(prior = TRUE), envir = env)
+        assign("PolicyList", list(policy = TRUE), envir = env)
+        assign("GetPredSaveAtInfo_default", list(info = TRUE), envir = env)
+        assign("GetPred_inference", function(...) list(ok = TRUE), envir = env)
+        assign("GetPred_train_jit", function(...) list(ok = TRUE), envir = env)
+        assign("getLoss_train", function(...) list(0, get("state", envir = env, inherits = FALSE)), envir = env)
+        return(invisible(env))
+      }
+      if (identical(file_name, "SuperLModel_TrainDefine.R")) {
+        assign("state", list(stage = "defined"), envir = env)
+        assign("PriorList", list(prior = TRUE), envir = env)
+        assign("PolicyList", list(policy = TRUE), envir = env)
+        assign("GetPredSaveAtInfo_default", list(info = TRUE), envir = env)
+        return(invisible(env))
+      }
+      if (identical(file_name, "SuperLModel_CalibrateML.R")) {
+        if (!exists("batch_l_cal", envir = env, inherits = FALSE)) {
+          assign("batch_l_cal", list(calibrated = TRUE), envir = env)
+        }
+        return(invisible(env))
+      }
+      if (identical(file_name, "SuperLModel_TrainDo.R")) {
+        assign("state", list(stage = "trained"), envir = env)
+        assign("PriorList", list(prior = TRUE), envir = env)
+        assign("PolicyList", list(policy = TRUE), envir = env)
+        assign("GetPredSaveAtInfo_default", list(info = TRUE), envir = env)
+        assign("gradLoss_jax", TRUE, envir = env)
+        assign("opt_state", list(opt = TRUE), envir = env)
+        return(invisible(env))
+      }
+      orig_source_runtime_file(path, env)
+    },
+    .package = "ndm"
+  )
 
-  trained <- ndm_fit(
-    config = config,
-    model_spec = spec,
-    data_generator = "multidisease",
-    runtime_globals = list(
-      project_root = project_root,
-      AnalysisName = analysis_name,
-      AnalysisDate = analysis_date,
-      COMMAND_ARG_INPUT = "test",
-      nBatch = 2L,
-      nCheckpoints = 0L,
-      nEpochesMax = 1L,
-      nSamples_max = 2L,
-      LEARNING_RATE_MAX = 1e-3,
-      LEARNING_RATE_MAX_model = 1e-3,
-      LEARNING_RATE_MAX_pretrain = 1e-5,
-      HolderFolder = holder_folder,
-      ModelDepth = 1L,
-      ModelDims = 16L
-    ),
-    data_globals = list(
-      ContextLength = 8L,
-      evaluationTime = 1L,
-      dataInputs = "all",
-      OSSType = "OutOfTime",
-      initialTransform = "none",
-      initialNormType = "all",
-      paddingMethod = "left",
-      nSamplesTrain = 2L,
-      disease_names = "all",
-      data_format = "IHME",
-      data_subset = "all"
-    ),
-    build_globals = list(
-      ModelDepth = 1L,
-      ModelDims = 16L
-    ),
-    run_define = TRUE,
-    run_loop = TRUE
+  trained <- suppressWarnings(
+    ndm_fit(
+      config = config,
+      model_spec = spec,
+      data_generator = "multidisease",
+      runtime_globals = list(
+        project_root = project_root,
+        AnalysisName = analysis_name,
+        AnalysisDate = analysis_date,
+        COMMAND_ARG_INPUT = "test",
+        nBatch = 2L,
+        nCheckpoints = 0L,
+        nEpochesMax = 1L,
+        nSamples_max = 2L,
+        nObsInference = 8L,
+        LEARNING_RATE_MAX = 1e-3,
+        LEARNING_RATE_MAX_model = 1e-3,
+        LEARNING_RATE_MAX_pretrain = 1e-5,
+        HolderFolder = holder_folder,
+        ModelDepth = 1L,
+        ModelDims = 16L
+      ),
+      data_globals = list(
+        ContextLength = 8L,
+        evaluationTime = 1L,
+        evaluation_seq = 1L,
+        nTimesLookahead = 2L,
+        minAnchoringTimeID = 1L,
+        dataInputs = "all",
+        OSSType = "OutOfTime",
+        initialTransform = "none",
+        initialNormType = "all",
+        paddingMethod = "left",
+        nSamplesTrain = 2L,
+        disease_names = "hiv",
+        data_format = "IHME",
+        data_subset = "all"
+      ),
+      build_globals = list(
+        ModelDepth = 1L,
+        ModelDims = 16L
+      ),
+      run_define = TRUE,
+      run_loop = TRUE
+    )
   )
 
   expect_s3_class(trained, "ndm_trained_model")
   expect_true(exists("batch_l_cal", envir = trained$env, inherits = FALSE))
+  expect_true(file.exists(file.path(get("TfRecordDir", envir = trained$env, inherits = FALSE), "train_1.tfrecord")))
   expect_equal(
     get("ndm_data_generator", envir = trained$env, inherits = FALSE),
     "multidisease"

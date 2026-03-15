@@ -103,12 +103,43 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
   invisible(env)
 }
 
+.ndm_namespace_available <- function(package) {
+  requireNamespace(package, quietly = TRUE)
+}
+
+.ndm_require_namespaces <- function(packages,
+                                    context,
+                                    install_hint = "Install them before running this workflow.") {
+  packages <- unique(as.character(packages))
+  packages <- packages[nzchar(packages)]
+  if (length(packages) == 0L) {
+    return(invisible(TRUE))
+  }
+
+  missing <- packages[!vapply(packages, .ndm_namespace_available, logical(1))]
+  if (length(missing) == 0L) {
+    return(invisible(TRUE))
+  }
+
+  stop(
+    "The following R packages are required for ",
+    context,
+    ": ",
+    paste(missing, collapse = ", "),
+    ". ",
+    install_hint,
+    call. = FALSE
+  )
+}
+
 #' Create and populate runtime environments
 #'
 #' These helpers manage isolated environments used to source local model runtime
 #' code and seed it with R values.
 #'
-#' @param parent Parent environment for a new runtime environment.
+#' @param parent Parent environment for a new runtime environment. Defaults to
+#'   `globalenv()` so bundled runtime scripts can resolve attached-package
+#'   functions the same way the legacy workflow did.
 #' @param env Runtime environment that should receive new bindings.
 #' @param values Named list of values to assign into `env`.
 #' @param overwrite Logical scalar indicating whether existing bindings in `env`
@@ -123,7 +154,7 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
 #' env$example_value
 #'
 #' @export
-ndm_new_runtime_env <- function(parent = baseenv()) {
+ndm_new_runtime_env <- function(parent = globalenv()) {
   env <- new.env(parent = parent)
   class(env) <- c("ndm_runtime_env", class(env))
   .ndm_install_runtime_helpers(env, analysis_root = .ndm_internal_analysis_root())
@@ -188,6 +219,7 @@ ndm_set_runtime_globals <- function(env, values, overwrite = TRUE) {
 #' @noRd
 ndm_source_runtime_helper_fxns <- function(analysis_root = .ndm_default_analysis_root(),
                                           env = ndm_new_runtime_env()) {
+  .ndm_require_namespaces("fastmatch", context = "ndm_prepare_runtime()")
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   .ndm_source_runtime_file(paths$helper_fxns, env)

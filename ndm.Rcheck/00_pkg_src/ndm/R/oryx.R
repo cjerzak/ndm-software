@@ -10,6 +10,10 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
       stop("seed must be provided", call. = FALSE)
     }
 
+    if (is.numeric(seed)) {
+      return(jax$random$PRNGKey(as.integer(seed)))
+    }
+
     try({
       shp <- seed$shape
       if (!is.null(shp) && length(shp) == 1L && as.integer(shp[[1]]) == 2L) {
@@ -17,12 +21,9 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
       }
     }, silent = TRUE)
 
-    if (!is.null(seed$shape) && length(seed$shape) == 0L) {
+    shape <- tryCatch(seed$shape, error = function(e) NULL)
+    if (!is.null(shape) && length(shape) == 0L) {
       return(jax$random$PRNGKey(as.integer(np$asarray(seed))))
-    }
-
-    if (is.numeric(seed)) {
-      return(jax$random$PRNGKey(as.integer(seed)))
     }
 
     jax$random$PRNGKey(as.integer(reticulate::py_to_r(seed)))

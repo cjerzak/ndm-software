@@ -497,6 +497,16 @@
   max_time_index <- max(bundle$truth_df_red$time_id, na.rm = TRUE)
   jnp <- runtime_env$jnp
   diffrax <- runtime_env$diffrax
+  runtime_array <- function(x) {
+    if (identical(runtime_env$backend$default_backend, "cpu")) {
+      return(jnp$array(x))
+    }
+    if (isTRUE(.ndm_runtime_get0(runtime_env, "force2GPU", ifnotfound = FALSE)) ||
+        isTRUE(.ndm_runtime_get0(runtime_env, "force_to_gpu", ifnotfound = FALSE))) {
+      return(runtime_env$send2gpu(x))
+    }
+    runtime_env$send2cpu(x)
+  }
   decoder_in_neural_ode <- isTRUE(.ndm_runtime_get0(runtime_env, "DecoderInNeuralODE", ifnotfound = FALSE))
 
   data_inputs <- .ndm_runtime_get0(runtime_env, "dataInputs", ifnotfound = NULL)
@@ -586,13 +596,13 @@
       nPlaces = bundle$nPlaces,
       MaxTimeIndex = max_time_index,
       AVERAGE_TRUTH = mean(bundle$truth_df_red[[bundle$outcome_metric]], na.rm = TRUE),
-      VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$array(seq_len(n_times_lookahead))),
+      VI_SaveAt_ODE = diffrax$SaveAt(ts = runtime_array(seq_len(n_times_lookahead))),
       diff_eq_solver = diffrax$Dopri8(),
       VI_diff_eq_solver = diffrax$Dopri8(),
       stepsize_controller = diffrax$PIDController(rtol = 1e-7, atol = 1e-9),
       diffraxInterpolator = diffrax$LinearInterpolation,
-      VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim - 1L))),
-      VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(n_times_lookahead - 1L))),
+      VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = runtime_array(0L:(n_time_steps_sim - 1L))),
+      VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = runtime_array(0L:(n_times_lookahead - 1L))),
       VI_diff_eq_solver_optim = diffrax$Tsit5(),
       VI_diff_eq_solver_dgp = diffrax$Tsit5(),
       dt0_init = 1e-1,

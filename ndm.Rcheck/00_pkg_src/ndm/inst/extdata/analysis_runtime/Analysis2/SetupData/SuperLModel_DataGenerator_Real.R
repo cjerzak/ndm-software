@@ -640,7 +640,7 @@
       if(!dir.exists(TfRecordDir)){ dir.create(TfRecordDir) }
       tfrecord_file_train <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "train", as.character(RealEntry$BaseID)) 
       tfrecord_file_inference <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "inference", as.character(RealEntry$BaseID)) 
-      nObsInference <- 1024L 
+      nObsInference <- as.integer(get0("nObsInference", inherits = TRUE, ifnotfound = 1024L))
       nTimesLookValidation <- nTimesLookValidationInference
       
       # resave runs 

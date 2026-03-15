@@ -271,6 +271,14 @@ ndm_collect_tfrecord_batches <- function(file,
   batches
 }
 
+.ndm_tf_value_to_r <- function(x) {
+  if ("python.builtin.object" %in% class(x) &&
+      isTRUE(reticulate::py_has_attr(x, "numpy"))) {
+    return(reticulate::py_to_r(x$numpy()))
+  }
+  reticulate::py_to_r(x)
+}
+
 #' Convert and bundle TFRecord batches
 #'
 #' These helpers convert TensorFlow batches to native R or JAX objects, package
@@ -327,12 +335,13 @@ ndm_collect_tfrecord_batches <- function(file,
 #' packaged <- ndm_batch_to_model_inputs(batch)
 #' length(packaged)
 #'
+#' @rdname ndm_tf_batch_to_r
 #' @export
 ndm_tf_batch_to_r <- function(batch) {
   if (is.list(batch)) {
     return(lapply(batch, ndm_tf_batch_to_r))
   }
-  reticulate::py_to_r(batch)
+  .ndm_tf_value_to_r(batch)
 }
 
 #' @rdname ndm_tf_batch_to_r
@@ -342,7 +351,11 @@ ndm_tf_batch_to_jax <- function(batch, backend = NULL) {
   if (is.list(batch)) {
     return(lapply(batch, ndm_tf_batch_to_jax, backend = backend))
   }
-  backend$jnp$array(reticulate::py_to_r(batch))
+  value <- .ndm_tf_value_to_r(batch)
+  if (identical(backend$default_backend, "cpu")) {
+    return(backend$jnp$array(value))
+  }
+  backend$send2gpu(value)
 }
 
 #' @rdname ndm_tf_batch_to_r
