@@ -19,9 +19,9 @@ Type 'q()' to quit R.
 > library(ndm)
 > 
 > test_check("ndm")
-[2026-03-15 15:42:48] Starting Analysis2 SuperLModel_MasterReal.R
-[2026-03-15 15:42:48] Starting Analysis2 SuperLModel_MasterSim.R
-[2026-03-15 15:42:48] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
+[2026-03-15 16:08:20] Starting Analysis2 SuperLModel_MasterReal.R
+[2026-03-15 16:08:20] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-15 16:08:20] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
 [ FAIL 0 | WARN 0 | SKIP 5 | PASS 111 ]
 
 ══ Skipped tests (5) ═══════════════════════════════════════════════════════════
@@ -36,4 +36,4 @@ Type 'q()' to quit R.
 > 
 > proc.time()
    user  system elapsed 
-  0.952   0.131   1.089 
+  0.951   0.138   1.135 
