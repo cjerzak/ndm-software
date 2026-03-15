@@ -73,3 +73,129 @@ test_that("predict rejects malformed packaged batches early", {
     "ndm_batch_to_model_inputs"
   )
 })
+
+test_that("predict uses batch_l_cal and supports the training prediction path", {
+  env <- ndm_test_runtime_env()
+  env$batch_l_cal <- ndm_test_named_batch()
+
+  pred <- ndm_predict(
+    env,
+    batch = NULL,
+    inference = FALSE,
+    update_state = FALSE
+  )
+
+  expect_equal(pred$kind, "train")
+  expect_equal(env$state$stage, "built")
+})
+
+test_that("loss accepts explicit targets and leaves state unchanged when requested", {
+  env <- ndm_test_runtime_env()
+  batch <- ndm_test_named_batch()
+  explicit_y <- array(9, dim = c(2, 3, 1))
+  explicit_mask <- array(FALSE, dim = c(2, 3, 1))
+
+  loss <- ndm_loss(
+    env,
+    batch = batch,
+    y = explicit_y,
+    y_mask = explicit_mask,
+    update_state = FALSE
+  )
+
+  expect_equal(loss$y, explicit_y)
+  expect_equal(loss$y_mask, explicit_mask)
+  expect_equal(env$state$stage, "built")
+})
+
+test_that("prediction and loss surface missing runtime bindings clearly", {
+  env <- ndm_new_runtime_env()
+  env$ModelList <- list(model = TRUE)
+  env$state <- list(stage = "built")
+
+  expect_error(
+    ndm_predict(env, batch = ndm_test_named_batch()),
+    "Runtime environment is missing required objects for prediction"
+  )
+
+  env <- ndm_test_runtime_env()
+  batch <- ndm_test_named_batch()
+  batch$YTrue_out <- NULL
+
+  expect_error(
+    ndm_loss(env, batch = batch),
+    "could not be inferred from the batch"
+  )
+})
+
+test_that("ndm_fit threads runtime, data, build, and train stages for real workflows", {
+  calls <- character()
+  seen <- new.env(parent = emptyenv())
+  config <- ndm_create_config(
+    model_type = "DecoderOnly",
+    backbone = "transformer",
+    float_type = "32",
+    force_to_gpu = FALSE
+  )
+  spec <- ndm_model_spec(preset = "seirs_dynamic_beta")
+
+  local_mocked_bindings(
+    ndm_prepare_runtime = function(config, runtime_env = ndm_new_runtime_env(), runtime_globals = list()) {
+      calls <<- c(calls, "prepare_runtime")
+      seen$runtime_globals <- runtime_globals
+      env <- ndm_new_runtime_env()
+      assign("stage", "runtime", envir = env)
+      env
+    },
+    ndm_prepare_data = function(runtime_env, generator = c("sim", "real", "multidisease"), runtime_globals = list()) {
+      calls <<- c(calls, paste0("prepare_data:", generator))
+      seen$data_globals <- runtime_globals
+      assign("data_generator", generator, envir = runtime_env)
+      runtime_env
+    },
+    ndm_build_model = function(runtime_env,
+                               model_type = c("DecoderOnly", "NeuralODE"),
+                               model_spec = NULL,
+                               backbone = "transformer",
+                               runtime_globals = list()) {
+      calls <<- c(calls, "build_model")
+      seen$build_globals <- runtime_globals
+      seen$build_model_type <- model_type
+      seen$build_backbone <- backbone
+      seen$model_spec <- model_spec
+      structure(list(env = runtime_env), class = "ndm_model")
+    },
+    ndm_train = function(x, run_define = TRUE, run_loop = TRUE) {
+      calls <<- c(calls, "train")
+      seen$train_globals <- mget("train_flag", envir = x$env, inherits = FALSE)
+      seen$run_define <- run_define
+      seen$run_loop <- run_loop
+      structure(list(env = x$env, calls = calls), class = "ndm_trained_model")
+    },
+    .package = "ndm"
+  )
+
+  trained <- ndm_fit(
+    config = config,
+    model_spec = spec,
+    data_generator = "real",
+    runtime_globals = list(runtime_flag = TRUE),
+    data_globals = list(data_flag = TRUE),
+    build_globals = list(build_flag = TRUE),
+    train_globals = list(train_flag = TRUE),
+    run_define = FALSE,
+    run_loop = TRUE
+  )
+
+  expect_s3_class(trained, "ndm_trained_model")
+  expect_equal(calls, c("prepare_runtime", "prepare_data:real", "build_model", "train"))
+  expect_equal(seen$runtime_globals, list(runtime_flag = TRUE))
+  expect_equal(seen$data_globals, list(data_flag = TRUE))
+  expect_equal(seen$build_globals, list(build_flag = TRUE))
+  expect_equal(seen$build_model_type, "DecoderOnly")
+  expect_equal(seen$build_backbone, "transformer")
+  expect_identical(seen$model_spec, spec)
+  expect_equal(seen$train_globals$train_flag, TRUE)
+  expect_false(seen$run_define)
+  expect_true(seen$run_loop)
+})

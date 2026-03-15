@@ -61,6 +61,12 @@ ndm_prepare_data <- function(runtime_env,
 
   generator <- match.arg(generator)
   ndm_set_runtime_globals(runtime_env, runtime_globals)
+  if (identical(generator, "sim")) {
+    .ndm_require_namespaces(
+      c("progress", "zoo"),
+      context = "ndm_prepare_data(generator = 'sim')"
+    )
+  }
   if (identical(generator, "multidisease")) {
     .ndm_prepare_multidisease_data(runtime_env)
   } else {
@@ -242,6 +248,39 @@ ndm_build_model <- function(runtime_env,
   analysis_root <- .ndm_internal_analysis_root()
   .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
+  ndm_source_runtime_backend(
+    analysis_root = analysis_root,
+    env = runtime_env,
+    float_type = runtime_env$float_type %||% "32",
+    force_to_gpu = isTRUE(runtime_env$force_to_gpu),
+    gpu_mem_frac = runtime_env$gpu_mem_frac,
+    resave_tfrecords = isTRUE(runtime_env$resave_tfrecords)
+  )
+  backend_modules <- ndm_backend_modules()
+  ndm_set_runtime_globals(
+    runtime_env,
+    list(
+      backend = backend_modules,
+      jax = backend_modules$jax,
+      jnp = backend_modules$jnp,
+      np = backend_modules$np,
+      optax = backend_modules$optax,
+      eq = backend_modules$eq,
+      diffrax = backend_modules$diffrax,
+      flash_mha = backend_modules$flash_mha,
+      py_gc = backend_modules$py_gc,
+      tf = backend_modules$tf,
+      jaxFloatType = backend_modules$jaxFloatType,
+      send2cpu = backend_modules$send2cpu,
+      send2gpu = backend_modules$send2gpu,
+      oryx = backend_modules$oryx,
+      SoftPlus = backend_modules$SoftPlus,
+      Sigmoid = backend_modules$Sigmoid,
+      InvSoftPlus = backend_modules$InvSoftPlus,
+      switch_filter_jit = backend_modules$eq$filter_jit,
+      DefaultDtypeTf = if (identical(backend_modules$float_type, "64")) "tf$float64" else "tf$float32"
+    )
+  )
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_set_runtime_globals(
     runtime_env,
@@ -472,6 +511,14 @@ ndm_train <- function(x,
                       run_define = TRUE,
                       run_loop = TRUE) {
   runtime_env <- .ndm_runtime_env_from_object(x)
+  required_packages <- "rrapply"
+  if (isTRUE(.ndm_runtime_get0(runtime_env, "nCheckpoints", ifnotfound = 0L) > 0L)) {
+    required_packages <- c(required_packages, "zip")
+  }
+  if (identical(.ndm_runtime_get0(runtime_env, "ndm_data_generator", ifnotfound = NULL), "multidisease")) {
+    required_packages <- c(required_packages, "zoo")
+  }
+  .ndm_require_namespaces(required_packages, context = "ndm_train()")
 
   analysis_root <- .ndm_internal_analysis_root()
   .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)

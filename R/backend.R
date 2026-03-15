@@ -1,3 +1,39 @@
+.ndm_backend_sys_info <- function() {
+  Sys.info()
+}
+
+.ndm_backend_system <- function(...) {
+  system(...)
+}
+
+.ndm_backend_conda_create <- function(...) {
+  reticulate::conda_create(...)
+}
+
+.ndm_backend_py_install <- function(...) {
+  reticulate::py_install(...)
+}
+
+.ndm_backend_conda_list <- function(...) {
+  reticulate::conda_list(...)
+}
+
+.ndm_backend_use_condaenv <- function(...) {
+  reticulate::use_condaenv(...)
+}
+
+.ndm_backend_py_available <- function(...) {
+  reticulate::py_available(...)
+}
+
+.ndm_backend_py_module_available <- function(...) {
+  reticulate::py_module_available(...)
+}
+
+.ndm_backend_import <- function(...) {
+  reticulate::import(...)
+}
+
 #' Provision and initialize the Python backend
 #'
 #' These helpers manage the reticulate-backed Python environment used by
@@ -24,7 +60,7 @@ ndm_check_backend <- function(conda_env = "ndm_software_env",
                               conda = "auto",
                               modules = c("jax", "numpy", "optax", "equinox", "diffrax")) {
   try_condaenv <- try(
-    reticulate::use_condaenv(conda_env, required = TRUE, conda = conda),
+    .ndm_backend_use_condaenv(conda_env, required = TRUE, conda = conda),
     silent = TRUE
   )
 
@@ -36,7 +72,7 @@ ndm_check_backend <- function(conda_env = "ndm_software_env",
     return(NULL)
   }
 
-  if (!reticulate::py_available(initialize = TRUE)) {
+  if (!.ndm_backend_py_available(initialize = TRUE)) {
     message(
       "Python is not available. Build the backend with ",
       "ndm::ndm_build_backend(conda_env = '", conda_env, "', conda = '", conda, "')."
@@ -44,7 +80,7 @@ ndm_check_backend <- function(conda_env = "ndm_software_env",
     return(NULL)
   }
 
-  missing_modules <- modules[!vapply(modules, reticulate::py_module_available, logical(1))]
+  missing_modules <- modules[!vapply(modules, .ndm_backend_py_module_available, logical(1))]
   if (length(missing_modules) > 0L) {
     message(
       "Missing Python modules: ", paste(missing_modules, collapse = ", "),
@@ -78,17 +114,18 @@ ndm_build_backend <- function(conda_env = "ndm_software_env",
                               python_version = "3.13",
                               include_tensorflow = TRUE,
                               extra_packages = c("optax", "equinox", "diffrax")) {
-  reticulate::conda_create(
+  .ndm_backend_conda_create(
     envname = conda_env,
     conda = conda,
     python_version = python_version
   )
 
-  os_name <- Sys.info()[["sysname"]]
-  machine <- Sys.info()[["machine"]]
+  sys_info <- .ndm_backend_sys_info()
+  os_name <- sys_info[["sysname"]]
+  machine <- sys_info[["machine"]]
   msg <- function(...) message(sprintf(...))
   pip_install <- function(pkgs) {
-    reticulate::py_install(
+    .ndm_backend_py_install(
       packages = pkgs,
       envname = conda_env,
       conda = conda,
@@ -109,7 +146,7 @@ ndm_build_backend <- function(conda_env = "ndm_software_env",
     if (identical(os_name, "Linux")) {
       drv <- try(
         suppressWarnings(
-          system(
+          .ndm_backend_system(
             "nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1",
             intern = TRUE
           )
@@ -154,7 +191,7 @@ ndm_build_backend <- function(conda_env = "ndm_software_env",
 
   if (identical(os_name, "Linux")) {
     try({
-      conda_envs <- reticulate::conda_list(conda = conda)
+      conda_envs <- .ndm_backend_conda_list(conda = conda)
       env_python <- conda_envs$python[conda_envs$name == conda_env]
       if (length(env_python) > 0L) {
         env_path <- dirname(dirname(env_python[1]))
@@ -197,22 +234,22 @@ ndm_initialize_backend <- function(conda_env = "ndm_software_env",
                                    import_tensorflow = TRUE) {
   float_type <- match.arg(float_type)
 
-  reticulate::use_condaenv(
+  .ndm_backend_use_condaenv(
     condaenv = conda_env,
     required = conda_env_required,
     conda = conda
   )
 
-  jax <- reticulate::import("jax")
-  jnp <- reticulate::import("jax.numpy")
-  np <- reticulate::import("numpy")
-  optax <- reticulate::import("optax")
-  eq <- reticulate::import("equinox")
-  diffrax <- reticulate::import("diffrax")
-  flash_mha <- try(reticulate::import("flash_attn_jax")$flash_mha, silent = TRUE)
-  py_gc <- try(reticulate::import("gc"), silent = TRUE)
-  tf <- if (isTRUE(import_tensorflow) && reticulate::py_module_available("tensorflow")) {
-    reticulate::import("tensorflow")
+  jax <- .ndm_backend_import("jax")
+  jnp <- .ndm_backend_import("jax.numpy")
+  np <- .ndm_backend_import("numpy")
+  optax <- .ndm_backend_import("optax")
+  eq <- .ndm_backend_import("equinox")
+  diffrax <- .ndm_backend_import("diffrax")
+  flash_mha <- try(.ndm_backend_import("flash_attn_jax")$flash_mha, silent = TRUE)
+  py_gc <- try(.ndm_backend_import("gc"), silent = TRUE)
+  tf <- if (isTRUE(import_tensorflow) && .ndm_backend_py_module_available("tensorflow")) {
+    .ndm_backend_import("tensorflow")
   } else {
     NULL
   }

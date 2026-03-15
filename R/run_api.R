@@ -259,6 +259,7 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
 }
 
 .ndm_source_analysis2_api_env <- function() {
+  .ndm_require_namespaces("yaml", context = "ndm_run_*() dry-run and Analysis2 orchestration")
   env <- new.env(parent = baseenv())
   assign("NDM_PACKAGE_ANALYSIS_ROOT", .ndm_internal_analysis_root(), envir = env)
   .ndm_eval_embedded_runtime("SetupEnv/Analysis2_api.R", env)

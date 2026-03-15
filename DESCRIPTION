@@ -21,7 +21,13 @@ Imports:
     reticulate,
     utils
 Suggests:
-    testthat (>= 3.0.0)
+    fastmatch,
+    progress,
+    rrapply,
+    testthat (>= 3.0.0),
+    yaml,
+    zip,
+    zoo
 License: GPL-3
 Encoding: UTF-8
 LazyData: false

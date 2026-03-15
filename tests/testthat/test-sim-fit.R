@@ -250,18 +250,7 @@ ndm_test_fit_sim_case <- function(model_type,
 
 ndm_skip_if_no_sim_backend <- function() {
   skip_on_cran()
-  skip_if_not_installed("reticulate")
-  skip_if_not_installed("fastmatch")
-  skip_if_not_installed("rrapply")
-  skip_if_not_installed("progress")
-  skip_if_not_installed("zip")
-  skip_if_not_installed("zoo")
-
-  backend_ready <- ndm_check_backend(
-    conda_env = "jax_cpu",
-    modules = c("jax", "numpy", "optax", "equinox", "diffrax", "tensorflow")
-  )
-  skip_if(is.null(backend_ready), "jax_cpu with JAX/TensorFlow is required for the simulation fit test.")
+  ndm_require_backend_test_stack("simulation fit tests")
 }
 
 test_that("simulated pandemic fits improve across model families and endogeneity levels", {

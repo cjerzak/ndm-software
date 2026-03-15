@@ -5,12 +5,14 @@
 \alias{ndm_set_runtime_globals}
 \title{Create and populate runtime environments}
 \usage{
-ndm_new_runtime_env(parent = baseenv())
+ndm_new_runtime_env(parent = globalenv())
 
 ndm_set_runtime_globals(env, values, overwrite = TRUE)
 }
 \arguments{
-\item{parent}{Parent environment for a new runtime environment.}
+\item{parent}{Parent environment for a new runtime environment. Defaults to
+`globalenv()` so bundled runtime scripts can resolve attached-package
+functions the same way the legacy workflow did.}
 
 \item{env}{Runtime environment that should receive new bindings.}
 
