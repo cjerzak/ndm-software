@@ -466,6 +466,18 @@
   required[!vapply(required, exists, logical(1), envir = env, inherits = FALSE)]
 }
 
+.ndm_multidisease_reject_retired_tfrecord_regeneration <- function(runtime_env) {
+  if (isTRUE(.ndm_runtime_get0(runtime_env, "resave_tfrecords", ifnotfound = FALSE)) ||
+      isTRUE(.ndm_runtime_get0(runtime_env, "ReSaveTfRecords", ifnotfound = FALSE))) {
+    stop(
+      "`resave_tfrecords = TRUE` is no longer supported for multidisease workflows.",
+      call. = FALSE
+    )
+  }
+
+  invisible(runtime_env)
+}
+
 .ndm_multidisease_set_default_globals <- function(runtime_env, bundle) {
   project_root <- .ndm_normalize_path(
     .ndm_runtime_get0(runtime_env, "project_root", ifnotfound = getwd()),
@@ -557,7 +569,7 @@
       AnalysisDate = Sys.Date(),
       DiseaseNameVec = bundle$resolved_diseases,
       COMMAND_ARG_INPUT = as.character(.ndm_runtime_get0(runtime_env, "COMMAND_ARG_INPUT", ifnotfound = "ndm")),
-      ReSaveTfRecords = isTRUE(runtime_env$resave_tfrecords),
+      ReSaveTfRecords = FALSE,
       force2GPU = isTRUE(runtime_env$force_to_gpu),
       GPU_MEM_FRAC = runtime_env$gpu_mem_frac,
       UseShortOutcomes = TRUE,
@@ -634,6 +646,7 @@
 }
 
 .ndm_prepare_multidisease_data <- function(runtime_env) {
+  .ndm_multidisease_reject_retired_tfrecord_regeneration(runtime_env)
   missing <- .ndm_multidisease_required_globals_missing(runtime_env)
   if (length(missing) > 0L) {
     stop(

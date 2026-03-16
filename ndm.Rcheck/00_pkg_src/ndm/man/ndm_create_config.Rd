@@ -30,7 +30,8 @@ Use `"32"` or `"64"`.}
 to place arrays on GPU when available.}
 
 \item{resave_tfrecords}{Logical scalar preserved for compatibility with
-existing run workflows.}
+existing run workflows. Multidisease workflows reject `TRUE` because the
+legacy TFRecord-regeneration path has been retired.}
 
 \item{gpu_mem_frac}{Optional GPU memory fraction forwarded into the runtime
 bootstrap code.}

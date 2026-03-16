@@ -366,9 +366,17 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     analysis2_dir_create(holder_folder)
 
     driver_env <- new.env(parent = globalenv())
+    driver_env$analysis2_as_int <- analysis2_as_int
+    driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
+    driver_env$analysis2_small_run_n_obs_inference <- analysis2_small_run_n_obs_inference
+    driver_env$analysis2_model_type <- analysis2_model_type
     driver_env$analysis2_multidisease_spec <- spec
     driver_env$analysis2_multidisease_grid <- real_grid
-    .ndm_eval_multidisease_driver(driver_env)
+    source(
+      file.path(paths$analysis_root, "SetupEnv", "Analysis2_legacy_multidisease_driver.R"),
+      local = driver_env,
+      chdir = FALSE
+    )
 
     invisible(get0("analysis2_multidisease_result", envir = driver_env, inherits = FALSE, ifnotfound = TRUE))
   }

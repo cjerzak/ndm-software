@@ -55,7 +55,7 @@ nTimesLookahead <- (4L * 3L)
 nTimesLookValidationInference <- nTimesLookahead
 OverDoDataFrac <- 0.90
 DecoderInNeuralODE <- FALSE
-endAppend <- FALSE
+endAppend <- TRUE
 print(ifelse(endAppend, yes = "Appending special tokens to **END**", no = "Appending special tokens to **START**"))
 
 # setup command arguments
@@ -174,13 +174,37 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
     eval(parse(text = sprintf("%s <- tmp_",e_)))
     eval(parse(text = sprintf("RealEntry['%s'] <- tmp_",e_)))
   }
+  if(exists("nSamplesTrain") && !is.na(nSamplesTrain) && nSamplesTrain > 0){
+    nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
+    nSamples_max <- as.integer(nSamplesTrain)
+    nSGD_DefiningLRSeq <- nSGD_model <- as.integer(round(nEpochesMax * (nSamples_max / nBatch)))
+    if (nSamples_max < 32L) {
+      nSGD_DefiningLRSeq <- nSGD_model <- 1L
+    }
+    nSGD_posttrain <- nSGD_model
+    nCheckpoints <- analysis2_small_run_n_checkpoints(nSamplesTrain, nSGD_model, nCheckpoints)
+    nObsInference <- analysis2_small_run_n_obs_inference(
+      n_samples_train = nSamplesTrain,
+      n_batch = nBatch,
+      configured = get0("nObsInference", inherits = FALSE, ifnotfound = NULL)
+    )
+  }
   modelingStrategyNameKey <- paste(c("RealMode", paste(names(RealEntry), 
                                                        RealEntry, sep = "_")), collapse = "__")
   
   # setup for tfrecord 
   TfRecordDir<-sprintf("./Data/RunTFRecords/RealTFRecords/%s",AnalysisName)
+  if(!dir.exists(TfRecordDir)){
+    dir.create(TfRecordDir, recursive = TRUE, showWarnings = FALSE)
+  }
+  need_canonical_tfrecords <- !all(file.exists(c(
+    sprintf('%s/%s_%s.tfrecord', TfRecordDir, "train", RealEntry$BaseID),
+    sprintf('%s/%s_%s.tfrecord', TfRecordDir, "inference", RealEntry$BaseID)
+  )))
   if(!ReSaveTfRecords){
-    stopifnot(file.exists(sprintf('%s/%s_%s.tfrecord', TfRecordDir, "train", RealEntry$BaseID)))
+    if(need_canonical_tfrecords){
+      warning(sprintf("Canonical TFRecords missing for BaseID %s; generating them on demand in DataGenerator_Real.R", RealEntry$BaseID))
+    }
   }
   
   # Forces 
@@ -322,7 +346,13 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   
   # setup data generator
   print2( "Defining data acquisition process..." )
+  if(need_canonical_tfrecords){
+    ReSaveTfRecords <- TRUE
+  }
   ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real.R")
+  if(need_canonical_tfrecords){
+    ReSaveTfRecords <- FALSE
+  }
 
   if(!ReSaveTfRecords){
   if(any(!sapply(unique(RealGrid$BaseID), function(s_){

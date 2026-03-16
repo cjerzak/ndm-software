@@ -42,6 +42,32 @@ recover_checkpoint_at <- get0("RecoverCheckpointAt", ifnotfound = NULL)
 if(isTRUE(recover_checkpoint_at)){
   recover_checkpoint_at <- "last"
 }
+checkpoint_has_scale_state <- function(){
+  exists("SIM_GLOBAL_SCALE_MEAN", inherits = TRUE) &&
+    exists("SIM_GLOBAL_SCALE_SD", inherits = TRUE)
+}
+checkpoint_scale_state <- function(){
+  if(!checkpoint_has_scale_state()){
+    return(NULL)
+  }
+  jnp$array(list(SIM_GLOBAL_SCALE_MEAN, SIM_GLOBAL_SCALE_SD))
+}
+checkpoint_model_payload <- function(){
+  payload <- list(ModelList, state, opt_state)
+  scale_state <- checkpoint_scale_state()
+  if(!is.null(scale_state)){
+    payload[[4]] <- scale_state
+  }
+  payload
+}
+restore_checkpoint_scale_state <- function(recovered_payload){
+  if(length(recovered_payload) < 4L || is.null(recovered_payload[[4]])){
+    return(invisible(NULL))
+  }
+  SIM_GLOBAL_SCALE_MEAN <<- jnp$take(recovered_payload[[4]], 0L, axis = 0L)$tolist()
+  SIM_GLOBAL_SCALE_SD <<- jnp$take(recovered_payload[[4]], 1L, axis = 0L)$tolist()
+  invisible(NULL)
+}
 for(i in i_:nSGD_model){
   if(Sys.info()["sysname"] != "Darwin" & i > 2){  
     #write.csv( file="./i_.csv",data.frame("i" = i, "te_total" = as.numeric(te_total, units = "secs"), "te_grad" = as.numeric(te_grads, units = "secs") ))  
@@ -65,8 +91,7 @@ for(i in i_:nSGD_model){
     if(save_eqx_enabled){ 
       # save_i <- "last"
       eq$tree_serialise_leaves(checkpoint_file("ModelList", save_i),
-                               list( ModelList, state, opt_state, 
-                                    jnp$array(list(SIM_GLOBAL_SCALE_MEAN,SIM_GLOBAL_SCALE_SD))))
+                               checkpoint_model_payload())
       if("ModelList_notshared_set" %in% ls()){
         eq$tree_serialise_leaves(checkpoint_file("ModelList_notshared_set", save_i),
                                  list(ModelList_notshared_set, # nonshared parameters 
@@ -81,8 +106,7 @@ for(i in i_:nSGD_model){
       RecoverAt <- recover_checkpoint_at
       ModelList_recovered <- eq$tree_deserialise_leaves(
         checkpoint_file("ModelList", RecoverAt),
-        list( ModelList, state, opt_state,
-             jnp$array(list(SIM_GLOBAL_SCALE_MEAN,SIM_GLOBAL_SCALE_SD)) ) ) 
+        checkpoint_model_payload()) 
       if("ModelList_notshared_set" %in% ls()){
         ModelList_notshared_set_recovered <- eq$tree_deserialise_leaves(checkpoint_file("ModelList_notshared_set", RecoverAt),
                                  list(ModelList_notshared_set, # non shared parameters 
@@ -94,14 +118,12 @@ for(i in i_:nSGD_model){
           SIM_GLOBAL_SCALE_SD_ <- jnp$take(l_,1L,axis=0L)$tolist()
           list(SIM_GLOBAL_SCALE_MEAN_, SIM_GLOBAL_SCALE_SD_)
         })
-        SIM_GLOBAL_SCALE_MEAN <- jnp$take(ModelList_recovered[[4]],0L,axis=0L)$tolist()
-        SIM_GLOBAL_SCALE_SD <- jnp$take(ModelList_recovered[[4]],1L,axis=0L)$tolist()
+        restore_checkpoint_scale_state(ModelList_recovered)
         ModelList_notshared_set <- ModelList_notshared_set_recovered[[1]]
       }
 
       # confirm 
-      SIM_GLOBAL_SCALE_MEAN <- jnp$take(ModelList_recovered[[4]],0L,axis=0L)$tolist()
-      SIM_GLOBAL_SCALE_SD <- jnp$take(ModelList_recovered[[4]],1L,axis=0L)$tolist()
+      restore_checkpoint_scale_state(ModelList_recovered)
       # opt_state[[1]]
       # opt_state[[3]][[1]]
       opt_state <- ModelList_recovered[[3]];

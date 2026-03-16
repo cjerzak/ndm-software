@@ -214,7 +214,7 @@ if(SimMode == T){
 
   
   # get factual and counterfactual data
-  PolicyScenarioSkillRes <- PolicyScenarioSkillBaselineRes <- NULL; nCounterfactuals <- 0; while( nCounterfactuals < 2 ){
+  PolicyScenarioSkillRes <- PolicyScenarioSkillBaselineRes <- NULL; nCounterfactuals <- 0; policy_eval_failed <- FALSE; while( nCounterfactuals < 2 ){
     nCounterfactuals <- nCounterfactuals + 1
     counterf_ <- ai(runif(1,1,10000))
     ok_<-F; ok_counter_ <- 0; while(!ok_){
@@ -231,9 +231,14 @@ if(SimMode == T){
                                       nTimesLook = nTimesLookValidation,
                                       PolicyList = PolicyList_GetBatch_unnatural), T) 
                                       #PolicyList = PolicyList_GetBatch_natural),T) # for debugging
-      if(ok_counter_ > 100){ stop("Problem with GetBatch Natural & Unnatural in SuperLModel_GetAnalytics_Sim.R") }
+      if(ok_counter_ > 100){
+        warning("Skipping policy scenario analytics because natural/counterfactual batches could not be generated")
+        policy_eval_failed <- TRUE
+        break
+      }
       if(!"try-error" %in% class(batch_l_natural) & !"try-error" %in% class(batch_l_unnatural) ){ ok_ <- T }
     }
+    if(policy_eval_failed){ break }
     {
       # get factual and counterfactual predictions
       # note: t is differnt in meaning for getting data and for modeling
@@ -313,9 +318,18 @@ if(SimMode == T){
       }
     }
   }
-  PolicyScenarioSkillRes <- colMeans(PolicyScenarioSkillRes)
-  PolicyScenarioSkillBaselineRes <- colMeans(PolicyScenarioSkillBaselineRes)
-  rm(batch_l_unnatural,batch_l_natural,hat_y_natural,hat_y_unnatural)
+  if(is.null(PolicyScenarioSkillRes) || is.null(PolicyScenarioSkillBaselineRes)){
+    PolicyScenarioSkillRes <- rep(NA_real_, nTimesLookValidationInference)
+    names(PolicyScenarioSkillRes) <- paste("PolicySkill", seq_len(nTimesLookValidationInference), sep="")
+    PolicyScenarioSkillBaselineRes <- rep(NA_real_, nTimesLookValidationInference)
+    names(PolicyScenarioSkillBaselineRes) <- paste("PolicySkillBaseline", seq_len(nTimesLookValidationInference), sep="")
+  } else {
+    PolicyScenarioSkillRes <- colMeans(PolicyScenarioSkillRes)
+    PolicyScenarioSkillBaselineRes <- colMeans(PolicyScenarioSkillBaselineRes)
+  }
+  rm_list_ <- c("batch_l_unnatural","batch_l_natural","hat_y_natural","hat_y_unnatural")
+  rm_list_ <- rm_list_[vapply(rm_list_, exists, logical(1), inherits = FALSE)]
+  if(length(rm_list_) > 0L){ rm(list = rm_list_) }
 
   ##############################
   # setup save variable names

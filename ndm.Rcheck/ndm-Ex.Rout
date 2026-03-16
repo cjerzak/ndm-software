@@ -20,6 +20,18 @@ Type 'q()' to quit R.
 > pkgname <- "ndm"
 > source(file.path(R.home("share"), "R", "examples-header.R"))
 > options(warn = 1)
+> base::assign(".ExTimings", "ndm-Ex.timings", pos = 'CheckExEnv')
+> base::cat("name\tuser\tsystem\telapsed\n", file=base::get(".ExTimings", pos = 'CheckExEnv'))
+> base::assign(".format_ptime",
++ function(x) {
++   if(!is.na(x[4L])) x[1L] <- x[1L] + x[4L]
++   if(!is.na(x[5L])) x[2L] <- x[2L] + x[5L]
++   options(OutDec = '.')
++   format(x[1L:3L], digits = 7L)
++ },
++ pos = 'CheckExEnv')
+> 
+> ### * </HEADER>
 > library('ndm')
 > 
 > base::assign(".oldSearch", base::search(), pos = 'CheckExEnv')
@@ -30,6 +42,7 @@ Type 'q()' to quit R.
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_build_model
 > ### Title: Build and train models with package-managed runtime stages
 > ### Aliases: ndm_build_model print.ndm_model ndm_train
@@ -49,12 +62,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_build_model", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_check_backend")
 > ### * ndm_check_backend
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_check_backend
 > ### Title: Provision and initialize the Python backend
 > ### Aliases: ndm_check_backend ndm_build_backend ndm_initialize_backend
@@ -81,12 +97,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_check_backend", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_create_config")
 > ### * ndm_create_config
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_create_config
 > ### Title: Create runtime configuration objects
 > ### Aliases: ndm_create_config print.ndm_config
@@ -103,12 +122,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_create_config", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_create_real_run_config")
 > ### * ndm_create_real_run_config
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_create_real_run_config
 > ### Title: Package-native run configurations and workflow runners
 > ### Aliases: ndm_create_real_run_config ndm_create_sim_run_config
@@ -130,12 +152,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_create_real_run_config", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_create_tfrecord_parser")
 > ### * ndm_create_tfrecord_parser
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_create_tfrecord_parser
 > ### Title: Create and read TensorFlow TFRecord datasets
 > ### Aliases: ndm_create_tfrecord_parser ndm_read_tfrecord_dataset
@@ -151,12 +176,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_create_tfrecord_parser", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_model_spec_presets")
 > ### * ndm_model_spec_presets
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_model_spec_presets
 > ### Title: Inspect and create epidemic model specifications
 > ### Aliases: ndm_model_spec_presets ndm_model_spec ndm_model_spec_from_tex
@@ -193,7 +221,7 @@ Type 'q()' to quit R.
   dynamic_beta: FALSE
   dynamic_global: FALSE
   multi_outcome: FALSE
-  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpB3elFb/ndm_embedded_model_specs/bayes_ode_SEIRS_FixedBeta_FixedGlobal.tex
+  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmppM6swF/working_dir/RtmpP8rEMO/ndm_embedded_model_specs/bayes_ode_SEIRS_FixedBeta_FixedGlobal.tex
 > 
 > spec <- ndm_model_spec()
 > tex_path <- tempfile(fileext = ".tex")
@@ -206,7 +234,7 @@ Type 'q()' to quit R.
   dynamic_beta: NA
   dynamic_global: NA
   multi_outcome: NA
-  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmpB3elFb/filed70f3288cdcc.tex
+  source_path: /private/var/folders/gv/l5wlstr55gl_g0pgx6k47z9m0000gn/T/RtmppM6swF/working_dir/RtmpP8rEMO/fileea4938ae69b5.tex
 > 
 > spec <- ndm_model_spec()
 > tex <- ndm_model_spec_to_tex(spec)
@@ -216,12 +244,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_model_spec_presets", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_new_runtime_env")
 > ### * ndm_new_runtime_env
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_new_runtime_env
 > ### Title: Create and populate runtime environments
 > ### Aliases: ndm_new_runtime_env ndm_set_runtime_globals
@@ -236,12 +267,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_new_runtime_env", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_predict")
 > ### * ndm_predict
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_predict
 > ### Title: Generate predictions or evaluate the training loss
 > ### Aliases: ndm_predict ndm_loss
@@ -256,12 +290,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_predict", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_prepare_runtime")
 > ### * ndm_prepare_runtime
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_prepare_runtime
 > ### Title: Prepare a local runtime for execution
 > ### Aliases: ndm_prepare_runtime ndm_prepare_data
@@ -280,12 +317,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_prepare_runtime", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_print")
 > ### * ndm_print
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_print
 > ### Title: Print a timestamped diagnostic message
 > ### Aliases: ndm_print
@@ -293,17 +333,44 @@ Type 'q()' to quit R.
 > ### ** Examples
 > 
 > ndm_print("starting")
-[2026-03-16 07:20:11] starting
+[2026-03-16 18:42:25] starting
 > 
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_print", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
+> cleanEx()
+> nameEx("ndm_save_model")
+> ### * ndm_save_model
+> 
+> flush(stderr()); flush(stdout())
+> 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
+> ### Name: ndm_save_model
+> ### Title: Save and restore model artifacts
+> ### Aliases: ndm_save_model ndm_load_model ndm_resume_training
+> 
+> ### ** Examples
+> 
+> ## Not run: 
+> ##D artifact_dir <- ndm_save_model(trained_model, tempfile("ndm-artifact-"))
+> ##D restored <- ndm_load_model(artifact_dir)
+> ##D resumed <- ndm_resume_training(artifact_dir, bundle = tf_bundle)
+> ## End(Not run)
+> 
+> 
+> 
+> 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_save_model", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_tf_batch_to_r")
 > ### * ndm_tf_batch_to_r
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_tf_batch_to_r
 > ### Title: Convert and bundle TFRecord batches
 > ### Aliases: ndm_tf_batch_to_r ndm_tf_batch_to_jax
@@ -327,12 +394,15 @@ Type 'q()' to quit R.
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_tf_batch_to_r", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > cleanEx()
 > nameEx("ndm_tfrecord_fields_real")
 > ### * ndm_tfrecord_fields_real
 > 
 > flush(stderr()); flush(stdout())
 > 
+> base::assign(".ptime", proc.time(), pos = "CheckExEnv")
 > ### Name: ndm_tfrecord_fields_real
 > ### Title: Inspect TFRecord field contracts
 > ### Aliases: ndm_tfrecord_fields_real ndm_tfrecord_fields_sim
@@ -360,12 +430,14 @@ location_id_numeric     time_id_numeric               YTrue          YTrue_mask
 > 
 > 
 > 
+> base::assign(".dptime", (proc.time() - get(".ptime", pos = "CheckExEnv")), pos = "CheckExEnv")
+> base::cat("ndm_tfrecord_fields_real", base::get(".format_ptime", pos = 'CheckExEnv')(get(".dptime", pos = "CheckExEnv")), "\n", file=base::get(".ExTimings", pos = 'CheckExEnv'), append=TRUE, sep="\t")
 > ### * <FOOTER>
 > ###
 > cleanEx()
 > options(digits = 7L)
 > base::cat("Time elapsed: ", proc.time() - base::get("ptime", pos = 'CheckExEnv'),"\n")
-Time elapsed:  1.346 0.218 4.621 1.982 0.583 
+Time elapsed:  1.389 0.142 3.652 1.375 0.389 
 > grDevices::dev.off()
 null device 
           1 

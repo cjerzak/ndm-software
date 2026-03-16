@@ -458,6 +458,7 @@ ndm_attach_tfrecord_bundle <- function(env,
     assign("TFDataset_inference", bundle$inference_dataset, envir = env)
     assign("TFDatasetIterator_inference", reticulate::as_iterator(bundle$inference_dataset), envir = env)
   }
+  assign("ndm_tfrecord_bundle_ref", .ndm_bundle_ref_from_bundle(bundle), envir = env)
 
   preview_dataset <- if (identical(calibration_source, "inference") && !is.null(bundle$inference_dataset)) {
     bundle$inference_dataset

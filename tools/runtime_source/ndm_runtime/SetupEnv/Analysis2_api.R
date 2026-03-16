@@ -29,6 +29,29 @@ analysis2_as_int <- function(x) {
   as.integer(round(analysis2_f2n(x)))
 }
 
+analysis2_small_run_n_checkpoints <- function(n_samples_train, n_sgd, default = 10L) {
+  n_samples <- max(1L, analysis2_as_int(n_samples_train))
+  max_sgd <- max(1L, analysis2_as_int(n_sgd))
+  if (n_samples < 32L) {
+    return(max(1L, min(3L, max_sgd)))
+  }
+  max(1L, min(analysis2_as_int(default), max_sgd))
+}
+
+analysis2_small_run_n_obs_inference <- function(n_samples_train,
+                                                n_batch,
+                                                configured = NULL,
+                                                default = 1024L) {
+  if (!is.null(configured) && !is.na(configured) && configured > 0L) {
+    return(analysis2_as_int(configured))
+  }
+  n_samples <- max(1L, analysis2_as_int(n_samples_train))
+  if (n_samples < 32L) {
+    return(max(32L, as.integer(8L * max(1L, analysis2_as_int(n_batch)))))
+  }
+  analysis2_as_int(default)
+}
+
 analysis2_parse_bool <- function(x) {
   if (is.null(x)) {
     return(NULL)
@@ -833,12 +856,23 @@ analysis2_real_training_spec <- function(ndmdatasets_pkg, row_values, model_type
 }
 
 analysis2_sim_dataset_spec <- function(ndmdatasets_pkg, row_values) {
+  lookahead <- if ("lookahead" %in% names(row_values)) {
+    analysis2_as_int(row_values$lookahead)
+  } else {
+    12L
+  }
+  n_time_steps <- if ("n_time_steps" %in% names(row_values)) {
+    analysis2_as_int(row_values$n_time_steps)
+  } else {
+    NULL
+  }
   analysis2_call(
     ndmdatasets_pkg,
     "ndm_datasets_dataset_spec",
     kind = "sim",
     context_length = analysis2_as_int(row_values$ContextLength),
-    lookahead = 12L,
+    lookahead = lookahead,
+    n_time_steps = n_time_steps,
     global_population = 10000,
     gamma = analysis2_f2n(row_values$gamma),
     sigma = analysis2_f2n(row_values$sigma),
@@ -860,8 +894,16 @@ analysis2_sim_dataset_spec <- function(ndmdatasets_pkg, row_values) {
     death_rate = 0.01,
     forward_shift_h = 4L,
     forward_shift_c = 7L,
-    n_inference_batches = 8L,
-    scaling_batches = 8L,
+    n_inference_batches = if ("n_inference_batches" %in% names(row_values)) {
+      analysis2_as_int(row_values$n_inference_batches)
+    } else {
+      8L
+    },
+    scaling_batches = if ("scaling_batches" %in% names(row_values)) {
+      analysis2_as_int(row_values$scaling_batches)
+    } else {
+      8L
+    },
     base_id = analysis2_as_int(row_values$BaseID)
   )
 }
@@ -1405,12 +1447,15 @@ analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
                                                  batch_size,
                                                  shuffle_train = FALSE) {
   tf <- runtime_env$tf %||% analysis2_import_tensorflow()
+  max_train_examples <- get0("nSamplesTrain", envir = runtime_env, inherits = TRUE, ifnotfound = NULL)
+  max_inference_examples <- get0("nObsInference", envir = runtime_env, inherits = TRUE, ifnotfound = NULL)
   train_dataset <- analysis2_call(
     ndmdatasets_pkg,
     "ndm_datasets_read_tfrecord_dataset",
     file = train_file,
     batch_size = batch_size,
     schema = schema_kind,
+    max_examples = max_train_examples,
     shuffle = FALSE,
     tensorflow = tf
   )
@@ -1428,6 +1473,7 @@ analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
     file = inference_file,
     batch_size = batch_size,
     schema = schema_kind,
+    max_examples = max_inference_examples,
     shuffle = FALSE,
     tensorflow = tf
   )
@@ -1499,6 +1545,12 @@ analysis2_real_runtime_globals <- function(row_values,
                                            outer_iteration,
                                            holder_folder,
                                            tfrecord_dir) {
+  n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
+  n_batch <- min(32L, n_samples_train)
+  n_sgd <- as.integer(round(9L * (n_samples_train / n_batch)))
+  if (n_samples_train < 32L) {
+    n_sgd <- 1L
+  }
   max_times_past <- analysis2_as_int(row_values$ContextLength)
   n_times_lookahead <- analysis2_as_int(dataset_spec$lookahead)
   jnp <- runtime_env$jnp
@@ -1513,11 +1565,22 @@ analysis2_real_runtime_globals <- function(row_values,
     max(0L, max_times_past + n_times_lookahead - 1L)
   }
 
+  n_checkpoints <- analysis2_small_run_n_checkpoints(n_samples_train, n_sgd)
+  n_obs_inference <- analysis2_small_run_n_obs_inference(
+    n_samples_train = n_samples_train,
+    n_batch = n_batch,
+    configured = row_values$nObsInference %||% NULL
+  )
+
   globals <- list(
     AnalysisName = analysis_name,
     AnalysisDate = analysis_date,
     BaseID = analysis2_as_int(row_values$BaseID),
     RealEntry = analysis2_scalar_df(row_values),
+    modelingStrategyNameKey = paste(
+      c("RealMode", paste(names(row_values), unlist(row_values, use.names = FALSE), sep = "_")),
+      collapse = "__"
+    ),
     ContextLength = max_times_past,
     evaluationMethod = as.character(row_values$evaluationMethod),
     evaluationTime = analysis2_as_int(row_values$evaluationTime),
@@ -1527,16 +1590,16 @@ analysis2_real_runtime_globals <- function(row_values,
     floatType = as.character(row_values$floatType),
     dataInputs = as.character(row_values$dataInputs),
     OSSType = as.character(row_values$OSSType),
-    nSamplesTrain = analysis2_as_int(row_values$nSamplesTrain),
+    nSamplesTrain = n_samples_train,
     ModelDepth = analysis2_as_int(row_values$ModelDepth),
     ModelDims = analysis2_as_int(row_values$ModelDims),
-    nBatch = 32L,
-    nCheckpoints = 10L,
+    nBatch = n_batch,
+    nCheckpoints = n_checkpoints,
     nEpochesMax = 9L,
-    nSGD_DefiningLRSeq = as.integer(round(9L * (analysis2_as_int(row_values$nSamplesTrain) / 32L))),
-    nSGD_model = as.integer(round(9L * (analysis2_as_int(row_values$nSamplesTrain) / 32L))),
+    nSGD_DefiningLRSeq = n_sgd,
+    nSGD_model = n_sgd,
     nSGD_pretrain = 0L,
-    nSGD_posttrain = as.integer(round(9L * (analysis2_as_int(row_values$nSamplesTrain) / 32L))),
+    nSGD_posttrain = n_sgd,
     LEARNING_RATE_MAX = 0.0002,
     LEARNING_RATE_MAX_model = 0.0002,
     LEARNING_RATE_MAX_pretrain = 1e-5,
@@ -1546,12 +1609,13 @@ analysis2_real_runtime_globals <- function(row_values,
     IsPretraining = FALSE,
     OUTER_ITERATION = analysis2_as_int(outer_iteration),
     SEED_ = analysis2_as_int(outer_iteration),
-    COMMAND_ARG_INPUT = NA_character_,
+    COMMAND_ARG_INPUT = "test",
     HolderFolder = holder_folder,
     TfRecordDir = tfrecord_dir,
     maxTimesPast = max_times_past,
     nTimesLookahead = n_times_lookahead,
     nTimesLookValidationInference = n_times_lookahead,
+    nObsInference = n_obs_inference,
     nTimesTotal = max_times_past + n_times_lookahead,
     VI_TotalTimesInLikelihood = vi_total_times,
     minAnchoringTimeID = analysis2_as_int(dataset_spec$min_anchoring_time),
@@ -1559,7 +1623,7 @@ analysis2_real_runtime_globals <- function(row_values,
     NTimeSteps_SIM = n_time_steps_sim,
     MaxSteps = as.integer(10^6),
     DecoderInNeuralODE = FALSE,
-    endAppend = FALSE,
+    endAppend = TRUE,
     OverDoDataFrac = 0.90,
     specificOptState = TRUE,
     SharedListNames = c("TS"),
@@ -1631,15 +1695,21 @@ analysis2_sim_runtime_globals <- function(row_values,
                                           sim_outcome_sd,
                                           sim_covariates,
                                           get_batch) {
-  n_batch <- 32L
-  n_sgd <- as.integer(round(6L * (analysis2_as_int(row_values$nSamplesTrain) / n_batch)))
+  n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
+  n_batch <- min(32L, n_samples_train)
+  n_sgd <- as.integer(round(6L * (n_samples_train / n_batch)))
+  if (n_samples_train < 32L) {
+    n_sgd <- 1L
+  }
   n_times_past <- analysis2_as_int(dataset_spec$context_length)
   n_times_lookahead <- analysis2_as_int(dataset_spec$lookahead)
   n_times_total <- n_times_past + n_times_lookahead
-  n_time_steps_sim <- as.integer((n_times_past + n_times_lookahead) * 4L)
+  n_time_steps_sim <- as.integer((n_times_past + n_times_lookahead) * 2L)
   jnp <- runtime_env$jnp
   diffrax <- runtime_env$diffrax
   max_time_index <- max(0L, n_time_steps_sim - 1L)
+
+  n_checkpoints <- analysis2_small_run_n_checkpoints(n_samples_train, n_sgd)
 
   list(
     AnalysisName = analysis_name,
@@ -1647,11 +1717,14 @@ analysis2_sim_runtime_globals <- function(row_values,
     BaseID = analysis2_as_int(row_values$BaseID),
     SimEntry = row_values,
     ContextLength = analysis2_as_int(row_values$ContextLength),
+    nSamplesTrain = n_samples_train,
+    nSamples_max = n_samples_train,
     floatType = as.character(row_values$floatType),
+    paddingMethod = as.character(row_values$paddingMethod %||% "left"),
     ModelDepth = analysis2_as_int(row_values$ModelDepth),
     ModelDims = analysis2_as_int(row_values$ModelDims),
     nBatch = n_batch,
-    nCheckpoints = 10L,
+    nCheckpoints = n_checkpoints,
     nSGD_DefiningLRSeq = n_sgd,
     nSGD_model = n_sgd,
     nSGD_pretrain = 0L,
@@ -1661,21 +1734,33 @@ analysis2_sim_runtime_globals <- function(row_values,
     simCovariates = sim_covariates,
     useLSTM = FALSE,
     quantizeX = FALSE,
+    paddingMethod = if ("paddingMethod" %in% names(row_values)) {
+      as.character(row_values$paddingMethod)
+    } else {
+      "left"
+    },
     SimMode = TRUE,
     IsPretraining = FALSE,
     OUTER_ITERATION = analysis2_as_int(outer_iteration),
     SEED_ = 100L + analysis2_as_int(outer_iteration),
-    COMMAND_ARG_INPUT = NA_character_,
+    COMMAND_ARG_INPUT = "test",
     HolderFolder = holder_folder,
     TfRecordDir = tfrecord_dir,
     GLOBAL_ODE_NPOP = 10000,
     rollCompute_window = 52L,
     nPolicies = 1L,
     nOutcomes = 1L,
+    af = 1L,
     AppendTimeEmbeds = FALSE,
     AppendPlaceEmbeds = FALSE,
+    endAppend = TRUE,
+    EnableKVCaching = TRUE,
     MaxTimeIndex = max_time_index,
     nPlaces = 1L,
+    nMonteEval = 1L,
+    nBatch_SimGridGen = 8L,
+    SimScalingOuterLoops = 1L,
+    SimScalingInnerLoops = 2L,
     nTimesPast = n_times_past,
     nTimesLookahead = n_times_lookahead,
     nTimesTotal = n_times_total,
@@ -1683,8 +1768,8 @@ analysis2_sim_runtime_globals <- function(row_values,
     VI_TotalTimesInLikelihood = n_times_lookahead,
     nTimesInLikelihood = n_times_lookahead,
     NTimeSteps_SIM = n_time_steps_sim,
-    nTimesLookValidationInference = 50L,
-    MaxSteps = as.integer(10^6),
+    nTimesLookValidationInference = n_times_lookahead,
+    MaxSteps = as.integer(10^4),
     VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim - 1L))),
     VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(n_times_lookahead - 1L))),
     VI_diff_eq_solver_optim = diffrax$Tsit5(),
@@ -2064,6 +2149,14 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
         )
       )
     )
+    if (!exists("paddingMethod", envir = runtime_env, inherits = FALSE) ||
+        is.null(get("paddingMethod", envir = runtime_env, inherits = FALSE))) {
+      assign("paddingMethod", "left", envir = runtime_env)
+    }
+    if (!exists("endAppend", envir = runtime_env, inherits = FALSE) ||
+        is.null(get("endAppend", envir = runtime_env, inherits = FALSE))) {
+      assign("endAppend", TRUE, envir = runtime_env)
+    }
 
     preview_batch <- get_batch(nBatch = get("nBatch", envir = runtime_env))
     analysis2_seed_runtime_batch(runtime_env, preview_batch)
@@ -2143,6 +2236,10 @@ analysis2_run_real_multidisease <- function(args = commandArgs(TRUE)) {
   analysis2_dir_create(holder_folder)
 
   driver_env <- new.env(parent = globalenv())
+  driver_env$analysis2_as_int <- analysis2_as_int
+  driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
+  driver_env$analysis2_small_run_n_obs_inference <- analysis2_small_run_n_obs_inference
+  driver_env$analysis2_model_type <- analysis2_model_type
   driver_env$analysis2_multidisease_spec <- spec
   driver_env$analysis2_multidisease_grid <- real_grid
   source(

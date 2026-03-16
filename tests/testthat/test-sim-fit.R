@@ -225,8 +225,6 @@ ndm_test_fit_sim_case <- function(model_type,
   if (isTRUE(return_details)) {
     batch <- if (exists("batch_l_cal", envir = runtime_env, inherits = FALSE)) {
       get("batch_l_cal", envir = runtime_env, inherits = FALSE)
-    } else if (exists("batch_l_cal", envir = .GlobalEnv, inherits = FALSE)) {
-      get("batch_l_cal", envir = .GlobalEnv, inherits = FALSE)
     } else if (exists("TFDataset_train", envir = runtime_env, inherits = FALSE) &&
                exists("TFConst2JAXArray", envir = runtime_env, inherits = FALSE)) {
       runtime_env$TFConst2JAXArray(

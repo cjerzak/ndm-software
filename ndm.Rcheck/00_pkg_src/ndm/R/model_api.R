@@ -28,6 +28,7 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
     stop("`config` must inherit from class 'ndm_config'.", call. = FALSE)
   }
 
+  ndm_set_runtime_globals(runtime_env, list(ndm_config = config))
   ndm_set_runtime_globals(runtime_env, as.list(config))
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_load_runtime(
@@ -60,6 +61,7 @@ ndm_prepare_data <- function(runtime_env,
 
   generator <- match.arg(generator)
   ndm_set_runtime_globals(runtime_env, runtime_globals)
+  ndm_set_runtime_globals(runtime_env, list(ndm_data_generator = generator))
   if (identical(generator, "sim")) {
     .ndm_require_namespaces(
       c("progress", "zoo"),
@@ -283,7 +285,9 @@ ndm_build_model <- function(runtime_env,
     list(
       ModelType = model_type,
       BackboneType = backbone,
-      UseLatentAttention = FALSE
+      UseLatentAttention = FALSE,
+      ndm_model_type = model_type,
+      ndm_backbone = backbone
     )
   )
 
@@ -323,12 +327,21 @@ ndm_build_model <- function(runtime_env,
     context = "prediction and loss after model build"
   )
 
+  ndm_set_runtime_globals(
+    runtime_env,
+    list(
+      ndm_model_spec = model_spec
+    )
+  )
+
   structure(
     list(
       env = runtime_env,
       model_type = model_type,
       backbone = backbone,
+      config = .ndm_runtime_get0(runtime_env, "ndm_config", ifnotfound = NULL),
       model_spec = model_spec,
+      data_generator = .ndm_runtime_get0(runtime_env, "ndm_data_generator", ifnotfound = NULL),
       model = if (exists("ModelList", envir = runtime_env, inherits = FALSE)) {
         get("ModelList", envir = runtime_env, inherits = FALSE)
       } else {
@@ -564,6 +577,11 @@ ndm_train <- function(x,
   structure(
     list(
       env = runtime_env,
+      config = .ndm_runtime_get0(runtime_env, "ndm_config", ifnotfound = NULL),
+      model_spec = .ndm_runtime_get0(runtime_env, "ndm_model_spec", ifnotfound = NULL),
+      model_type = .ndm_runtime_get0(runtime_env, "ndm_model_type", ifnotfound = NULL),
+      backbone = .ndm_runtime_get0(runtime_env, "ndm_backbone", ifnotfound = NULL),
+      data_generator = .ndm_runtime_get0(runtime_env, "ndm_data_generator", ifnotfound = NULL),
       model = if (exists("ModelList", envir = runtime_env, inherits = FALSE)) {
         get("ModelList", envir = runtime_env, inherits = FALSE)
       } else {

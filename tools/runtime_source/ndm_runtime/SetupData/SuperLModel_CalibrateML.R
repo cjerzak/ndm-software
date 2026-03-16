@@ -134,9 +134,12 @@ print2("Starting a round of SuperLModel_CalibrateML.R")
                                              sd(c(np$asanyarray(SoftPlus( samp_param$diff_eq_sol_ys.sd_l ))[,,NeuralEmbedDim+1])),
                                              "sd_l", NA )))
         # diagnostics about temporal evolution - should always go up OR down
-        plot(ExtractBetaDraw(samp_param)$BetaDraw[sample(1:30,1),])
-        #plot(np$asanyarray(SoftPlus( samp_param$diff_eq_sol_ys.sd_l ))[,,NeuralEmbedDim+1][sample(1:30,1),])
-        hist(apply(ExtractBetaDraw(samp_param)$BetaDraw,1,diff));abline(v=0,lwd = 2)
+        beta_draw <- ExtractBetaDraw(samp_param)$BetaDraw
+        if(!is.null(dim(beta_draw)) && nrow(beta_draw) > 0L){
+          plot(beta_draw[sample(seq_len(nrow(beta_draw)), 1L),])
+          #plot(np$asanyarray(SoftPlus( samp_param$diff_eq_sol_ys.sd_l ))[,,NeuralEmbedDim+1][sample(seq_len(dim(beta_draw)[1]),1L),])
+          hist(apply(beta_draw,1,diff));abline(v=0,lwd = 2)
+        }
         #hist(apply(np$asanyarray(SoftPlus( samp_param$diff_eq_sol_ys.sd_l ))[,,NeuralEmbedDim+1],1,diff));abline(v=0,lwd = 5)
 
         initial_calibrations <- rbind(initial_calibrations,

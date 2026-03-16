@@ -121,6 +121,15 @@ For full execution rather than dry runs, the package also exposes
 setup plus runtime globals and data inputs beyond the lightweight tutorial
 above.
 
+Trained low-level models can also be persisted as versioned artifacts and
+restored later:
+
+```r
+artifact_dir <- ndm_save_model(trained_model, "artifacts/run-001")
+restored_model <- ndm_load_model(artifact_dir)
+resumed_model <- ndm_resume_training(artifact_dir, bundle = tf_bundle)
+```
+
 Equivalent run helpers exist for each orchestration mode:
 
 - `ndm_create_real_run_config()` + `ndm_run_real()`

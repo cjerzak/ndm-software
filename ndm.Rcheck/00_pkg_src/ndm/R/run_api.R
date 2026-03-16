@@ -15,6 +15,8 @@
 #' @param respect_grid_model_type Logical scalar indicating whether grid rows
 #'   should be allowed to override the requested model type.
 #' @param resave_tfrecords Logical scalar controlling TFRecord regeneration.
+#'   Supported for real and simulation workflows. Multidisease workflows reject
+#'   `TRUE` because the legacy regeneration path has been retired.
 #' @param tfrecord_dir Optional TFRecord output directory.
 #' @param raw_data_dir Real-data input directory.
 #' @param outcome_metric Outcome metric name for real-data or multidisease runs.
@@ -129,6 +131,17 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
   )
 }
 
+.ndm_validate_resave_tfrecords <- function(mode, resave_tfrecords) {
+  if (identical(mode, "multidisease") && isTRUE(resave_tfrecords)) {
+    stop(
+      "`resave_tfrecords = TRUE` is no longer supported for multidisease workflows.",
+      call. = FALSE
+    )
+  }
+
+  invisible(TRUE)
+}
+
 .ndm_make_run_config <- function(mode,
                                  project_root,
                                  analysis_name,
@@ -158,6 +171,7 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
   if (length(outer) == 0L || anyNA(outer)) {
     stop("`outer` must contain at least one integer row index.", call. = FALSE)
   }
+  .ndm_validate_resave_tfrecords(mode, resave_tfrecords)
 
   class_name <- switch(
     mode,
@@ -352,9 +366,17 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     analysis2_dir_create(holder_folder)
 
     driver_env <- new.env(parent = globalenv())
+    driver_env$analysis2_as_int <- analysis2_as_int
+    driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
+    driver_env$analysis2_small_run_n_obs_inference <- analysis2_small_run_n_obs_inference
+    driver_env$analysis2_model_type <- analysis2_model_type
     driver_env$analysis2_multidisease_spec <- spec
     driver_env$analysis2_multidisease_grid <- real_grid
-    .ndm_eval_multidisease_driver(driver_env)
+    source(
+      file.path(paths$analysis_root, "SetupEnv", "Analysis2_legacy_multidisease_driver.R"),
+      local = driver_env,
+      chdir = FALSE
+    )
 
     invisible(get0("analysis2_multidisease_result", envir = driver_env, inherits = FALSE, ifnotfound = TRUE))
   }
@@ -436,5 +458,6 @@ ndm_run_multidisease <- function(config = ndm_create_multidisease_run_config()) 
   if (!inherits(config, "ndm_multidisease_run_config")) {
     stop("`config` must inherit from class 'ndm_multidisease_run_config'.", call. = FALSE)
   }
+  .ndm_validate_resave_tfrecords("multidisease", config$resave_tfrecords)
   .ndm_call_analysis2_runner("multidisease", config)
 }

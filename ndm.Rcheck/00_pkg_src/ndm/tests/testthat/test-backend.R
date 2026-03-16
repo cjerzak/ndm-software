@@ -145,6 +145,16 @@ test_that("ndm_initialize_backend configures float types and caches the backend"
   fake_modules <- ndm_test_fake_backend_modules(default_backend = "cpu")
   old_backend <- ndm:::ndm_env$backend
   on.exit(assign("backend", old_backend, envir = ndm:::ndm_env), add = TRUE)
+  old_jax_platforms <- Sys.getenv("JAX_PLATFORMS", unset = NA_character_)
+  on.exit(
+    if (is.na(old_jax_platforms)) {
+      Sys.unsetenv("JAX_PLATFORMS")
+    } else {
+      Sys.setenv(JAX_PLATFORMS = old_jax_platforms)
+    },
+    add = TRUE
+  )
+  Sys.unsetenv("JAX_PLATFORMS")
 
   local_mocked_bindings(
     .ndm_backend_use_condaenv = function(...) invisible(TRUE),
@@ -176,6 +186,7 @@ test_that("ndm_initialize_backend configures float types and caches the backend"
   expect_equal(backend$oryx, "oryx-shim")
   expect_true(is.function(backend$JaxKey))
   expect_identical(ndm_backend_modules(), backend)
+  expect_identical(Sys.getenv("JAX_PLATFORMS", unset = ""), "cpu")
 })
 
 test_that("ndm_backend_modules errors before initialization", {
