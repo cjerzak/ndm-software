@@ -2,7 +2,7 @@
 #'
 #' These helpers capture the maintained package-only orchestration surface for
 #' real, simulation, and multidisease runs. They replace the old expectation
-#' that callers execute a project-local `Analysis2` checkout.
+#' that callers execute an external runtime checkout.
 #'
 #' @param project_root Working project directory used for grids, TFRecords, and
 #'   outputs.
@@ -258,22 +258,151 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
   args
 }
 
-.ndm_source_analysis2_api_env <- function() {
-  .ndm_require_namespaces("yaml", context = "ndm_run_*() dry-run and Analysis2 orchestration")
-  env <- new.env(parent = baseenv())
-  assign("NDM_PACKAGE_ANALYSIS_ROOT", .ndm_internal_analysis_root(), envir = env)
-  .ndm_eval_embedded_runtime("SetupEnv/Analysis2_api.R", env)
+.ndm_disable_legacy_run_manifests <- function(env) {
+  stopifnot(is.environment(env))
+
+  # The maintained `ndm_run_*()` entrypoints consume structured config objects
+  # directly and no longer require the legacy YAML manifest layer.
+  require_yaml <- function() invisible("yaml")
+  environment(require_yaml) <- env
+  assign("analysis2_require_yaml", require_yaml, envir = env)
+
+  resolve_config_file <- function(mode, opts, analysis_root, project_root) {
+    explicit_path <- analysis2_normalize_string(opts$config)
+    if (is.null(explicit_path)) {
+      return(NULL)
+    }
+    analysis2_path_from_project(explicit_path, project_root = project_root, must_work = FALSE)
+  }
+  environment(resolve_config_file) <- env
+  assign("analysis2_resolve_config_file", resolve_config_file, envir = env)
+
+  invisible(env)
+}
+
+.ndm_filter_formal_args <- function(fun, args) {
+  formal_names <- names(formals(fun))
+  if (is.null(formal_names) || "..." %in% formal_names) {
+    return(args)
+  }
+
+  arg_names <- names(args)
+  if (is.null(arg_names)) {
+    arg_names <- rep("", length(args))
+  }
+
+  keep <- !nzchar(arg_names) | arg_names %in% formal_names
+  args[keep]
+}
+
+.ndm_override_legacy_model_tex_loc <- function(env) {
+  resolve_model_tex_loc <- function(row_values) {
+    legacy_path <- analysis2_normalize_string(row_values$model_tex_loc)
+    if (!is.null(legacy_path)) {
+      return(legacy_path)
+    }
+
+    spec_name <- analysis2_model_spec_name(
+      model_spec_name = row_values$model_spec_name,
+      model_tex_loc = row_values$model_tex_loc
+    )
+    if (is.null(spec_name)) {
+      return(NULL)
+    }
+
+    packaged_tex_path <- system.file(
+      "extdata",
+      "model_specs",
+      sprintf("%s.tex", spec_name),
+      package = "ndm"
+    )
+    if (nzchar(packaged_tex_path) && file.exists(packaged_tex_path)) {
+      return(packaged_tex_path)
+    }
+
+    file.path("./Analysis2/ModelStructureTex", sprintf("%s.tex", spec_name))
+  }
+  environment(resolve_model_tex_loc) <- env
+  assign("analysis2_resolve_model_tex_loc", resolve_model_tex_loc, envir = env)
+
+  invisible(env)
+}
+
+.ndm_override_legacy_multidisease_runner <- function(env) {
+  run_real_multidisease <- function(args = commandArgs(TRUE)) {
+    options(error = NULL)
+    analysis2_log("Starting package-native multidisease runner")
+    spec <- analysis2_build_run_spec("multidisease", args)
+    if (isTRUE(spec$help)) {
+      return(analysis2_print_usage("multidisease", paths = spec$paths))
+    }
+
+    paths <- spec$paths
+    grid_file <- normalizePath(spec$grid_file, winslash = "/", mustWork = TRUE)
+    real_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)), spec$outer)
+    analysis2_validate_outer_iterations(real_grid, spec$outer, grid_file)
+
+    if (isTRUE(spec$dry_run)) {
+      return(analysis2_dry_run_result(spec, real_grid))
+    }
+
+    setwd(paths$project_root)
+    analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
+    holder_folder <- file.path(paths$project_root, "SavedResults", "Real", sprintf("Results_%s", spec$analysis_name))
+    analysis2_dir_create(holder_folder)
+
+    driver_env <- new.env(parent = globalenv())
+    driver_env$analysis2_multidisease_spec <- spec
+    driver_env$analysis2_multidisease_grid <- real_grid
+    .ndm_eval_multidisease_driver(driver_env)
+
+    invisible(get0("analysis2_multidisease_result", envir = driver_env, inherits = FALSE, ifnotfound = TRUE))
+  }
+  environment(run_real_multidisease) <- env
+  assign("analysis2_run_real_multidisease", run_real_multidisease, envir = env)
+
+  invisible(env)
+}
+
+.ndm_configure_legacy_run_env <- function(env) {
+  stopifnot(is.environment(env))
+
+  assign("analysis2_internal_analysis_root", function() .ndm_internal_analysis_root(), envir = env)
+  assign(
+    "analysis2_call",
+    function(pkg, name, ...) {
+      fun <- getExportedValue(pkg, name)
+      args <- list(...)
+      do.call(fun, .ndm_filter_formal_args(fun, args))
+    },
+    envir = env
+  )
+
+  .ndm_disable_legacy_run_manifests(env)
+  .ndm_override_legacy_model_tex_loc(env)
+  .ndm_override_legacy_multidisease_runner(env)
   env
 }
 
+.ndm_legacy_run_env <- local({
+  cache <- NULL
+
+  function(refresh = FALSE) {
+    if (isTRUE(refresh) || is.null(cache)) {
+      cache <<- .ndm_configure_legacy_run_env(.ndm_new_run_impl_env())
+    }
+    cache
+  }
+})
+
 .ndm_call_analysis2_runner <- function(mode, config) {
-  api_env <- .ndm_source_analysis2_api_env()
+  api_env <- .ndm_legacy_run_env()
   run_fun <- get(.ndm_run_mode_fun_name(mode), envir = api_env, inherits = FALSE)
   run_fun(.ndm_run_config_to_args(config))
 }
 
 .ndm_invoke_legacy_analysis2_runner <- function(mode, args = commandArgs(TRUE)) {
-  api_env <- .ndm_source_analysis2_api_env()
+  api_env <- .ndm_legacy_run_env()
   run_fun <- get(.ndm_run_mode_fun_name(mode), envir = api_env, inherits = FALSE)
   run_fun(args)
 }

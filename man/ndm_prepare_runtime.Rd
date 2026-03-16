@@ -37,7 +37,7 @@ runtime code is sourced.}
   the requested data generator.
 }
 \description{
-These wrappers load caller-supplied runtime scripts into an isolated
+These wrappers load package-owned runtime components into an isolated
 environment and then source the selected data generator.
 }
 \examples{

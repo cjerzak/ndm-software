@@ -1,6 +1,9 @@
-test_that("runtime bundle helpers are not part of the public surface", {
+test_that("runtime implementation helpers are not part of the public surface", {
   exports <- getNamespaceExports("ndm")
 
+  expect_false("ndm_run_analysis2_real" %in% exports)
+  expect_false("ndm_run_analysis2_sim" %in% exports)
+  expect_false("ndm_run_analysis2_multidisease" %in% exports)
   expect_false("ndm_runtime_paths" %in% exports)
   expect_false("ndm_load_runtime" %in% exports)
   expect_false("ndm_source_runtime_helper_fxns" %in% exports)

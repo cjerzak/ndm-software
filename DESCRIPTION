@@ -11,8 +11,8 @@ Authors@R:
 Description: Provides an R-first interface for neural disease modeling with a
     reticulate-managed JAX backend. The package includes backend bootstrap
     helpers, built-in epidemiological model specifications, TFRecord-consuming
-    data interfaces, a bundled self-contained analysis runtime, and
-    package-native orchestration helpers for model execution.
+    data interfaces, package-managed runtime helpers, and package-native
+    orchestration helpers for model execution.
 Depends: R (>= 4.1.0)
 Imports:
     data.table,
@@ -25,7 +25,6 @@ Suggests:
     progress,
     rrapply,
     testthat (>= 3.0.0),
-    yaml,
     zip,
     zoo
 License: GPL-3

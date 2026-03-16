@@ -1,6 +1,6 @@
 #' Prepare a local runtime for execution
 #'
-#' These wrappers load caller-supplied runtime scripts into an isolated
+#' These wrappers load package-owned runtime components into an isolated
 #' environment and then source the selected data generator.
 #'
 #' @param config An object of class `ndm_config`, usually created by
@@ -31,7 +31,6 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
   ndm_set_runtime_globals(runtime_env, as.list(config))
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_load_runtime(
-    analysis_root = .ndm_internal_analysis_root(),
     env = runtime_env,
     float_type = config$float_type,
     force_to_gpu = config$force_to_gpu,
@@ -71,7 +70,6 @@ ndm_prepare_data <- function(runtime_env,
     .ndm_prepare_multidisease_data(runtime_env)
   } else {
     ndm_source_runtime_data(
-      analysis_root = .ndm_internal_analysis_root(),
       env = runtime_env,
       generator = generator
     )
@@ -185,15 +183,15 @@ ndm_prepare_data <- function(runtime_env,
   )
 }
 
-#' Build and train models with a local runtime
+#' Build and train models with package-managed runtime stages
 #'
-#' These wrappers layer a small R API over local Phase 1 model build and
-#' training scripts.
+#' These wrappers layer a small R API over package-managed Phase 1 model build
+#' and training stages.
 #'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.
-#' @param runtime_env Runtime environment containing the sourced legacy helper
-#'   code and data globals.
+#' @param runtime_env Runtime environment containing loaded runtime helpers and
+#'   data globals.
 #' @param model_type Model family to build. Either `"DecoderOnly"` or
 #'   `"NeuralODE"`.
 #' @param model_spec Optional `ndm_model_spec` object used to override the model
@@ -245,11 +243,9 @@ ndm_build_model <- function(runtime_env,
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
 
-  analysis_root <- .ndm_internal_analysis_root()
-  .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
-  paths <- ndm_runtime_paths(analysis_root)
+  .ndm_install_runtime_helpers(runtime_env)
+  paths <- ndm_runtime_paths()
   ndm_source_runtime_backend(
-    analysis_root = analysis_root,
     env = runtime_env,
     float_type = runtime_env$float_type %||% "32",
     force_to_gpu = isTRUE(runtime_env$force_to_gpu),
@@ -520,9 +516,8 @@ ndm_train <- function(x,
   }
   .ndm_require_namespaces(required_packages, context = "ndm_train()")
 
-  analysis_root <- .ndm_internal_analysis_root()
-  .ndm_install_runtime_helpers(runtime_env, analysis_root = analysis_root)
-  paths <- ndm_runtime_paths(analysis_root)
+  .ndm_install_runtime_helpers(runtime_env)
+  paths <- ndm_runtime_paths()
 
   .ndm_require_runtime_bindings(
     runtime_env,

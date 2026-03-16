@@ -6,7 +6,7 @@
 \alias{ndm_train}
 \alias{print.ndm_trained_model}
 \alias{ndm_fit}
-\title{Build and train models with a local runtime}
+\title{Build and train models with package-managed runtime stages}
 \usage{
 ndm_build_model(
   runtime_env,
@@ -35,8 +35,8 @@ ndm_fit(
 )
 }
 \arguments{
-\item{runtime_env}{Runtime environment containing the sourced legacy helper
-code and data globals.}
+\item{runtime_env}{Runtime environment containing loaded runtime helpers and
+data globals.}
 
 \item{model_type}{Model family to build. Either `"DecoderOnly"` or
 `"NeuralODE"`.}
@@ -88,8 +88,8 @@ training in `ndm_fit()`.}
   `ndm_trained_model` object and invisibly returns `x`.
 }
 \description{
-These wrappers layer a small R API over local Phase 1 model build and
-training scripts.
+These wrappers layer a small R API over package-managed Phase 1 model build
+and training stages.
 }
 \examples{
 cfg <- ndm_create_config()

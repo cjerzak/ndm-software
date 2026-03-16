@@ -282,8 +282,8 @@ ndm_collect_tfrecord_batches <- function(file,
 #' Convert and bundle TFRecord batches
 #'
 #' These helpers convert TensorFlow batches to native R or JAX objects, package
-#' them into the shape expected by the legacy runtime, and attach dataset
-#' handles to a runtime environment.
+#' them into the shape expected by the package-managed runtime, and attach
+#' dataset handles to a runtime environment.
 #'
 #' @param batch A parsed TFRecord batch or a nested list containing TensorFlow
 #'   tensors.
@@ -319,7 +319,7 @@ ndm_collect_tfrecord_batches <- function(file,
 #' @returns `ndm_tf_batch_to_r()` recursively converts a TensorFlow batch to R
 #'   arrays and lists. `ndm_tf_batch_to_jax()` recursively converts tensors into
 #'   JAX arrays. `ndm_batch_to_model_inputs()` returns the packaged four-element
-#'   list expected by the legacy model code. `ndm_load_tfrecord_bundle()`
+#'   list expected by the package-managed model stages. `ndm_load_tfrecord_bundle()`
 #'   returns an `ndm_tfrecord_bundle` object. `ndm_attach_tfrecord_bundle()`
 #'   invisibly returns `env`.
 #'

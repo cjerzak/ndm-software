@@ -6,13 +6,6 @@ ndm_test_dry_run_grid <- function() {
   )
 }
 
-ndm_parse_cli_args <- function(args) {
-  stats::setNames(
-    sub("^[^=]+=", "", args),
-    sub("^--([^=]+)=.*$", "\\1", args)
-  )
-}
-
 test_that("package-native run configs support self-contained dry runs", {
   real <- ndm_run_real(
     ndm_create_real_run_config(
@@ -50,9 +43,10 @@ test_that("legacy Analysis2-branded entrypoints are not exported", {
 
   expect_false("ndm_run_analysis2_real" %in% exports)
   expect_false("ndm_run_analysis2_sim" %in% exports)
+  expect_false("ndm_run_analysis2_multidisease" %in% exports)
 })
 
-test_that("run config helpers validate inputs and normalize CLI arguments", {
+test_that("run config helpers validate mutually exclusive grid inputs and outer rows", {
   project_root <- tempdir()
 
   expect_error(
@@ -76,61 +70,52 @@ test_that("run config helpers validate inputs and normalize CLI arguments", {
     ),
     "`outer` must contain at least one integer row index"
   )
-
-  config <- ndm_create_real_run_config(
-    project_root = project_root,
-    analysis_name = "Demo",
-    grid_file = file.path("Data", "RunGrids", "Real.csv"),
-    outer = c(1L, 2L),
-    tfrecord_dir = "TFRecords",
-    raw_data_dir = "RawData",
-    outcome_metric = "inc_case",
-    data_subset = "all",
-    dry_run = TRUE
-  )
-  parsed <- ndm_parse_cli_args(ndm:::.ndm_run_config_to_args(config))
-
-  expect_equal(parsed[["project_root"]], normalizePath(project_root, winslash = "/", mustWork = TRUE))
-  expect_equal(parsed[["analysis_name"]], "Demo")
-  expect_equal(parsed[["outer"]], "1,2")
-  expect_equal(parsed[["grid_file"]], file.path(parsed[["project_root"]], "Data", "RunGrids", "Real.csv"))
-  expect_equal(parsed[["tfrecord_dir"]], file.path(parsed[["project_root"]], "TFRecords"))
-  expect_equal(parsed[["raw_data_dir"]], file.path(parsed[["project_root"]], "RawData"))
-  expect_equal(parsed[["dry_run"]], "TRUE")
-  expect_equal(parsed[["run_figures"]], "FALSE")
 })
 
-test_that("in-memory grids are materialized before calling Analysis2", {
-  config <- ndm_create_sim_run_config(
-    project_root = tempdir(),
-    analysis_name = "GridPreview",
-    grid = ndm_test_dry_run_grid(),
-    outer = 1:2,
-    dry_run = TRUE
+test_that("dry-run previews support both in-memory and file-backed grids", {
+  project_root <- tempdir()
+  grid_path <- tempfile(fileext = ".csv")
+  grid <- ndm_test_dry_run_grid()
+  utils::write.csv(grid, grid_path, row.names = FALSE)
+
+  from_memory <- ndm_run_sim(
+    ndm_create_sim_run_config(
+      project_root = project_root,
+      analysis_name = "GridPreview",
+      grid = grid,
+      outer = 1:2,
+      dry_run = TRUE
+    )
+  )
+  from_file <- ndm_run_sim(
+    ndm_create_sim_run_config(
+      project_root = project_root,
+      analysis_name = "GridPreview",
+      grid_file = grid_path,
+      outer = 1:2,
+      dry_run = TRUE
+    )
   )
 
-  parsed <- ndm_parse_cli_args(ndm:::.ndm_run_config_to_args(config))
-
-  expect_true(file.exists(parsed[["grid_file"]]))
-  grid <- utils::read.csv(parsed[["grid_file"]], stringsAsFactors = FALSE)
-  expect_equal(nrow(grid), 2L)
-  expect_equal(grid$ModelType, c("DecoderOnly", "NeuralODE"))
+  expect_equal(from_memory$grid_rows, 2L)
+  expect_equal(from_file$grid_rows, 2L)
+  expect_equal(from_memory$outer_rows, c(1L, 2L))
+  expect_equal(from_file$outer_rows, c(1L, 2L))
+  expect_equal(from_memory$grid_preview$BaseID, from_file$grid_preview$BaseID)
+  expect_equal(from_memory$grid_preview$ModelType, from_file$grid_preview$ModelType)
 })
 
-test_that("Analysis2 entrypoints fail early when yaml is unavailable", {
-  local_mocked_bindings(
-    .ndm_namespace_available = function(package) !identical(package, "yaml"),
-    .package = "ndm"
+test_that("package-native run configs bypass YAML manifests", {
+  preview <- ndm_run_real(
+    ndm_create_real_run_config(
+      project_root = tempdir(),
+      grid = ndm_test_dry_run_grid(),
+      outer = 1:2,
+      dry_run = TRUE
+    )
   )
 
-  expect_error(
-    ndm_run_real(
-      ndm_create_real_run_config(
-        project_root = tempdir(),
-        grid = ndm_test_dry_run_grid(),
-        dry_run = TRUE
-      )
-    ),
-    "yaml"
-  )
+  expect_equal(preview$run_spec$mode, "real")
+  expect_equal(preview$grid_rows, 2L)
+  expect_false("config_file" %in% names(preview$run_spec))
 })

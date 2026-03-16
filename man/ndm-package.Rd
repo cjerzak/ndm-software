@@ -5,8 +5,8 @@
 \description{
 \code{ndm} is an R-first package for neural disease modeling with a
 reticulate-managed JAX backend. The package currently provides backend setup,
-epidemic model spec import/export, TFRecord readers, a bundled internal
-analysis runtime, and package-native runtime/model helpers.
+epidemic model spec import/export, TFRecord readers, package-managed runtime
+helpers, and package-native runtime/model helpers.
 }
 \details{
 The current implementation preserves both historical model families,

@@ -29,17 +29,6 @@ ndm_print <- function(text, quiet = FALSE) {
   invisible(text)
 }
 
-.ndm_internal_analysis_root <- function() {
-  .ndm_embedded_analysis_root()
-}
-
-.ndm_internal_analysis2_api_path <- function() {
-  .ndm_normalize_path(
-    file.path(.ndm_internal_analysis_root(), "SetupEnv", "Analysis2_api.R"),
-    must_work = TRUE
-  )
-}
-
 .ndm_default_analysis_root <- function() {
   .ndm_internal_analysis_root()
 }
@@ -108,8 +97,8 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   Use `"32"` or `"64"`.
 #' @param force_to_gpu Logical scalar indicating whether the runtime should try
 #'   to place arrays on GPU when available.
-#' @param resave_tfrecords Logical scalar preserved for compatibility with the
-#'   legacy runtime.
+#' @param resave_tfrecords Logical scalar preserved for compatibility with
+#'   existing run workflows.
 #' @param gpu_mem_frac Optional GPU memory fraction forwarded into the runtime
 #'   bootstrap code.
 #' @param ... Additional named values appended to the configuration object.

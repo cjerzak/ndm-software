@@ -29,7 +29,7 @@ test_that("NeuralODE remains a supported model type", {
   expect_equal(cfg$model_type, "NeuralODE")
 })
 
-test_that("default configs do not expose runtime bundle paths", {
+test_that("default configs do not expose runtime-root fields", {
   cfg <- ndm_create_config()
 
   expect_false("analysis_root" %in% names(cfg))

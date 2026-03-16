@@ -29,8 +29,8 @@ Use `"32"` or `"64"`.}
 \item{force_to_gpu}{Logical scalar indicating whether the runtime should try
 to place arrays on GPU when available.}
 
-\item{resave_tfrecords}{Logical scalar preserved for compatibility with the
-legacy runtime.}
+\item{resave_tfrecords}{Logical scalar preserved for compatibility with
+existing run workflows.}
 
 \item{gpu_mem_frac}{Optional GPU memory fraction forwarded into the runtime
 bootstrap code.}
