@@ -12,6 +12,9 @@ test_that("runtime implementation helpers are not part of the public surface", {
   expect_false("ndm_source_runtime_calibration" %in% exports)
   expect_false("ndm_source_runtime_results_get" %in% exports)
   expect_false("ndm_source_runtime_results_analyze" %in% exports)
+  expect_true("ndm_save_model" %in% exports)
+  expect_true("ndm_load_model" %in% exports)
+  expect_true("ndm_resume_training" %in% exports)
 })
 
 test_that("run configs no longer expose project-specific figure toggles", {
