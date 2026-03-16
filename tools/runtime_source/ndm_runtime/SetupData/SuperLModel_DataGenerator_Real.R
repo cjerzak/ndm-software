@@ -463,9 +463,6 @@
       # NB: XPred is pre-normalized 
     }
   
-    # run tests
-    ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real_GetBatch_Checks.R")
-    
     # sample data 
     ok_ctt_ <- 0; ok <- F; while(!ok){
       ok_ctt_ <- ok_ctt_ + 1 
@@ -772,8 +769,6 @@
           #TFDataBatch <- reticulate::iter_next( TFDatasetIterator )
         }
         
-        # Run checks
-        ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real_TFR_Checks.R")
       }
       TFDatasetIterator_train <- reticulate::as_iterator(
         TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 

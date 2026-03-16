@@ -36,6 +36,8 @@ runtime_files <- c(
   "SetupData/SuperLModel_CalibrateML.R",
   "SetupData/SuperLModel_DataGenerator_Sim.R",
   "SetupData/SuperLModel_DataGenerator_Real.R",
+  "SetupData/SuperLModel_DataGenerator_Real_GetBatch_Checks.R",
+  "SetupData/SuperLModel_DataGenerator_Real_TFR_Checks.R",
   "SetupData/MultiDiseaseRuns/SuperL_UniversalDataReader.R",
   "ModelDefiners/SuperLModel_BuildML.R",
   "ModelDefiners/SuperLModel_BackboneTransformer.R",

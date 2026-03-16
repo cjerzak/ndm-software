@@ -11,8 +11,8 @@ ndm_set_runtime_globals(env, values, overwrite = TRUE)
 }
 \arguments{
 \item{parent}{Parent environment for a new runtime environment. Defaults to
-`globalenv()` so bundled runtime scripts can resolve attached-package
-functions the same way the legacy workflow did.}
+`globalenv()` so package-managed runtime code can resolve attached-package
+functions consistently.}
 
 \item{env}{Runtime environment that should receive new bindings.}
 
@@ -26,8 +26,8 @@ should be overwritten.}
   `ndm_runtime_env`. `ndm_set_runtime_globals()` invisibly returns `env`.
 }
 \description{
-These helpers manage isolated environments used to source local model runtime
-code and seed it with R values.
+These helpers manage isolated environments used to load package-managed
+runtime code and seed it with R values.
 }
 \examples{
 env <- ndm_new_runtime_env()

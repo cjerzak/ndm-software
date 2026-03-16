@@ -1,5 +1,5 @@
-ndm-package             Neural Disease Modeling Software
-ndm_build_model         Build and train models with a local runtime
+ndm_build_model         Build and train models with package-managed
+                        runtime stages
 ndm_check_backend       Provision and initialize the Python backend
 ndm_create_config       Create runtime configuration objects
 ndm_create_real_run_config
@@ -18,3 +18,4 @@ ndm_print               Print a timestamped diagnostic message
 ndm_tf_batch_to_r       Convert and bundle TFRecord batches
 ndm_tfrecord_fields_real
                         Inspect TFRecord field contracts
+ndm-package             Neural Disease Modeling Software

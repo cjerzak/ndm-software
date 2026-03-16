@@ -724,7 +724,6 @@
   )
   .ndm_multidisease_set_default_globals(runtime_env, bundle = bundle)
   ndm_source_runtime_data(
-    analysis_root = .ndm_internal_analysis_root(),
     env = runtime_env,
     generator = "real"
   )
@@ -747,7 +746,6 @@
     project_root <- .ndm_runtime_project_root(runtime_env)
     run_calibration <- function() {
       ndm_source_runtime_calibration(
-        analysis_root = .ndm_internal_analysis_root(),
         env = runtime_env
       )
     }

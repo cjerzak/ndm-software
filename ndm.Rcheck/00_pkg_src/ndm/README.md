@@ -3,14 +3,14 @@
 `ndm` is an R package for neural disease modeling with an R-first interface to
 a `reticulate`-managed JAX runtime. Model build, train, and predict flows are
 package-native and no longer require callers to supply an executable
-`Analysis2` checkout.
+external runtime checkout.
 
 It provides:
 
 - backend setup helpers for the Python/JAX environment
 - built-in compartment-model specifications
 - TFRecord utilities
-- package-owned runtime/model helpers
+- package-managed runtime/model helpers
 - package-native real, sim, and multidisease run APIs
 
 ## Installation

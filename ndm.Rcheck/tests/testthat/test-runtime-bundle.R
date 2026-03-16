@@ -1,22 +1,38 @@
-test_that("runtime bundle helpers source embedded files into fresh environments", {
-  env <- ndm_new_runtime_env()
+test_that("the package no longer ships the legacy runtime snapshot from inst/extdata", {
+  expect_false(dir.exists(testthat::test_path("..", "..", "inst", "extdata", "analysis_runtime", "Analysis2")))
 
-  expect_true(is.function(env$ndm_source_extracted))
-  env$ndm_source_extracted("SetupEnv/SuperLModel_helperFxns.R", env_target = env)
-
-  expect_true(exists("ai", envir = env, inherits = FALSE))
-  expect_true(exists("GlobalPartition", envir = env, inherits = FALSE))
+  installed_path <- system.file("extdata", "analysis_runtime", "Analysis2", package = "ndm")
+  expect_false(nzchar(installed_path) && dir.exists(installed_path))
 })
 
-test_that("runtime path evaluation falls back to filesystem sources", {
-  env <- new.env(parent = baseenv())
-  script <- tempfile(fileext = ".R")
-  on.exit(unlink(script), add = TRUE)
-  writeLines("test_value <- 42L", con = script, useBytes = TRUE)
+test_that("sysdata keeps model specs but not the retired embedded runtime payload", {
+  payload_env <- new.env(parent = emptyenv())
+  load(testthat::test_path("..", "..", "R", "sysdata.rda"), envir = payload_env)
+  payload_names <- ls(payload_env, all.names = TRUE)
 
-  ndm:::.ndm_eval_runtime_path(script, env = env, analysis_root = NULL)
+  expect_true(".ndm_embedded_model_spec_sources" %in% payload_names)
+  expect_false(".ndm_embedded_runtime_sources" %in% payload_names)
+})
 
-  expect_equal(env$test_value, 42L)
+test_that("ndm_prepare_runtime loads package-managed helpers without inst/extdata", {
+  env <- ndm_new_runtime_env()
+
+  local_mocked_bindings(
+    .ndm_require_namespaces = function(...) invisible(TRUE),
+    ndm_source_runtime_backend = function(...) invisible(env),
+    .package = "ndm"
+  )
+
+  out <- ndm_prepare_runtime(
+    config = ndm_create_config(force_to_gpu = FALSE),
+    runtime_env = env
+  )
+
+  expect_identical(out, env)
+  expect_true(exists("GlobalPartition", envir = env, inherits = FALSE))
+  expect_true(exists("ndm_source_extracted", envir = env, inherits = FALSE))
+  expect_match(env$NDM_INTERNAL_ANALYSIS_DIR, "ndm_runtime")
+  expect_false(grepl("inst/extdata/analysis_runtime/Analysis2$", env$NDM_INTERNAL_ANALYSIS_DIR))
 })
 
 test_that("runtime helper sourcing fails early when required runtime packages are missing", {

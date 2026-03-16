@@ -193,7 +193,12 @@ analysis2_load_yaml_config <- function(path) {
   if (is.null(path) || !file.exists(path)) {
     return(list())
   }
-  analysis2_require_yaml()
+  if (!requireNamespace("yaml", quietly = TRUE)) {
+    stop(
+      "The `yaml` package is required when `config` points to a YAML manifest.",
+      call. = FALSE
+    )
+  }
   config <- yaml::read_yaml(path)
   if (is.null(config)) {
     return(list())

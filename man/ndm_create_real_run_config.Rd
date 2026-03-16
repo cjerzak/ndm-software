@@ -81,7 +81,9 @@ ndm_run_multidisease(config = ndm_create_multidisease_run_config())
 
 \item{respect_grid_model_type}{Logical scalar indicating whether grid rows may override the requested model type.}
 
-\item{resave_tfrecords}{Logical scalar controlling TFRecord regeneration.}
+\item{resave_tfrecords}{Logical scalar controlling TFRecord regeneration.
+Supported for real and simulation workflows. Multidisease workflows reject
+\code{TRUE} because the legacy regeneration path has been retired.}
 
 \item{tfrecord_dir}{Optional TFRecord output directory.}
 

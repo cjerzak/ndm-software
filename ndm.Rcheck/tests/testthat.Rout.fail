@@ -19,16 +19,20 @@ Type 'q()' to quit R.
 > library(ndm)
 > 
 > test_check("ndm")
-[2026-03-15 19:20:39] Starting Analysis2 SuperLModel_MasterReal.R
-[2026-03-15 19:20:39] Starting Analysis2 SuperLModel_MasterSim.R
-[2026-03-15 19:20:39] Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R
+[2026-03-16 07:20:12] Starting Analysis2 SuperLModel_MasterReal.R
+[2026-03-16 07:20:12] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-16 07:20:12] Starting package-native multidisease runner
+[2026-03-16 07:20:12] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-16 07:20:12] Starting Analysis2 SuperLModel_MasterSim.R
+[2026-03-16 07:20:12] Starting Analysis2 SuperLModel_MasterReal.R
 Environment 'jax_cpu' is ready.
 Driver 590.12 detected (>=580): installing JAX CUDA 13 wheels.
 Environment 'jax_cpu' is ready.
 Environment 'jax_cpu' is ready.
-W0315 19:20:46.789733 11487104 cpp_gen_intrinsics.cc:74] Empty bitcode string provided for eigen. Optimizations relying on this IR will be disabled.
-[1] "[2026-03-15 19:20:47] Done loading helper functions..."
-[ FAIL 0 | WARN 0 | SKIP 6 | PASS 188 ]
+W0316 07:20:21.472931 11930857 cpp_gen_intrinsics.cc:74] Empty bitcode string provided for eigen. Optimizations relying on this IR will be disabled.
+Saving _problems/test-runtime-bundle-10.R
+[1] "[2026-03-16 07:20:22] Done loading helper functions..."
+[ FAIL 1 | WARN 1 | SKIP 6 | PASS 154 ]
 
 ══ Skipped tests (6) ═══════════════════════════════════════════════════════════
 • On CRAN (5): 'test-multidisease-model-api.R:279:3',
@@ -37,8 +41,15 @@ W0315 19:20:46.789733 11487104 cpp_gen_intrinsics.cc:74] Empty bitcode string pr
 • README.md is not available in the current test environment. (1):
   'test-readme-tutorial.R:2:3'
 
-[ FAIL 0 | WARN 0 | SKIP 6 | PASS 188 ]
-> 
-> proc.time()
-   user  system elapsed 
-  9.708   2.038  12.161 
+══ Failed tests ════════════════════════════════════════════════════════════════
+── Error ('test-runtime-bundle.R:10:3'): sysdata keeps model specs but not the retired embedded runtime payload ──
+Error in `readChar(con, 5L, useBytes = TRUE)`: cannot open the connection
+Backtrace:
+    ▆
+ 1. └─base::load(...) at test-runtime-bundle.R:10:3
+ 2.   └─base::readChar(con, 5L, useBytes = TRUE)
+
+[ FAIL 1 | WARN 1 | SKIP 6 | PASS 154 ]
+Error:
+! Test failures.
+Execution halted

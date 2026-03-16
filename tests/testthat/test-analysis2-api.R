@@ -72,6 +72,16 @@ test_that("run config helpers validate mutually exclusive grid inputs and outer 
   )
 })
 
+test_that("multidisease run configs reject retired TFRecord regeneration", {
+  expect_error(
+    ndm_create_multidisease_run_config(
+      project_root = tempdir(),
+      resave_tfrecords = TRUE
+    ),
+    "no longer supported for multidisease workflows"
+  )
+})
+
 test_that("dry-run previews support both in-memory and file-backed grids", {
   project_root <- tempdir()
   grid_path <- tempfile(fileext = ".csv")

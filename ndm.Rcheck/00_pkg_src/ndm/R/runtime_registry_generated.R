@@ -1882,6 +1882,7 @@
                 return(ret_list)
             }
         }
+        ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real_GetBatch_Checks.R")
         ok_ctt_ <- 0
         ok <- F
         while (!ok) {
@@ -2174,6 +2175,7 @@
                 print2(sprintf("Done writing tfrecords for: %s!", 
                   type_))
             }
+            ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real_TFR_Checks.R")
         }
         TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
             batchSize = nBatch, shuffle = F, nTake = ai(RealEntry$nSamplesTrain))$shuffle(buffer_size = tf$constant(as.integer(10 * 
@@ -2182,6 +2184,352 @@
             batchSize = nBatch, shuffle = F))
     }
     print2("Done with this round of SuperLModel_DataGenerator_Real.R!")
+})
+
+.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real_GetBatch_Checks <- expression({
+    print2("Starting a test in SuperLModel_DataGenerator_Real_GetBatch_Checks.R...")
+    test_data_generation <- function(batch_l, training = TRUE, 
+        INPUT_REF_DAT, truth_df_red, dataInputs_colnames, context_variables, 
+        maxTimesPast, nTimesLookahead, paddingMethod, nOutcomes) {
+        XPred_r <- np$array(batch_l$XPred)
+        XPred_mask_r <- np$array(batch_l$XPred_mask)
+        YTrue_r <- np$array(batch_l$YTrue)
+        YTrue_mask_r <- np$array(batch_l$YTrue_mask)
+        YTrue_out_r <- np$array(batch_l$YTrue_out)
+        YTrue_out_mask_r <- np$array(batch_l$YTrue_out_mask)
+        location_id_numeric <- np$array(batch_l$location_id_numeric)
+        time_id_numeric <- np$array(batch_l$time_id_numeric)
+        for (b in 1:dim(XPred_r)[1]) {
+            loc_id_num <- location_id_numeric[b]
+            anchoring_time <- time_id_numeric[b]
+            input_place <- INPUT_REF_DAT[INPUT_REF_DAT$location_id_numeric == 
+                loc_id_num, ]
+            t_df_red_loc <- truth_df_red[truth_df_red$location_id_numeric == 
+                loc_id_num, ]
+            input_place$TimesRelativeToAnchor <- input_place$time_id - 
+                anchoring_time
+            t_df_red_loc$TimesRelativeToAnchor <- t_df_red_loc$targetTime_id - 
+                anchoring_time
+            input_place_past <- input_place[input_place$TimesRelativeToAnchor <= 
+                0 & input_place$TimesRelativeToAnchor > -maxTimesPast, 
+                ]
+            time_placement_indices_x <- input_place_past$TimesRelativeToAnchor + 
+                maxTimesPast
+            if (paddingMethod == "right") {
+                xNAAdj <- min(time_placement_indices_x) - 1
+                time_placement_indices_x <- time_placement_indices_x - 
+                  xNAAdj
+            }
+            else {
+                xNAAdj <- 0
+            }
+            expected_XPred <- matrix(NA, nrow = maxTimesPast, 
+                ncol = length(dataInputs_colnames))
+            for (i in 1:nrow(input_place_past)) {
+                pos <- time_placement_indices_x[i]
+                expected_XPred[pos, ] <- as.numeric(input_place_past[i, 
+                  dataInputs_colnames])
+            }
+            for (t in 1:maxTimesPast) {
+                if (XPred_mask_r[b, t, 1] == 1) {
+                  if (any(abs(XPred_r[b, t, 1:ncol(expected_XPred)] - 
+                    expected_XPred[t, ]) > 1e-06, na.rm = T)) {
+                    browser()
+                    if (FALSE) {
+                      XPred_r[b, t, 1:ncol(expected_XPred)]
+                      XPred_r[, t, 1:ncol(expected_XPred)]
+                      XPred_r[b, , 1:ncol(expected_XPred)]
+                      plot(c(XPred_r[b, , 1:ncol(expected_XPred)]), 
+                        c(expected_XPred))
+                      abline(a = 0, b = 1)
+                      expected_XPred[t, ] - XPred_r[b, t, 1:ncol(expected_XPred)]
+                      expected_XPred[t, ] - as.numeric(unlist(input_place_past[, 
+                        dataInputs_colnames]))
+                      Pred_r[b, , 1] - as.numeric(unlist(input_place_past[, 
+                        dataInputs_colnames]))
+                      expected_XPred[t, ] - XPred_r[, t, 1:ncol(expected_XPred)]
+                      expected_XPred[t, ] - XPred_r[b, , 1:ncol(expected_XPred)]
+                      min(abs(expected_XPred[t, ] - XPred_r[, 
+                        , 1]))
+                      min(abs(c(expected_XPred) - XPred_r[, , 
+                        1]))
+                      min(abs(expected_XPred[1, ] - XPred_r[, 
+                        , 1]))
+                      min(abs(expected_XPred[2, ] - XPred_r[, 
+                        , 1]))
+                      min(abs(expected_XPred[3, ] - XPred_r[, 
+                        , 1]))
+                      round(abs(expected_XPred[3, ] - XPred_r[, 
+                        , 1]), 4)
+                      min(abs(expected_XPred[3, ] - XPred_r[4, 
+                        , 1]))
+                      min(abs(expected_XPred[3, ] - XPred_r[4, 
+                        , 2]))
+                    }
+                    stop(sprintf("Mismatch in XPred at batch %d, time %d", 
+                      b, t))
+                  }
+                }
+            }
+            min_target <- anchoring_time - maxTimesPast + 1
+            max_target <- if (training) {
+                min(max(INPUT_REF_DAT$time_id), anchoring_time + 
+                  nTimesLookahead)
+            }
+            else {
+                anchoring_time + nTimesLookahead
+            }
+            t_df_red_loc_filtered <- t_df_red_loc[t_df_red_loc$targetTime_id >= 
+                min_target & t_df_red_loc$targetTime_id <= max_target, 
+                ]
+            time_placement_indices_y <- t_df_red_loc_filtered$TimesRelativeToAnchor + 
+                maxTimesPast
+            if (paddingMethod == "right") {
+                time_placement_indices_y <- time_placement_indices_y - 
+                  xNAAdj
+            }
+            expected_YTrue <- matrix(NA, nrow = maxTimesPast + 
+                nTimesLookahead, ncol = nOutcomes)
+            for (i in 1:nrow(t_df_red_loc_filtered)) {
+                pos <- time_placement_indices_y[i]
+                if (pos >= 1 && pos <= maxTimesPast + nTimesLookahead) {
+                  if (nOutcomes == 1) {
+                    expected_YTrue[pos, 1] <- t_df_red_loc_filtered[[true_value_names[1]]][i]
+                  }
+                  else if (nOutcomes == 2) {
+                    expected_YTrue[pos, 2] <- t_df_red_loc_filtered[[true_value_names[2]]][i]
+                  }
+                  else if (nOutcomes == 3) {
+                    expected_YTrue[pos, 3] <- t_df_red_loc_filtered[[true_value_names[3]]][i]
+                  }
+                }
+            }
+            for (t in 1:(maxTimesPast + nTimesLookahead)) {
+                for (o in 1:nOutcomes) {
+                  if (YTrue_mask_r[b, t, o] == 1) {
+                    if (abs(YTrue_r[b, t, o] - expected_YTrue[t, 
+                      o]) > 1e-06) {
+                      stop(sprintf("Mismatch in YTrue at batch %d, time %d, outcome %d\n", 
+                        b, t, o))
+                    }
+                  }
+                  else {
+                    if (!is.na(expected_YTrue[t, o])) {
+                      cat(sprintf("Expected NA in YTrue at batch %d, time %d, outcome %d\n", 
+                        b, t, o))
+                    }
+                  }
+                }
+            }
+            expected_YTrue_out <- as.matrix(expected_YTrue[(maxTimesPast + 
+                1):(maxTimesPast + nTimesLookahead), ])
+            for (t in 1:nTimesLookahead) {
+                for (o in 1:nOutcomes) {
+                  if (YTrue_out_mask_r[b, t, o] == 1) {
+                    if (abs(YTrue_out_r[b, t, o] - expected_YTrue_out[t, 
+                      o]) > 1e-06) {
+                      stop(sprintf("Mismatch in YTrue_out at batch %d, time %d, outcome %d\n", 
+                        b, t, o))
+                    }
+                  }
+                  else {
+                    if (!is.na(expected_YTrue_out[t, o])) {
+                      stop(sprintf("Expected NA in YTrue_out at batch %d, time %d, outcome %d\n", 
+                        b, t, o))
+                    }
+                  }
+                }
+            }
+            if (loc_id_num != t_df_red_loc$location_id_numeric[1]) {
+                stop(sprintf("Mismatch in location_id_numeric at batch %d\n", 
+                  b))
+            }
+            if (anchoring_time != time_id_numeric[b]) {
+                stop(sprintf("Mismatch in time_id_numeric at batch %d\n", 
+                  b))
+            }
+        }
+        cat("Data generation test passed.\n")
+    }
+    for (i in 1:20) {
+        print(sprintf("Test %s of %s", i, 20))
+        batch_train <- GetBatch(nBatch = 20, training = TRUE, 
+            INPUT_REF_DAT = input_df_red_in)
+        test_data_generation(batch_l = batch_train, training = TRUE, 
+            INPUT_REF_DAT = input_df_red_in, truth_df_red = truth_df_red, 
+            dataInputs_colnames = dataInputs_colnames, context_variables = context_variables, 
+            maxTimesPast = maxTimesPast, nTimesLookahead = nTimesLookahead, 
+            paddingMethod = paddingMethod, nOutcomes = nOutcomes)
+        r_ <- FALSE
+        while (!r_) {
+            loc_id <- sample(unique(input_df_red_out$location_id), 
+                1)
+            anchoring_time <- as.integer(sample(as.character(times_out[times_out > 
+                minAnchoringTimeID]), 1))
+            if (min(input_df_red_full$time_id[input_df_red_full$location_id %in% 
+                loc_id] - anchoring_time) < -2) {
+                r_ <- TRUE
+            }
+        }
+        batch_inf <- GetBatch(training = FALSE, finalGenLocID = loc_id, 
+            finalGenTimeID = anchoring_time, INPUT_REF_DAT = input_df_red_full, 
+            nTimesLook = nTimesLookValidationInference)
+        test_data_generation(batch_l = batch_inf, training = FALSE, 
+            INPUT_REF_DAT = input_df_red_full, truth_df_red = truth_df_red, 
+            dataInputs_colnames = dataInputs_colnames, context_variables = context_variables, 
+            maxTimesPast = maxTimesPast, nTimesLookahead = nTimesLookValidationInference, 
+            paddingMethod = paddingMethod, nOutcomes = nOutcomes)
+    }
+    rm(sampled_places, sampled_times)
+    print2("Done with a test in SuperLModel_DataGenerator_Real_GetBatch_Checks.R...")
+})
+
+.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real_TFR_Checks <- expression({
+    print2("Staring checks in SuperLModel_DataGenerator_Real_TFR_Checks.R...")
+    library(testthat)
+    load_tfrecord_sample <- function(tfrecord_file, batch_size = 5L) {
+        dataset <- tf$data$TFRecordDataset(tfrecord_file)
+        parsed_dataset <- dataset$map(parse_single_example_fxn)
+        parsed_dataset <- parsed_dataset$take(5L)$batch(batch_size)
+        iterator <- reticulate::as_iterator(parsed_dataset)
+        batch <- reticulate::iter_next(iterator)
+        return(batch)
+    }
+    test_that("TFRecord Integrity Tests", {
+        tfrecord_file_train <- sprintf("%s/train_%s.tfrecord", 
+            TfRecordDir, RealEntry$BaseID)
+        tfrecord_file_inference <- sprintf("%s/inference_%s.tfrecord", 
+            TfRecordDir, RealEntry$BaseID)
+        expect_true(file.exists(tfrecord_file_train), "Training tfrecord file does not exist")
+        expect_true(file.exists(tfrecord_file_inference), "Inference tfrecord file does not exist")
+        context("Data Correctness in TFRecords")
+        train_batch <- load_tfrecord_sample(tfrecord_file_train)
+        expect_equal(np$array(train_batch$XPred$shape)[[1]], 
+            5L, info = "XPred batch size mismatch", tolerance = 1e-10)
+        expect_equal(train_batch$XPred$dtype$name, "float32", 
+            info = "XPred should be float32", tolerance = 1e-10)
+        expect_equal(np$array(train_batch$YTrue$shape)[[1]], 
+            5L, info = "YTrue batch size mismatch", tolerance = 1e-10)
+        expect_equal(train_batch$YTrue$dtype$name, "float32", 
+            info = "YTrue should be float32")
+        test_that("XPred matches original dataframe rows (accounting for padding)", 
+            {
+                train_batch <- load_tfrecord_sample(tfrecord_file_train, 
+                  batch_size = 5L)
+                for (i in seq_len(5)) {
+                  loc_id <- np$array(train_batch$location_id_numeric)[i]
+                  anchor_time <- np$array(train_batch$time_id_numeric)[i]
+                  df_loc <- input_df_red_in[input_df_red_in$location_id_numeric == 
+                    loc_id, ]
+                  df_loc$TimesRelativeToAnchor <- df_loc$time_id - 
+                    anchor_time
+                  df_loc <- df_loc[df_loc$TimesRelativeToAnchor <= 
+                    0 & df_loc$TimesRelativeToAnchor > -maxTimesPast, 
+                    ]
+                  df_loc$time_placement_indices_x <- df_loc$TimesRelativeToAnchor + 
+                    abs(maxTimesPast)
+                  if (paddingMethod == "right") {
+                    xNAAdj <- min(df_loc$time_placement_indices_x) - 
+                      1
+                    df_loc$time_placement_indices_x <- df_loc$time_placement_indices_x - 
+                      xNAAdj
+                  }
+                  xpred_sample <- np$array(train_batch$XPred)[i, 
+                    , ]
+                  xpred_mask <- np$array(train_batch$XPred_mask)[i, 
+                    , ]
+                  df_loc <- df_loc[order(df_loc$time_placement_indices_x), 
+                    ]
+                  for (r in seq_len(nrow(df_loc))) {
+                    row_idx <- df_loc$time_placement_indices_x[r]
+                    xpred_row <- xpred_sample[row_idx, ]
+                    orig_row <- as.numeric(df_loc[r, dataInputs_colnames])
+                    expect_true(all(abs(xpred_row[1:length(orig_row)] - 
+                      orig_row) < 1e-05, na.rm = TRUE), info = sprintf("Mismatch in XPred vs. original row, sample %d, time_placement_indices_x=%d", 
+                      i, row_idx))
+                  }
+                }
+            })
+        xpred_mask <- np$array(train_batch$XPred_mask)
+        xpred <- np$array(train_batch$XPred)
+        expect_true(all(xpred[xpred_mask == 0] %in% c(0, -1)), 
+            "XPred values should be {0,-1} where mask is 0")
+        context("Iterator Behavior for Batching")
+        TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
+            batchSize = nBatch, shuffle = FALSE)
+        TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train)
+        expect_true(!is.null(TFDatasetIterator_train), "Iterator initialization failed")
+        dat__ <- reticulate::iter_next(TFDatasetIterator_train)
+        expect_true(!is.null(dat__), "First batch retrieval failed")
+        expect_equal(np$array(dat__$XPred$shape)[[1]], nBatch, 
+            tolerance = 1e-06, info = "Batch size mismatch in iteration")
+        TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
+            batchSize = nBatch, shuffle = FALSE)
+        TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train)
+        batch_count <- 0
+        max_batches <- as.integer(RealEntry$nSamplesTrain/nBatch)
+        dat_ <- dat__
+        while (!is.null(dat_) && batch_count < max_batches) {
+            dat_ <- try(reticulate::iter_next(TFDatasetIterator_train), 
+                silent = TRUE)
+            batch_count <- batch_count + 1
+        }
+        expect_true(batch_count <= max_batches, "Iterator did not stop at dataset end")
+        TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
+            batchSize = nBatch, shuffle = FALSE)
+        TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train)
+        max_batches <- as.integer(RealEntry$nSamplesTrain/nBatch)
+        theDataContent <- NULL
+        batch_count <- 0
+        dat_ <- dat__
+        while (!is.null(dat_) && batch_count < (max_batches + 
+            1000)) {
+            dat_ <- try(reticulate::iter_next(TFDatasetIterator_train), 
+                silent = TRUE)
+            if (!is.null(dat_)) {
+                theDataContent <- rbind(theDataContent, cbind(location_id_numeric = np$array(dat_$location_id_numeric), 
+                  time_id_numeric = np$array(dat_$time_id_numeric)))
+            }
+            batch_count <- batch_count + 1
+        }
+        expect_true(abs(batch_count * nBatch - RealEntry$nSamplesTrain) < 
+            10 * nBatch_RealGridGen, "Bad match between target and true value of obesrvation number")
+        theDataContent <- as.data.frame(theDataContent)
+        if (OSSType %in% c("OutOfTime", "OutOfPlacetime")) {
+            expect_true(all(theDataContent$time_id_numeric + 
+                1 < min(times_out)), "In sample time ids in out of sample range")
+        }
+        theDataContent_combs <- apply(theDataContent, 1, function(x) {
+            paste(x, collapse = "_")
+        })
+        print(sprintf("UNIQUE PLACETIMES FRACTION: %.4f", length(unique(theDataContent_combs))/length(theDataContent_combs)))
+        TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
+            batchSize = nBatch, shuffle = FALSE)
+        TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train)
+        if (inherits(dat_, "try-error") || is.null(dat_) || length(dat_)[[1]] == 
+            0) {
+            TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train)
+            dat_ <- reticulate::iter_next(TFDatasetIterator_train)
+            expect_true(!is.null(dat_), info = "Iterator reset failed")
+            expect_equal(np$array(dat_$XPred$shape)[[1]], nBatch, 
+                info = "Batch size mismatch after reset")
+        }
+        context("Mission-Critical Integrity Checks")
+        inference_batch <- load_tfrecord_sample(tfrecord_file_inference)
+        train_locs <- unique(np$array(train_batch$location_id_numeric))
+        inf_locs <- unique(np$array(inference_batch$location_id_numeric))
+        train_times <- unique(np$array(train_batch$time_id_numeric))
+        inf_times <- unique(np$array(inference_batch$time_id_numeric))
+        if (OSSType %in% c("OutOfTime", "OutOfPlacetime")) {
+            expect_true(length(intersect(train_locs, inf_locs)) == 
+                0 || length(intersect(train_times, inf_times)) == 
+                0, "Potential data leakage between training and inference datasets")
+        }
+        train_batch_2 <- load_tfrecord_sample(tfrecord_file_train)
+        expect_equal(np$array(train_batch$XPred), np$array(train_batch_2$XPred), 
+            info = "Data should be consistent across runs without shuffling")
+    })
+    print2("Done with checks in SuperLModel_DataGenerator_Real_TFR_Checks.R...")
 })
 
 .ndm_stage_expr_SetupData_MultiDiseaseRuns_SuperL_UniversalDataReader <- expression(if (dataFormat == "Tycho") {
@@ -7918,6 +8266,8 @@
     "SetupData/SuperLModel_CalibrateML.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_SetupData_SuperLModel_CalibrateML, env),
     "SetupData/SuperLModel_DataGenerator_Sim.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Sim, env),
     "SetupData/SuperLModel_DataGenerator_Real.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real, env),
+    "SetupData/SuperLModel_DataGenerator_Real_GetBatch_Checks.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real_GetBatch_Checks, env),
+    "SetupData/SuperLModel_DataGenerator_Real_TFR_Checks.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real_TFR_Checks, env),
     "SetupData/MultiDiseaseRuns/SuperL_UniversalDataReader.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_SetupData_MultiDiseaseRuns_SuperL_UniversalDataReader, env),
     "ModelDefiners/SuperLModel_BuildML.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_ModelDefiners_SuperLModel_BuildML, env),
     "ModelDefiners/SuperLModel_BackboneTransformer.R" = function(env) .ndm_eval_runtime_stage_expr(.ndm_stage_expr_ModelDefiners_SuperLModel_BackboneTransformer, env),

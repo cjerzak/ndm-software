@@ -98,7 +98,8 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param force_to_gpu Logical scalar indicating whether the runtime should try
 #'   to place arrays on GPU when available.
 #' @param resave_tfrecords Logical scalar preserved for compatibility with
-#'   existing run workflows.
+#'   existing run workflows. Multidisease workflows reject `TRUE` because the
+#'   legacy TFRecord-regeneration path has been retired.
 #' @param gpu_mem_frac Optional GPU memory fraction forwarded into the runtime
 #'   bootstrap code.
 #' @param ... Additional named values appended to the configuration object.
