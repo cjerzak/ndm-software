@@ -234,6 +234,11 @@ ndm_initialize_backend <- function(conda_env = "ndm_software_env",
                                    import_tensorflow = TRUE) {
   float_type <- match.arg(float_type)
 
+  if (!nzchar(Sys.getenv("JAX_PLATFORMS", unset = "")) &&
+      grepl("cpu", conda_env, ignore.case = TRUE)) {
+    Sys.setenv(JAX_PLATFORMS = "cpu")
+  }
+
   .ndm_backend_use_condaenv(
     condaenv = conda_env,
     required = conda_env_required,

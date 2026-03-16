@@ -1,0 +1,22 @@
+ndm_build_model         Build and train models with package-managed
+                        runtime stages
+ndm_check_backend       Provision and initialize the Python backend
+ndm_create_config       Create runtime configuration objects
+ndm_create_real_run_config
+                        Package-native run configurations and workflow
+                        runners
+ndm_create_tfrecord_parser
+                        Create and read TensorFlow TFRecord datasets
+ndm_model_spec_presets
+                        Inspect and create epidemic model
+                        specifications
+ndm_new_runtime_env     Create and populate runtime environments
+ndm_predict             Generate predictions or evaluate the training
+                        loss
+ndm_prepare_runtime     Prepare a local runtime for execution
+ndm_print               Print a timestamped diagnostic message
+ndm_save_model          Save and restore model artifacts
+ndm_tf_batch_to_r       Convert and bundle TFRecord batches
+ndm_tfrecord_fields_real
+                        Inspect TFRecord field contracts
+ndm-package             Neural Disease Modeling Software

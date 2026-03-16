@@ -532,8 +532,27 @@ ndm_source_runtime_data <- function(analysis_root = .ndm_default_analysis_root()
   .ndm_source_runtime_file(source_path, env)
 }
 
-#' @rdname ndm_source_runtime_helper_fxns
-#' @noRd
+#' Source Analysis2 compatibility runtime helpers
+#'
+#' These helpers preserve access to legacy Analysis2 runtime scripts that are
+#' still referenced by package-native orchestration code. They are exported for
+#' backward compatibility; prefer `ndm_prepare_runtime()` and higher-level run
+#' helpers for new code.
+#'
+#' @param analysis_root Analysis root directory containing the legacy runtime
+#'   scripts to source.
+#' @param env Runtime environment that should receive the sourced objects.
+#'
+#' @returns Invisibly returns `env` after sourcing the requested runtime
+#'   component.
+#'
+#' @seealso [ndm_prepare_runtime()], [ndm_fit()]
+#' @keywords internal
+#' @name ndm_source_runtime_compatibility
+NULL
+
+#' @rdname ndm_source_runtime_compatibility
+#' @export
 ndm_source_runtime_calibration <- function(analysis_root = .ndm_default_analysis_root(),
                                            env = ndm_new_runtime_env()) {
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
@@ -541,8 +560,8 @@ ndm_source_runtime_calibration <- function(analysis_root = .ndm_default_analysis
   .ndm_source_runtime_file(paths$calibrate_ml, env)
 }
 
-#' @rdname ndm_source_runtime_helper_fxns
-#' @noRd
+#' @rdname ndm_source_runtime_compatibility
+#' @export
 ndm_source_runtime_results_get <- function(analysis_root = .ndm_default_analysis_root(),
                                            env = ndm_new_runtime_env()) {
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
@@ -550,8 +569,8 @@ ndm_source_runtime_results_get <- function(analysis_root = .ndm_default_analysis
   .ndm_source_runtime_file(paths$results_get, env)
 }
 
-#' @rdname ndm_source_runtime_helper_fxns
-#' @noRd
+#' @rdname ndm_source_runtime_compatibility
+#' @export
 ndm_source_runtime_results_analyze <- function(analysis_root = .ndm_default_analysis_root(),
                                                env = ndm_new_runtime_env()) {
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)

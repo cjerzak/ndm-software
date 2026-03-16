@@ -46,6 +46,47 @@ test_that("legacy Analysis2-branded entrypoints are not exported", {
   expect_false("ndm_run_analysis2_multidisease" %in% exports)
 })
 
+test_that("Analysis2 compatibility hooks remain callable via getExportedValue", {
+  helper_names <- c(
+    "ndm_source_runtime_calibration",
+    "ndm_source_runtime_results_get",
+    "ndm_source_runtime_results_analyze"
+  )
+  helper_targets <- c(
+    "SuperLModel_CalibrateML.R",
+    "SuperLModel_GetAnalytics.R",
+    "SuperLModel_GenFigs.R"
+  )
+  env <- ndm_new_runtime_env()
+  sourced <- character()
+
+  local_mocked_bindings(
+    .ndm_install_runtime_helpers = function(env, analysis_root = .ndm_default_analysis_root()) {
+      invisible(env)
+    },
+    ndm_runtime_paths = function(analysis_root = .ndm_default_analysis_root()) {
+      list(
+        calibrate_ml = file.path(analysis_root, helper_targets[[1]]),
+        results_get = file.path(analysis_root, helper_targets[[2]]),
+        results_analyze = file.path(analysis_root, helper_targets[[3]])
+      )
+    },
+    .ndm_source_runtime_file = function(path, env) {
+      sourced <<- c(sourced, basename(path))
+      invisible(env)
+    },
+    .package = "ndm"
+  )
+
+  funcs <- lapply(helper_names, function(name) getExportedValue("ndm", name))
+
+  expect_true(all(vapply(funcs, is.function, logical(1))))
+  for (fn in funcs) {
+    fn(analysis_root = tempdir(), env = env)
+  }
+  expect_equal(sourced, helper_targets)
+})
+
 test_that("run config helpers validate mutually exclusive grid inputs and outer rows", {
   project_root <- tempdir()
 
