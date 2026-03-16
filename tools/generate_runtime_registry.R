@@ -2,10 +2,36 @@
 
 write_expression_assignment <- function(con, name, path) {
   expr <- parse(file = path, keep.source = FALSE)
-  lines <- capture.output(dput(expr))
+  lines <- escape_non_ascii(capture.output(dput(expr)))
   writeLines(sprintf("%s <- ", name), con = con, sep = "")
   writeLines(lines, con = con)
   writeLines("", con = con)
+}
+
+escape_non_ascii <- function(lines) {
+  vapply(
+    enc2utf8(lines),
+    function(line) {
+      code_points <- utf8ToInt(line)
+      escaped <- vapply(
+        code_points,
+        function(code_point) {
+          if (code_point <= 127L) {
+            intToUtf8(code_point)
+          } else if (code_point <= 65535L) {
+            sprintf("\\\\u%04X", code_point)
+          } else {
+            sprintf("\\\\U%08X", code_point)
+          }
+        },
+        character(1),
+        USE.NAMES = FALSE
+      )
+      paste0(escaped, collapse = "")
+    },
+    character(1),
+    USE.NAMES = FALSE
+  )
 }
 
 resolve_script_path <- function() {

@@ -6038,7 +6038,7 @@
                 geom_line(color = "blue", size = 1) + geom_abline(slope = 1, 
                 intercept = 0, color = "red", linetype = "dashed") + 
                 coord_fixed() + theme_minimal(base_size = 14, 
-                base_line_size = 0) + labs(title = sprintf("P–P (CDF-vs-CDF) plot: Decoder vs NeuralODE (%s)", 
+                base_line_size = 0) + labs(title = sprintf("P\\u2013P (CDF-vs-CDF) plot: Decoder vs NeuralODE (%s)", 
                 i___), subtitle = "Below 45 degree line indicates better NeuralODE skill", 
                 x = "CDF(Decoder)", y = "CDF(NeuralODE)")
             ggsave(sprintf("./Figures/gcdfcdf_%s.pdf", i___), 
@@ -6079,7 +6079,7 @@
         }
         dev.off()
         {
-            print2("---NeuralODE vs Decoder win probability by DATA‑SET SIZE---")
+            print2("---NeuralODE vs Decoder win probability by DATA\\u2011SET SIZE---")
             paired_df_EndOfTraining <- paired_df[paired_df$i_in_sgd_Decoder == 
                 max(paired_df$i_in_sgd_Decoder), ]
             dsizes <- sort(unique(paired_df_EndOfTraining$nSamplesTrain_Decoder))
@@ -6100,7 +6100,7 @@
                 par(mar = c(5, 5, 5, 1))
                 plot(dsizes, NeuralWinProb_ds, log = "x", type = "p", 
                   pch = 19, col = "black", ylim = c(0.3, 0.9), 
-                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill ≥ Decoder )", 
+                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \\u2265 Decoder )", 
                   main = "NeuralODE vs Decoder\nWin Probability by Training Set Size", 
                   cex.lab = 1.75, cex.main = 1.75)
                 abline(h = 0.5, lty = 3, col = "gray", lwd = 2)
@@ -6127,7 +6127,7 @@
                 par(mar = c(5, 5, 5, 1))
                 plot(val_, NeuralWinProb_ds, log = "x", type = "p", 
                   pch = 19, col = "black", ylim = c(0, 1.1), 
-                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill ≥ Decoder )", 
+                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \\u2265 Decoder )", 
                   main = "NeuralODE vs Decoder\nWin Probability by Training Set Size", 
                   cex.lab = 1.75, cex.main = 1.75)
                 abline(h = 0.5, lty = 3, col = "gray", lwd = 2)
@@ -6207,7 +6207,7 @@
                   scale_fill_viridis_c(name = "P(NeuralODE > Decoder)", 
                     limits = c(0, 1)) + scale_x_discrete(expand = c(0, 
                   0)) + scale_y_discrete(expand = c(0, 0)) + 
-                  labs(title = "When does NeuralODE beat a Decoder‑only model?", 
+                  labs(title = "When does NeuralODE beat a Decoder\\u2011only model?", 
                     x = "Context length", y = "Training-set size") + 
                   theme_minimal(base_size = 14) + theme(axis.text.x = element_text(angle = 45, 
                   hjust = 1))
@@ -7610,7 +7610,7 @@
             {
                 latex_code <- capture.output(stargazer::stargazer(as.matrix(scaling_exponents_tex), 
                   label = sprintf("tab:ExponentsSimMode%s", SimMode), 
-                  title = sprintf("\n                       Scaling‐law exponents $\\alpha$ and $R^2$ from fitting\n                       $\\log(g(\\text{skill}))\\sim \\alpha\\;\\log(\\text{resource})+\\beta$,\n                       disaggregated by hold‐out regime and model type. \n                       Gray shading results $\\alpha$ values \n                       for which the null hypothesis of zero-equality cannot be rejected. \n                                       %s", 
+                  title = sprintf("\n                       Scaling\\u2010law exponents $\\alpha$ and $R^2$ from fitting\n                       $\\log(g(\\text{skill}))\\sim \\alpha\\;\\log(\\text{resource})+\\beta$,\n                       disaggregated by hold\\u2010out regime and model type. \n                       Gray shading results $\\alpha$ values \n                       for which the null hypothesis of zero-equality cannot be rejected. \n                                       %s", 
                     ifelse(SimMode, yes = "Case: simulation.", 
                       no = "Case: COVID-19 analysis."))))
                 tabular_header_index <- 3 + grep("\\\\begin\\{tabular\\}\\{", 
@@ -7688,7 +7688,7 @@
                     "ModelDims"] <- "Model dims"
                   delta_mat_tex <- as.matrix(delta_mat_tex)
                   row.names(delta_mat_tex) <- NULL
-                  table_title <- "Difference in scaling‐law exponents ($\\alpha$) between Neural ODE and Decoder only models. Case: COVID-19 analysis."
+                  table_title <- "Difference in scaling\\u2010law exponents ($\\alpha$) between Neural ODE and Decoder only models. Case: COVID-19 analysis."
                   delta_mat_tex <- delta_mat_tex[, !colnames(delta_mat_tex) %in% 
                     c("NeuralODE", "DecoderOnly", "alpha_ratio")]
                   colnames(delta_mat_tex)[colnames(delta_mat_tex) == 
@@ -7742,7 +7742,7 @@
                     "ModelDims"] <- "Model dims"
                   delta_mat_tex <- as.matrix(delta_mat_tex)
                   row.names(delta_mat_tex) <- NULL
-                  table_title <- "Difference in scaling‐law exponents ($\\alpha$) between Decoder Only and Neural ODE models. Case: simulation."
+                  table_title <- "Difference in scaling\\u2010law exponents ($\\alpha$) between Decoder Only and Neural ODE models. Case: simulation."
                   delta_mat_tex <- delta_mat_tex[, !colnames(delta_mat_tex) %in% 
                     c("NeuralODE", "DecoderOnly", "alpha_ratio")]
                   colnames(delta_mat_tex)[colnames(delta_mat_tex) == 
