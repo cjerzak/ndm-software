@@ -3705,7 +3705,7 @@
             stop("Transformer query heads must be divisible by KV heads.", 
                 call. = FALSE)
         }
-        if (!exists(".__unified_attn_defined", inherits = TRUE)) {
+        if (!exists(".__unified_attn_defined", inherits = FALSE)) {
             print("Defining Unified dot-product attention helper...")
             choose_attention_impl <- function(prefer = "auto") {
                 if (prefer == "xla") 
@@ -3807,7 +3807,7 @@
             .__unified_attn_defined <- TRUE
         }
         {
-            if (!exists(".__kv_helpers_defined", inherits = TRUE)) {
+            if (!exists(".__kv_helpers_defined", inherits = FALSE)) {
                 print("Defining KV cache helpers...")
                 rope_apply_single <- function(x_d, pos, head_dim) {
                   half <- as.integer(head_dim%/%2L)

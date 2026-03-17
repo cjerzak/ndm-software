@@ -1,7 +1,11 @@
 {
   options(error = NULL)
-  # install.packages("~/Documents/ndm-software", repos = NULL, type = "source", force = FALSE)
-  # ndm::ndm_build_backend()
+  
+  # reinstall package 
+  install.packages("~/Documents/ndm-software", repos = NULL, type = "source", force = FALSE)
+  
+  # rebuild backend 
+  ndm::ndm_build_backend()
 
   resolve_script_path <- function() {
     source_frame <- tryCatch(sys.frame(1L)$ofile, error = function(...) NULL)
@@ -62,6 +66,16 @@
     }
   }
 
+  cleanup_build_artifacts <- function() {
+    if (file.exists(tarball_path)) {
+      file.remove(tarball_path)
+    }
+
+    if (dir.exists(check_path)) {
+      unlink(check_path, recursive = TRUE, force = TRUE)
+    }
+  }
+
   script_path <- resolve_script_path()
   package_path <- dirname(script_path)
   setwd(package_path)
@@ -71,6 +85,7 @@
   version_number <- unname(desc[["Version"]])
   pdf_path <- file.path(package_path, sprintf("%s.pdf", package_name))
   tarball_path <- file.path(package_path, sprintf("%s_%s.tar.gz", package_name, version_number))
+  check_path <- file.path(package_path, sprintf("%s.Rcheck", package_name))
   r_bin <- file.path(R.home("bin"), "R")
   rscript_bin <- file.path(R.home("bin"), "Rscript")
   runtime_registry_generator <- file.path(package_path, "tools", "generate_runtime_registry.R")
@@ -107,8 +122,10 @@
   devtools::check(package_path)
 
   refresh_runtime_registry()
+  cleanup_build_artifacts()
   run_system_step(c("CMD", "build", "--resave-data", package_path))
 
+  cleanup_build_artifacts()
   run_system_step(c("CMD", "check", "--as-cran", tarball_path))
 
   refresh_runtime_registry()

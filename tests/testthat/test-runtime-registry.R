@@ -5,6 +5,51 @@ runtime_registry_expr_name <- function(relative_path) {
   )
 }
 
+runtime_registry_parent_paths <- function(path, depth = 6L) {
+  path <- normalizePath(path, winslash = "/", mustWork = FALSE)
+  parents <- character(depth + 1L)
+  parents[[1L]] <- path
+
+  for (i in seq_len(depth)) {
+    parents[[i + 1L]] <- normalizePath(
+      file.path(parents[[i]], ".."),
+      winslash = "/",
+      mustWork = FALSE
+    )
+  }
+
+  unique(parents[nzchar(parents)])
+}
+
+runtime_registry_source_root <- function() {
+  source_root <- try(ndm:::.ndm_runtime_source_root(), silent = TRUE)
+  if (!inherits(source_root, "try-error") && !is.null(source_root) && dir.exists(source_root)) {
+    return(source_root)
+  }
+
+  start_paths <- unique(c(
+    getwd(),
+    tryCatch(testthat::test_path("..", ".."), error = function(...) ""),
+    system.file(package = "ndm")
+  ))
+  candidate_roots <- unique(unlist(lapply(start_paths[nzchar(start_paths)], runtime_registry_parent_paths)))
+  candidate_rel_paths <- c(
+    file.path("tools", "runtime_source", "ndm_runtime"),
+    file.path("00_pkg_src", "ndm", "tools", "runtime_source", "ndm_runtime")
+  )
+
+  for (root in candidate_roots) {
+    for (rel_path in candidate_rel_paths) {
+      candidate <- file.path(root, rel_path)
+      if (dir.exists(candidate)) {
+        return(normalizePath(candidate, winslash = "/", mustWork = TRUE))
+      }
+    }
+  }
+
+  testthat::skip("runtime source tree is not available in this installed-package context")
+}
+
 runtime_registry_escape_non_ascii <- function(lines) {
   vapply(
     enc2utf8(lines),
@@ -47,7 +92,7 @@ runtime_registry_expected_expr <- function(path) {
 
 expect_runtime_expr_matches_source <- function(expr_name, relative_path) {
   ns <- asNamespace("ndm")
-  source_root <- testthat::test_path("..", "..", "tools", "runtime_source", "ndm_runtime")
+  source_root <- runtime_registry_source_root()
   source_path <- file.path(source_root, relative_path)
 
   expect_true(exists(expr_name, envir = ns, inherits = FALSE), info = relative_path)

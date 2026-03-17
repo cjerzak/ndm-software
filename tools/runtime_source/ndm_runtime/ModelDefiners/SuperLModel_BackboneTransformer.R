@@ -12,7 +12,7 @@ if(backbonePath == "initialize"){
   }
   
   # --- Unified dot-product attention helper (flash or XLA) ----------------------
-  if (!exists(".__unified_attn_defined", inherits = TRUE)) {
+  if (!exists(".__unified_attn_defined", inherits = FALSE)) {
     print("Defining Unified dot-product attention helper...")
     # Decide implementation once per host (not traced)
     choose_attention_impl <- function(prefer = "auto"){
@@ -156,7 +156,7 @@ if(backbonePath == "initialize"){
   
   # Kv cache helpers
   {
-    if (!exists(".__kv_helpers_defined", inherits = TRUE)) {
+    if (!exists(".__kv_helpers_defined", inherits = FALSE)) {
       print("Defining KV cache helpers...")
       # Single-position rotary embedding (RoPE) for [H]-dim token vector
       rope_apply_single <- function(x_d, pos, head_dim) {

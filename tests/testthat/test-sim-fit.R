@@ -320,6 +320,16 @@ test_that("decoder cache and non-cache predictions agree in jax_cpu", {
 test_that("decoder transformer resolves GQA topology and KV cache shapes in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
+  # Prime the session with a smaller decoder model so the GQA assertions below
+  # verify that helper bindings are scoped to the current runtime.
+  invisible(ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    model_dims = 32L,
+    return_details = TRUE
+  ))
+
   details <- ndm_test_fit_sim_case(
     model_type = "DecoderOnly",
     endogeneity = 0.0,
