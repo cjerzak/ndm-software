@@ -3,6 +3,13 @@ print("Done with SuperLModel_BackboneTransformer.R")
 if(backbonePath == "initialize"){
   TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), function(d) d$device_kind))), error = function(e) FALSE)
   EnableKVCaching <- TRUE & (ModelType == "DecoderOnly")
+  num_heads <- TransformerHeads
+  num_kv_heads <- TransformerKVHeads
+  head_dim <- TransformerHeadDim
+  kv_group_size <- TransformerKVGroupSize
+  if ((num_heads %% num_kv_heads) != 0L) {
+    stop("Transformer query heads must be divisible by KV heads.", call. = FALSE)
+  }
   
   # --- Unified dot-product attention helper (flash or XLA) ----------------------
   if (!exists(".__unified_attn_defined", inherits = TRUE)) {
@@ -168,13 +175,30 @@ if(backbonePath == "initialize"){
         x_rot_odd  <- x_even * s_ + x_odd * c_
         jnp$concatenate(list(x_rot_even, x_rot_odd), axis = 0L)
       }
+
+      repeat_kv_heads <- function(x, group_size) {
+        if (group_size == 1L) {
+          return(x)
+        }
+        if (length(x$shape) == 3L) {
+          x_expanded <- jnp$expand_dims(x, 2L)
+          x_tiled <- jnp$tile(x_expanded, list(1L, 1L, group_size, 1L))
+          return(jnp$reshape(x_tiled, list(x$shape[[1]], x$shape[[2]] * group_size, x$shape[[3]])))
+        }
+        if (length(x$shape) == 2L) {
+          x_expanded <- jnp$expand_dims(x, 1L)
+          x_tiled <- jnp$tile(x_expanded, list(1L, group_size, 1L))
+          return(jnp$reshape(x_tiled, list(x$shape[[1]] * group_size, x$shape[[2]])))
+        }
+        stop("repeat_kv_heads expects a [T, N, H] or [N, H] tensor.", call. = FALSE)
+      }
       
-      # Allocate KV cache: per layer, K/V are [max_len, num_heads, head_dim]
-      kv_cache_allocate <- function(max_len, num_layers, num_heads, head_dim, dtype) {
+      # Allocate KV cache: per layer, K/V are [max_len, num_kv_heads, head_dim]
+      kv_cache_allocate <- function(max_len, num_layers, num_kv_heads, head_dim, dtype) {
         make_one <- function() {
           list(
-            "k"   = jnp$zeros(list(max_len, num_heads, head_dim), dtype = dtype),
-            "v"   = jnp$zeros(list(max_len, num_heads, head_dim), dtype = dtype),
+            "k"   = jnp$zeros(list(max_len, num_kv_heads, head_dim), dtype = dtype),
+            "v"   = jnp$zeros(list(max_len, num_kv_heads, head_dim), dtype = dtype),
             "len" = jnp$array(0L, dtype = jnp$int32)
           )
         }
@@ -193,13 +217,15 @@ if(backbonePath == "initialize"){
         
         # Heads info (shared across layers)
         num_heads <- num_heads
+        num_kv_heads <- num_kv_heads
         head_dim  <- head_dim
+        kv_group_size <- kv_group_size
         
         # Allocate KV cache for the full static capacity T_full
         cache <- kv_cache_allocate(
           max_len    = T_full,
           num_layers = ModelDepth, #length(TransformerList) - 1L,  # minus DecoderProj
-          num_heads  = num_heads,
+          num_kv_heads  = num_kv_heads,
           head_dim   = head_dim,
           dtype      = dtype
         )
@@ -245,13 +271,13 @@ if(backbonePath == "initialize"){
           
           # Q/K/V projections from *unrotated* activations
           q <- jnp$dot(xt,  L$Multihead$W_q)                          # [T_full, D]
-          k <- jnp$dot(xt,  L$Multihead$W_k)                          # [T_full, D]
-          v <- jnp$dot(xt,  L$Multihead$W_v)                          # [T_full, D]
+          k <- jnp$dot(xt,  L$Multihead$W_k)                          # [T_full, D_kv]
+          v <- jnp$dot(xt,  L$Multihead$W_v)                          # [T_full, D_kv]
           
-          # Reshape to heads: [T, D] -> [T, N, H]
+          # Reshape to query and KV heads separately.
           qh <- jnp$reshape(q, list(T_full, num_heads, head_dim))           # [T, N, H]
-          kh <- jnp$reshape(k, list(T_full, num_heads, head_dim))           # [T, N, H]
-          vh <- jnp$reshape(v, list(T_full, num_heads, head_dim))           # [T, N, H] (no RoPE on V)
+          kh_kv <- jnp$reshape(k, list(T_full, num_kv_heads, head_dim))     # [T, N_kv, H]
+          vh_kv <- jnp$reshape(v, list(T_full, num_kv_heads, head_dim))     # [T, N_kv, H]
           
           # Apply RoPE *after* projection, per time-step and per head
           pos_ids <- jnp$arange(T_full, dtype = jnp$int32)                  # [T]
@@ -264,14 +290,17 @@ if(backbonePath == "initialize"){
           
           # rotate queries and keys 
           qh <- apply_rope_all(qh, pos_ids)                                 # [T, N, H]
-          kh <- apply_rope_all(kh, pos_ids)                                 # [T, N, H]
+          kh_kv <- apply_rope_all(kh_kv, pos_ids)                           # [T, N_kv, H]
           
           # Save full (masked) slices to cache; logical length is pm$len
           k_slice_idx <- jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
           v_slice_idx <- jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
-          cache[[l_]]$k   <- jax$lax$dynamic_update_slice(cache[[l_]]$k, kh, k_slice_idx)
-          cache[[l_]]$v   <- jax$lax$dynamic_update_slice(cache[[l_]]$v, vh, v_slice_idx)
+          cache[[l_]]$k   <- jax$lax$dynamic_update_slice(cache[[l_]]$k, kh_kv, k_slice_idx)
+          cache[[l_]]$v   <- jax$lax$dynamic_update_slice(cache[[l_]]$v, vh_kv, v_slice_idx)
           cache[[l_]]$len <- pm$len
+
+          kh <- repeat_kv_heads(kh_kv, kv_group_size)                       # [T, N, H]
+          vh <- repeat_kv_heads(vh_kv, kv_group_size)                       # [T, N, H]
 
           # Attention (NO transpose). API expects [T, N, H] (or [B,T,N,H]).
           attn_out <- dot_product_attention_unified(
@@ -325,7 +354,9 @@ if(backbonePath == "initialize"){
         D          <- token_in$shape[[1]]
         dtype      <- token_in$dtype
         num_heads  <- num_heads
+        num_kv_heads <- num_kv_heads
         head_dim   <- head_dim
+        kv_group_size <- kv_group_size
         
         xt <- token_in
         for (l_ in 1:ModelDepth) {
@@ -339,19 +370,19 @@ if(backbonePath == "initialize"){
           
           # Project Q/K/V for this single token
           q_full <- jnp$dot(xt, L$Multihead$W_q)               # [D]
-          k_full <- jnp$dot(xt, L$Multihead$W_k)               # [D]
-          v_full <- jnp$dot(xt, L$Multihead$W_v)               # [D]
+          k_full <- jnp$dot(xt, L$Multihead$W_k)               # [D_kv]
+          v_full <- jnp$dot(xt, L$Multihead$W_v)               # [D_kv]
           
-          # Reshape to [N, H]
+          # Reshape to query and KV heads.
           q_NH <- jnp$reshape(q_full, list(num_heads, head_dim))
-          k_NH <- jnp$reshape(k_full, list(num_heads, head_dim))
-          v_NH <- jnp$reshape(v_full, list(num_heads, head_dim))
+          k_KH <- jnp$reshape(k_full, list(num_kv_heads, head_dim))
+          v_KH <- jnp$reshape(v_full, list(num_kv_heads, head_dim))
           
           # Apply RoPE with absolute position = pos (vectorized over heads)
           apply_rope <- jax$vmap(function(hvec){rope_apply_single(hvec, pos, head_dim)},
                                  in_axes = 0L)
           q_NH <- apply_rope(q_NH)  # [N, H]
-          k_NH <- apply_rope(k_NH)  # [N, H]
+          k_KH <- apply_rope(k_KH)  # [N_kv, H]
           
           # --- Write K/V for this pos into cache (static shapes; dynamic index ok) ---
           max_len  <- cache[[l_]]$k$shape[[1]]                   # static
@@ -363,9 +394,9 @@ if(backbonePath == "initialize"){
           v_write_idx <- jnp$array(c(pos_i32, 0L, 0L), dtype = jnp$int32)
           
           cache[[l_]]$k <- jax$lax$dynamic_update_slice(
-            cache[[l_]]$k, jnp$expand_dims(k_NH, 0L), k_write_idx)  # [max_len, N, H]
+            cache[[l_]]$k, jnp$expand_dims(k_KH, 0L), k_write_idx)  # [max_len, N_kv, H]
           cache[[l_]]$v <- jax$lax$dynamic_update_slice(
-            cache[[l_]]$v, jnp$expand_dims(v_NH, 0L), v_write_idx)  # [max_len, N, H]
+            cache[[l_]]$v, jnp$expand_dims(v_KH, 0L), v_write_idx)  # [max_len, N_kv, H]
           
           # Logical cache length: at least pos+1
           cache[[l_]]$len <- jnp$maximum(cache[[l_]]$len,
@@ -376,8 +407,8 @@ if(backbonePath == "initialize"){
           q_TNH <- jnp$expand_dims(q_NH, 0L)                     # [1, N, H]
           
           # Use full K/V (static S=max_len); restrict with a keys-only mask.
-          K_SNH <- cache[[l_]]$k                                 # [max_len, N, H]
-          V_SNH <- cache[[l_]]$v                                 # [max_len, N, H]
+          K_SNH <- repeat_kv_heads(cache[[l_]]$k, kv_group_size) # [max_len, N, H]
+          V_SNH <- repeat_kv_heads(cache[[l_]]$v, kv_group_size) # [max_len, N, H]
           
           # Keys mask from logical length and current pos (strict causality: keys <= pos)
           idx_full       <- jnp$arange(max_len, dtype = jnp$int32)        # [max_len]
@@ -394,8 +425,7 @@ if(backbonePath == "initialize"){
           # new - 999
           mask_keys_decode <- jnp$expand_dims(keys_mask_1d, 0L)  # [1, S]
           mask_keys_decode <- jnp$expand_dims(mask_keys_decode, 0L)  # [1, 1, S]
-          #mask_keys_decode <- jnp$expand_dims(mask_keys_decode, 0L)  # [1, 1, 1, S]
-          mask_keys_decode <- jnp$broadcast_to(mask_keys_decode, list(1L, 1L, max_len))  # [1, 1, 1, S]
+          mask_keys_decode <- jnp$broadcast_to(mask_keys_decode, list(num_heads, 1L, max_len))  # [N, 1, S]
           
           # EXPERIMENTAL999
           #q_TNH <- jnp$expand_dims(q_TNH, 0L)  # [1, T, N, H]
@@ -475,10 +505,12 @@ if(backbonePath == "initialize"){
     }
     if( !UseLatentAttention ){
       {
-        # - Define Q/K/V/O weights for Flash attention
-        # head_dim must divide ModelDims by TransformerHeads (already ensured elsewhere)
-        head_dim <- as.integer(ModelDims / TransformerHeads)
+        # - Define GQA projections. Query heads span the model width; KV heads are grouped.
+        head_dim <- TransformerHeadDim
         num_heads = TransformerHeads
+        num_kv_heads = TransformerKVHeads
+        q_proj_dim <- num_heads * head_dim
+        kv_proj_dim <- num_kv_heads * head_dim
         
         init_std <- sqrt(2.0 / as.numeric(ModelDims + ModelDims))
         make_w <- function(shape, seed_key) {
@@ -490,11 +522,10 @@ if(backbonePath == "initialize"){
         # Properly split keys for reproducible random initialization
         multihead_keys <- jax$random$split(key, 4L)
         TransformerList[[l_]]$Multihead <- list(
-          # [D, D] projections: Q=xt_pos·W_q, K=xt_pos·W_k, V=xt·W_v; O merges heads back
-          "W_q" = make_w(list(ModelDims, ModelDims), multihead_keys[1]),
-          "W_k" = make_w(list(ModelDims, ModelDims), multihead_keys[2]),
-          "W_v" = make_w(list(ModelDims, ModelDims), multihead_keys[3]),
-          "W_o" = make_w(list(ModelDims, ModelDims), multihead_keys[4])
+          "W_q" = make_w(list(ModelDims, q_proj_dim), multihead_keys[1]),
+          "W_k" = make_w(list(ModelDims, kv_proj_dim), multihead_keys[2]),
+          "W_v" = make_w(list(ModelDims, kv_proj_dim), multihead_keys[3]),
+          "W_o" = make_w(list(q_proj_dim, ModelDims), multihead_keys[4])
         )
         key <- jax$random$split(key)[[1]]  # advance key for next use
       }
@@ -550,6 +581,10 @@ if(backbonePath == "initialize"){
 
 if(backbonePath == "run"){ # note: there is no caching here; caching is applied in *BuildML.R
   # multihead attn part
+  num_heads <- TransformerHeads
+  num_kv_heads <- TransformerKVHeads
+  head_dim <- TransformerHeadDim
+  kv_group_size <- TransformerKVGroupSize
   x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask)) #length (query_seq_length, kv_seq_length)
   # x_mask_1oversums <- jnp$reciprocal( jnp$add(0.000001, jnp$sum(x_mask,0L,keepdims=T) ) )
   # causalimages::image2(np$array(x_mask_attn$val)[1,,] )
@@ -577,10 +612,10 @@ if(backbonePath == "run"){ # note: there is no caching here; caching is applied 
           k_ = jnp$dot(xt, TransformerList_d$Multihead$W_k)
           v_ = jnp$dot(xt, TransformerList_d$Multihead$W_v)
           
-          # 2) Reshape to heads: [T, D] -> [T, N, H]
+          # 2) Reshape to query and KV heads.
           q_ = jnp$reshape(q_, list(q_$shape[[1]], num_heads, head_dim))
-          k_ = jnp$reshape(k_, list(k_$shape[[1]], num_heads, head_dim))
-          v_ = jnp$reshape(v_, list(v_$shape[[1]], num_heads, head_dim))
+          k_ = jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, head_dim))
+          v_ = jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, head_dim))
           
           # 3) Apply RoPE after Q/K projections so cached and uncached paths match.
           pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
@@ -590,6 +625,8 @@ if(backbonePath == "run"){ # note: there is no caching here; caching is applied 
           apply_rope_all <- jax$vmap(apply_rope_one_row, in_axes = list(0L, 0L))
           q_ <- apply_rope_all(q_, pos_ids)
           k_ <- apply_rope_all(k_, pos_ids)
+          k_ <- repeat_kv_heads(k_, kv_group_size)
+          v_ <- repeat_kv_heads(v_, kv_group_size)
           
           # 4) Mask: make boolean and broadcast to [N, T, S].
           #     Your x_mask_attn is [T, S] with 1=keep, 0=mask. Convert to bool and add head axis.

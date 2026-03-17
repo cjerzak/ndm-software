@@ -43,8 +43,58 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   widthCycle <- 50;
   doGeoInfo <- F
   BackboneType <- "transformer"; 
-  TransformerHeads <- (1:100)[ which(ModelDims %% (1:100) == 0) ]
-  TransformerHeads <- TransformerHeads[which.min(abs(TransformerHeads-12))]# TransformerHeads must divide ModelDims evenly:
+  resolve_transformer_topology <- function(model_dims,
+                                           target_head_dim = 64L,
+                                           kv_heads_override = NULL) {
+    target_head_dim <- max(1L, ai(target_head_dim))
+    divisors <- (1:model_dims)[which(model_dims %% (1:model_dims) == 0L)]
+    head_dims <- model_dims %/% divisors
+    even_mask <- (head_dims %% 2L) == 0L
+    if (!any(even_mask)) {
+      stop("ModelDims must admit an even attention head dimension for RoPE.", call. = FALSE)
+    }
+    divisors <- divisors[even_mask]
+    head_dims <- head_dims[even_mask]
+    best_q_idx <- order(abs(head_dims - target_head_dim), divisors)[1]
+    num_query_heads <- ai(divisors[[best_q_idx]])
+    head_dim <- ai(head_dims[[best_q_idx]])
+
+    if (is.null(kv_heads_override)) {
+      max_kv_heads <- max(1L, ai(floor(num_query_heads / 4L)))
+      kv_candidates <- (1:num_query_heads)[which(num_query_heads %% (1:num_query_heads) == 0L)]
+      kv_candidates <- kv_candidates[kv_candidates <= max_kv_heads]
+      if (length(kv_candidates) == 0L) {
+        kv_candidates <- 1L
+      }
+      num_kv_heads <- ai(max(kv_candidates))
+    } else {
+      num_kv_heads <- ai(kv_heads_override)
+      if (num_kv_heads < 1L || (num_query_heads %% num_kv_heads) != 0L) {
+        stop("AttentionKVHeads must be a positive divisor of the resolved query head count.", call. = FALSE)
+      }
+    }
+
+    list(
+      "num_query_heads" = num_query_heads,
+      "num_kv_heads" = num_kv_heads,
+      "head_dim" = head_dim,
+      "kv_group_size" = ai(num_query_heads %/% num_kv_heads)
+    )
+  }
+  AttentionHeadDim <- max(1L, ai(get0("AttentionHeadDim", ifnotfound = 64L)))
+  AttentionKVHeads <- get0("AttentionKVHeads", ifnotfound = NULL)
+  if (!is.null(AttentionKVHeads)) {
+    AttentionKVHeads <- ai(AttentionKVHeads)
+  }
+  TransformerTopology <- resolve_transformer_topology(
+    model_dims = ModelDims,
+    target_head_dim = AttentionHeadDim,
+    kv_heads_override = AttentionKVHeads
+  )
+  TransformerHeads <- TransformerTopology$num_query_heads
+  TransformerKVHeads <- TransformerTopology$num_kv_heads
+  TransformerHeadDim <- TransformerTopology$head_dim
+  TransformerKVGroupSize <- TransformerTopology$kv_group_size
 
   #BackboneType <- "mamba"; StateSize <- 4L
   DoPriorSamplingAutoDiff <- F
@@ -501,6 +551,40 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   }  
     
   # define dense + ts functions
+  DecoderBackboneToOutput <- function(TSList, hidden_state){
+    hidden_state <- jnp$squeeze(
+      LayerNorm(jnp$expand_dims(hidden_state, 0L)) * TSList$FinalNormScaler
+    )
+    print2("Warning: Normalizing pre-outputs")
+    hidden_state <- TSList$OutputProcess$Proj1(hidden_state)
+    if(ModelType != "DecoderOnly"){
+      hidden_state <- hidden_state + TSList$OutputProcess$ManualBias
+    }
+    hidden_state
+  }
+
+  SelectBackboneOutputToken <- function(xt, x_mask){
+    if( ModelType == "NeuralODE"){
+      if( T == F ){ 
+        plot(np$array(x_mask$val)[,4,1])
+      }
+      if(endAppend){  xt <- jnp$take(xt, indices = xt$aval$shape[[1]]-1L, axis = 0L) }
+      if(!endAppend){ xt <- jnp$take(xt, indices = 0L, axis = 0L)}
+    }
+
+    if( ModelType == "DecoderOnly"){
+      last_nonmasked_i <- jnp$argmax(jnp$where(jnp$equal(x_mask, 1),
+                                                jnp$expand_dims(jnp$arange(x_mask$shape[[1]]),1L),
+                                               -jnp$inf
+                                               ) )
+      xt <- jnp$take(xt,  indices = last_nonmasked_i, axis = 0L )
+
+      if(paddingMethod == "right"){ stop("Not yet implemented in BuildML.R")}
+    }
+
+    xt
+  }
+
   Encoder2Output <- function(TSList, 
                              xt, time, 
                              place, BNList, 
@@ -516,75 +600,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       print("Done sourcing SuperLModel_BackboneMamba.R in run path")
     }
 
-    # take CLS representation as output
-    if( ModelType == "NeuralODE"){
-      if( T == F ){ 
-        plot(np$array(x_mask$val)[,4,1])
-      }
-      if(endAppend){  xt <- jnp$take(xt, indices = xt$aval$shape[[1]]-1L, axis = 0L) } # end appended CLS 
-      if(!endAppend){ xt <- jnp$take(xt, indices = 0L, axis = 0L)} # start appended CLS 
-      # View(np$array(xt$val)[,,11])
-    }
-    
-    # use last value as output 
-    if( ModelType == "DecoderOnly"){
-      
-      # Mask zeros to avoid selecting them as max
-      # np$array(x_mask$val)[1,,]
-      # which(np$array(x_mask$val)[1,,]==1)
-      # np$array(jnp$not_equal(x_mask, 0)$val)[1,,]
-      last_nonmasked_i <- jnp$argmax(jnp$where(jnp$equal(x_mask, 1),
-                                                jnp$expand_dims(jnp$arange(x_mask$shape[[1]]),1L), # TRUE SELECT 
-                                               -jnp$inf # FALSE SELECT 
-                                               ) ) # argmax is zero indexed 
-      xt <- jnp$take(xt,  indices = last_nonmasked_i, axis = 0L )
-      
-      if(paddingMethod == "right"){ stop("Not yet implemented in BuildML.R")}
-      if (endAppend) {
-        # Count how many tokens were appended
-        #appended_count <- 1L  + AppendPlaceEmbeds + AppendTimeEmbeds# always at least the CLS
-        
-        # The last appended token is CLS, possibly preceded by place/time if used,
-        # so we take (shape[[1]] - appended_count - 1) to get the last disease state
-        #xt <- jnp$take(xt,  indices = xt$aval$shape[[1]] - appended_count - 1L, axis = 0L )
-      } 
-      if(!endAppend){ 
-        # If appended at the front, then the last disease state simply ends up
-        # at index (shape[[1]] - 1).  All appended tokens are at the beginning.
-        #xt <- jnp$take( xt, indices = xt$aval$shape[[1]] - 1L, axis = 0L )
-      }
-      # View(np$array(xt$val)[,,11])
-    }
-    
-    # View(np$array(xt$val))
-    # plot(np$array(xt$val)[,sample(1:50,2)]); hist(cor(np$array(xt$val)[1,]))
-    # plot(np$array(xt$val$val)[,1,sample(1:50,2)]); hist(cor(np$array(xt$val$val)[,1,]))
-    
-    # plot( init_ <- c(np$array(TSList$InitialCLS)) ) # cls initial embedding
-    # plot( post1_ <- np$array(xt$val)[1,] ) # cls post embedding seq 1 
-    # plot( post2_ <- np$array(xt$val)[2,] ) # cls post embedding seq 2
-    # plot( init_, post1_  ); abline(a=0,b=1)# cls initial embedding seq 1
-    # plot( post1_, post2_  ); abline(a=0,b=1)# cls initial embedding seq 1, 2  
-    
-    # normalize if desired
-    #xt <- xt; print2("Warning: NOT normalizing pre-outputs")
-    xt <- jnp$squeeze( LayerNorm(jnp$expand_dims(xt,0L)) *
-                         TSList$FinalNormScaler ); print2("Warning: Normalizing pre-outputs")
-    
-    # plot(np$array(xt$val)[,sample(1:50,2)]); hist(cor(np$array(xt$val)))
-    # plot(np$array(xt$val$val)[,1,sample(1:50,2)]); hist(cor(np$array(xt$val$val)[,1,]))
-    
-    # final projection & return 
-    xt <- TSList$OutputProcess$Proj1( xt ) 
-    if(ModelType != "DecoderOnly"){ 
-      xt <- xt + TSList$OutputProcess$ManualBias # ensure manual bias DOESN'T have an extra dimension, otherwise a very sneaky and devestating bug is induced. 
-    }
-    
-    # View(np$array(xt$val))
-    # dim(np$array(xt$val))
-    # plot(np$array(xt$val)[,sample(1:20,2)])
-    
-    # return 
+    xt <- SelectBackboneOutputToken(xt = xt, x_mask = x_mask)
+    xt <- DecoderBackboneToOutput(TSList = TSList, hidden_state = xt)
     print2("Returning xt output in Encoder2Output()")
     return( xt ) 
   }
@@ -919,8 +936,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               prefix_len = prefix_len
             )
             kv_cache   <- prefill_ret$cache
-            xt_last    <- prefill_ret$xt_last               # [D] hidden at last known token
-            last_idx   <- prefix_len - 1L                   # 0-based index of last known token
+            xt_last_raw <- prefill_ret$xt_last
+            xt_last <- DecoderBackboneToOutput(
+              TSList = ModelList$TSList,
+              hidden_state = xt_last_raw
+            )
             
             # 2) First prediction y_1 uses representation at last known token.
             y_first    <- ModelList$TSList$TSBackbone$DecoderProj(xt_last)  # [nOutcomes]
@@ -952,7 +972,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                 TransformerList= ModelList$TSList$TSBackbone,
                 cache          = cache
               )
-              embed_out <- sret$token_out # [D]
+              embed_out <- DecoderBackboneToOutput(
+                TSList = ModelList$TSList,
+                hidden_state = sret$token_out
+              )
               cache     <- sret$cache
               
               # Insert embed_out as the input for the next (pos+1) position and open its mask

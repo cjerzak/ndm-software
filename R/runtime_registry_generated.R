@@ -2408,10 +2408,57 @@
         widthCycle <- 50
         doGeoInfo <- F
         BackboneType <- "transformer"
-        TransformerHeads <- (1:100)[which(ModelDims%%(1:100) == 
-            0)]
-        TransformerHeads <- TransformerHeads[which.min(abs(TransformerHeads - 
-            12))]
+        resolve_transformer_topology <- function(model_dims, 
+            target_head_dim = 64L, kv_heads_override = NULL) {
+            target_head_dim <- max(1L, ai(target_head_dim))
+            divisors <- (1:model_dims)[which(model_dims%%(1:model_dims) == 
+                0L)]
+            head_dims <- model_dims%/%divisors
+            even_mask <- (head_dims%%2L) == 0L
+            if (!any(even_mask)) {
+                stop("ModelDims must admit an even attention head dimension for RoPE.", 
+                  call. = FALSE)
+            }
+            divisors <- divisors[even_mask]
+            head_dims <- head_dims[even_mask]
+            best_q_idx <- order(abs(head_dims - target_head_dim), 
+                divisors)[1]
+            num_query_heads <- ai(divisors[[best_q_idx]])
+            head_dim <- ai(head_dims[[best_q_idx]])
+            if (is.null(kv_heads_override)) {
+                max_kv_heads <- max(1L, ai(floor(num_query_heads/4L)))
+                kv_candidates <- (1:num_query_heads)[which(num_query_heads%%(1:num_query_heads) == 
+                  0L)]
+                kv_candidates <- kv_candidates[kv_candidates <= 
+                  max_kv_heads]
+                if (length(kv_candidates) == 0L) {
+                  kv_candidates <- 1L
+                }
+                num_kv_heads <- ai(max(kv_candidates))
+            }
+            else {
+                num_kv_heads <- ai(kv_heads_override)
+                if (num_kv_heads < 1L || (num_query_heads%%num_kv_heads) != 
+                  0L) {
+                  stop("AttentionKVHeads must be a positive divisor of the resolved query head count.", 
+                    call. = FALSE)
+                }
+            }
+            list(num_query_heads = num_query_heads, num_kv_heads = num_kv_heads, 
+                head_dim = head_dim, kv_group_size = ai(num_query_heads%/%num_kv_heads))
+        }
+        AttentionHeadDim <- max(1L, ai(get0("AttentionHeadDim", 
+            ifnotfound = 64L)))
+        AttentionKVHeads <- get0("AttentionKVHeads", ifnotfound = NULL)
+        if (!is.null(AttentionKVHeads)) {
+            AttentionKVHeads <- ai(AttentionKVHeads)
+        }
+        TransformerTopology <- resolve_transformer_topology(model_dims = ModelDims, 
+            target_head_dim = AttentionHeadDim, kv_heads_override = AttentionKVHeads)
+        TransformerHeads <- TransformerTopology$num_query_heads
+        TransformerKVHeads <- TransformerTopology$num_kv_heads
+        TransformerHeadDim <- TransformerTopology$head_dim
+        TransformerKVGroupSize <- TransformerTopology$kv_group_size
         DoPriorSamplingAutoDiff <- F
         UseDiagonalLMatVCov <- isTRUE(get0("UseDiagonalLMatVCov", 
             ifnotfound = TRUE))
@@ -2782,19 +2829,17 @@
             }
             return(list(xt, x_mask))
         }
-        Encoder2Output <- function(TSList, xt, time, place, BNList, 
-            state, inference) {
-            x_mask <- xt[[2]]
-            xt <- xt[[1]]
-            if ("transformer" %in% BackboneType) {
-                backbonePath <- "run"
-                ndm_source_extracted("ModelDefiners/SuperLModel_BackboneTransformer.R")
-                print("Done sourcing SuperLModel_BackboneTransformer.R in run path")
+        DecoderBackboneToOutput <- function(TSList, hidden_state) {
+            hidden_state <- jnp$squeeze(LayerNorm(jnp$expand_dims(hidden_state, 
+                0L)) * TSList$FinalNormScaler)
+            print2("Warning: Normalizing pre-outputs")
+            hidden_state <- TSList$OutputProcess$Proj1(hidden_state)
+            if (ModelType != "DecoderOnly") {
+                hidden_state <- hidden_state + TSList$OutputProcess$ManualBias
             }
-            if ("mamba" %in% BackboneType) {
-                stop("Mamba is not included in ndm.", call. = FALSE)
-                print("Done sourcing SuperLModel_BackboneMamba.R in run path")
-            }
+            hidden_state
+        }
+        SelectBackboneOutputToken <- function(xt, x_mask) {
             if (ModelType == "NeuralODE") {
                 if (T == F) {
                   plot(np$array(x_mask$val)[, 4, 1])
@@ -2816,18 +2861,24 @@
                 if (paddingMethod == "right") {
                   stop("Not yet implemented in BuildML.R")
                 }
-                if (endAppend) {
-                }
-                if (!endAppend) {
-                }
             }
-            xt <- jnp$squeeze(LayerNorm(jnp$expand_dims(xt, 0L)) * 
-                TSList$FinalNormScaler)
-            print2("Warning: Normalizing pre-outputs")
-            xt <- TSList$OutputProcess$Proj1(xt)
-            if (ModelType != "DecoderOnly") {
-                xt <- xt + TSList$OutputProcess$ManualBias
+            xt
+        }
+        Encoder2Output <- function(TSList, xt, time, place, BNList, 
+            state, inference) {
+            x_mask <- xt[[2]]
+            xt <- xt[[1]]
+            if ("transformer" %in% BackboneType) {
+                backbonePath <- "run"
+                ndm_source_extracted("ModelDefiners/SuperLModel_BackboneTransformer.R")
+                print("Done sourcing SuperLModel_BackboneTransformer.R in run path")
             }
+            if ("mamba" %in% BackboneType) {
+                stop("Mamba is not included in ndm.", call. = FALSE)
+                print("Done sourcing SuperLModel_BackboneMamba.R in run path")
+            }
+            xt <- SelectBackboneOutputToken(xt = xt, x_mask = x_mask)
+            xt <- DecoderBackboneToOutput(TSList = TSList, hidden_state = xt)
             print2("Returning xt output in Encoder2Output()")
             return(xt)
         }
@@ -3114,8 +3165,9 @@
                         x_mask = xt_running[[2]], TransformerList = ModelList$TSList$TSBackbone, 
                         prefix_len = prefix_len)
                       kv_cache <- prefill_ret$cache
-                      xt_last <- prefill_ret$xt_last
-                      last_idx <- prefix_len - 1L
+                      xt_last_raw <- prefill_ret$xt_last
+                      xt_last <- DecoderBackboneToOutput(TSList = ModelList$TSList, 
+                        hidden_state = xt_last_raw)
                       y_first <- ModelList$TSList$TSBackbone$DecoderProj(xt_last)
                       insert_pos <- prefix_len
                       xt_running[[1]] <- jax$lax$dynamic_update_slice(xt_running[[1]], 
@@ -3133,7 +3185,8 @@
                         sret <- transformer_decode_step_kv(token_in = token_in, 
                           pos = pos, TransformerList = ModelList$TSList$TSBackbone, 
                           cache = cache)
-                        embed_out <- sret$token_out
+                        embed_out <- DecoderBackboneToOutput(TSList = ModelList$TSList, 
+                          hidden_state = sret$token_out)
                         cache <- sret$cache
                         write_pos <- pos + 1L
                         xt_next <- jax$lax$dynamic_update_slice(xt_run[[1]], 
@@ -3644,6 +3697,14 @@
         TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), 
             function(d) d$device_kind))), error = function(e) FALSE)
         EnableKVCaching <- TRUE & (ModelType == "DecoderOnly")
+        num_heads <- TransformerHeads
+        num_kv_heads <- TransformerKVHeads
+        head_dim <- TransformerHeadDim
+        kv_group_size <- TransformerKVGroupSize
+        if ((num_heads%%num_kv_heads) != 0L) {
+            stop("Transformer query heads must be divisible by KV heads.", 
+                call. = FALSE)
+        }
         if (!exists(".__unified_attn_defined", inherits = TRUE)) {
             print("Defining Unified dot-product attention helper...")
             choose_attention_impl <- function(prefer = "auto") {
@@ -3764,13 +3825,34 @@
                   jnp$concatenate(list(x_rot_even, x_rot_odd), 
                     axis = 0L)
                 }
+                repeat_kv_heads <- function(x, group_size) {
+                  if (group_size == 1L) {
+                    return(x)
+                  }
+                  if (length(x$shape) == 3L) {
+                    x_expanded <- jnp$expand_dims(x, 2L)
+                    x_tiled <- jnp$tile(x_expanded, list(1L, 
+                      1L, group_size, 1L))
+                    return(jnp$reshape(x_tiled, list(x$shape[[1]], 
+                      x$shape[[2]] * group_size, x$shape[[3]])))
+                  }
+                  if (length(x$shape) == 2L) {
+                    x_expanded <- jnp$expand_dims(x, 1L)
+                    x_tiled <- jnp$tile(x_expanded, list(1L, 
+                      group_size, 1L))
+                    return(jnp$reshape(x_tiled, list(x$shape[[1]] * 
+                      group_size, x$shape[[2]])))
+                  }
+                  stop("repeat_kv_heads expects a [T, N, H] or [N, H] tensor.", 
+                    call. = FALSE)
+                }
                 kv_cache_allocate <- function(max_len, num_layers, 
-                  num_heads, head_dim, dtype) {
+                  num_kv_heads, head_dim, dtype) {
                   make_one <- function() {
-                    list(k = jnp$zeros(list(max_len, num_heads, 
+                    list(k = jnp$zeros(list(max_len, num_kv_heads, 
                       head_dim), dtype = dtype), v = jnp$zeros(list(max_len, 
-                      num_heads, head_dim), dtype = dtype), len = jnp$array(0L, 
-                      dtype = jnp$int32))
+                      num_kv_heads, head_dim), dtype = dtype), 
+                      len = jnp$array(0L, dtype = jnp$int32))
                   }
                   out <- replicate(num_layers, make_one(), simplify = FALSE)
                   names(out) <- paste0("d", as.character(1:num_layers))
@@ -3782,9 +3864,11 @@
                   D <- xt$shape[[2]]
                   dtype <- xt$dtype
                   num_heads <- num_heads
+                  num_kv_heads <- num_kv_heads
                   head_dim <- head_dim
+                  kv_group_size <- kv_group_size
                   cache <- kv_cache_allocate(max_len = T_full, 
-                    num_layers = ModelDepth, num_heads = num_heads, 
+                    num_layers = ModelDepth, num_kv_heads = num_kv_heads, 
                     head_dim = head_dim, dtype = dtype)
                   pm <- make_prefix_index_mask(prefix_len, T_full)
                   x_mask_pref <- mask_prefix_rows(x_mask, pm$mask)
@@ -3811,9 +3895,9 @@
                     v <- jnp$dot(xt, L$Multihead$W_v)
                     qh <- jnp$reshape(q, list(T_full, num_heads, 
                       head_dim))
-                    kh <- jnp$reshape(k, list(T_full, num_heads, 
+                    kh_kv <- jnp$reshape(k, list(T_full, num_kv_heads, 
                       head_dim))
-                    vh <- jnp$reshape(v, list(T_full, num_heads, 
+                    vh_kv <- jnp$reshape(v, list(T_full, num_kv_heads, 
                       head_dim))
                     pos_ids <- jnp$arange(T_full, dtype = jnp$int32)
                     apply_rope_one_row <- function(NH_row, p) {
@@ -3824,14 +3908,16 @@
                     apply_rope_all <- jax$vmap(apply_rope_one_row, 
                       in_axes = list(0L, 0L))
                     qh <- apply_rope_all(qh, pos_ids)
-                    kh <- apply_rope_all(kh, pos_ids)
+                    kh_kv <- apply_rope_all(kh_kv, pos_ids)
                     k_slice_idx <- jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
                     v_slice_idx <- jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
                     cache[[l_]]$k <- jax$lax$dynamic_update_slice(cache[[l_]]$k, 
-                      kh, k_slice_idx)
+                      kh_kv, k_slice_idx)
                     cache[[l_]]$v <- jax$lax$dynamic_update_slice(cache[[l_]]$v, 
-                      vh, v_slice_idx)
+                      vh_kv, v_slice_idx)
                     cache[[l_]]$len <- pm$len
+                    kh <- repeat_kv_heads(kh_kv, kv_group_size)
+                    vh <- repeat_kv_heads(vh_kv, kv_group_size)
                     attn_out <- dot_product_attention_unified(qh, 
                       kh, vh, mask = mask_keys_prefill, is_causal = is_causal_flag, 
                       prefer = "auto")$astype(dtype)
@@ -3861,7 +3947,9 @@
                   D <- token_in$shape[[1]]
                   dtype <- token_in$dtype
                   num_heads <- num_heads
+                  num_kv_heads <- num_kv_heads
                   head_dim <- head_dim
+                  kv_group_size <- kv_group_size
                   xt <- token_in
                   for (l_ in 1:ModelDepth) {
                     L <- eval(parse(text = sprintf("TransformerList$d%s", 
@@ -3873,15 +3961,15 @@
                     v_full <- jnp$dot(xt, L$Multihead$W_v)
                     q_NH <- jnp$reshape(q_full, list(num_heads, 
                       head_dim))
-                    k_NH <- jnp$reshape(k_full, list(num_heads, 
+                    k_KH <- jnp$reshape(k_full, list(num_kv_heads, 
                       head_dim))
-                    v_NH <- jnp$reshape(v_full, list(num_heads, 
+                    v_KH <- jnp$reshape(v_full, list(num_kv_heads, 
                       head_dim))
                     apply_rope <- jax$vmap(function(hvec) {
                       rope_apply_single(hvec, pos, head_dim)
                     }, in_axes = 0L)
                     q_NH <- apply_rope(q_NH)
-                    k_NH <- apply_rope(k_NH)
+                    k_KH <- apply_rope(k_KH)
                     max_len <- cache[[l_]]$k$shape[[1]]
                     pos_i32 <- jnp$astype(pos, jnp$int32)
                     pos_i32 <- jnp$clip(pos_i32, jnp$array(0L, 
@@ -3891,14 +3979,14 @@
                     v_write_idx <- jnp$array(c(pos_i32, 0L, 0L), 
                       dtype = jnp$int32)
                     cache[[l_]]$k <- jax$lax$dynamic_update_slice(cache[[l_]]$k, 
-                      jnp$expand_dims(k_NH, 0L), k_write_idx)
+                      jnp$expand_dims(k_KH, 0L), k_write_idx)
                     cache[[l_]]$v <- jax$lax$dynamic_update_slice(cache[[l_]]$v, 
-                      jnp$expand_dims(v_NH, 0L), v_write_idx)
+                      jnp$expand_dims(v_KH, 0L), v_write_idx)
                     cache[[l_]]$len <- jnp$maximum(cache[[l_]]$len, 
                       jnp$array(pos_i32 + 1L, dtype = jnp$int32))
                     q_TNH <- jnp$expand_dims(q_NH, 0L)
-                    K_SNH <- cache[[l_]]$k
-                    V_SNH <- cache[[l_]]$v
+                    K_SNH <- repeat_kv_heads(cache[[l_]]$k, kv_group_size)
+                    V_SNH <- repeat_kv_heads(cache[[l_]]$v, kv_group_size)
                     idx_full <- jnp$arange(max_len, dtype = jnp$int32)
                     len_mask_1d <- jnp$less(idx_full, cache[[l_]]$len)
                     past_mask_1d <- jnp$less_equal(idx_full, 
@@ -3910,7 +3998,7 @@
                     mask_keys_decode <- jnp$expand_dims(mask_keys_decode, 
                       0L)
                     mask_keys_decode <- jnp$broadcast_to(mask_keys_decode, 
-                      list(1L, 1L, max_len))
+                      list(num_heads, 1L, max_len))
                     attn <- dot_product_attention_unified(q = q_TNH, 
                       k = K_SNH, v = V_SNH, mask = mask_keys_decode, 
                       is_causal = FALSE, prefer = "xla")$astype(dtype)
@@ -3961,8 +4049,11 @@
             }
             if (!UseLatentAttention) {
                 {
-                  head_dim <- as.integer(ModelDims/TransformerHeads)
+                  head_dim <- TransformerHeadDim
                   num_heads = TransformerHeads
+                  num_kv_heads = TransformerKVHeads
+                  q_proj_dim <- num_heads * head_dim
+                  kv_proj_dim <- num_kv_heads * head_dim
                   init_std <- sqrt(2/as.numeric(ModelDims + ModelDims))
                   make_w <- function(shape, seed_key) {
                     oryx$Normal(loc = 0, scale = jnp$array(init_std))$sample(shape, 
@@ -3971,9 +4062,9 @@
                   print("Generating Multihead objects...")
                   multihead_keys <- jax$random$split(key, 4L)
                   TransformerList[[l_]]$Multihead <- list(W_q = make_w(list(ModelDims, 
-                    ModelDims), multihead_keys[1]), W_k = make_w(list(ModelDims, 
-                    ModelDims), multihead_keys[2]), W_v = make_w(list(ModelDims, 
-                    ModelDims), multihead_keys[3]), W_o = make_w(list(ModelDims, 
+                    q_proj_dim), multihead_keys[1]), W_k = make_w(list(ModelDims, 
+                    kv_proj_dim), multihead_keys[2]), W_v = make_w(list(ModelDims, 
+                    kv_proj_dim), multihead_keys[3]), W_o = make_w(list(q_proj_dim, 
                     ModelDims), multihead_keys[4]))
                   key <- jax$random$split(key)[[1]]
                 }
@@ -4019,6 +4110,10 @@
                 key * 233L)
         print("Done with init path in SuperLModel_BackboneTransformer.R...")
     }, if (backbonePath == "run") {
+        num_heads <- TransformerHeads
+        num_kv_heads <- TransformerKVHeads
+        head_dim <- TransformerHeadDim
+        kv_group_size <- TransformerKVGroupSize
         x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
         print2(sprintf("Starting Transformer block [depth: %s]...", 
             ModelDepth))
@@ -4038,9 +4133,9 @@
                   v_ = jnp$dot(xt, TransformerList_d$Multihead$W_v)
                   q_ = jnp$reshape(q_, list(q_$shape[[1]], num_heads, 
                     head_dim))
-                  k_ = jnp$reshape(k_, list(k_$shape[[1]], num_heads, 
+                  k_ = jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, 
                     head_dim))
-                  v_ = jnp$reshape(v_, list(v_$shape[[1]], num_heads, 
+                  v_ = jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, 
                     head_dim))
                   pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
                   apply_rope_one_row <- function(NH_row, p) {
@@ -4052,6 +4147,8 @@
                     in_axes = list(0L, 0L))
                   q_ <- apply_rope_all(q_, pos_ids)
                   k_ <- apply_rope_all(k_, pos_ids)
+                  k_ <- repeat_kv_heads(k_, kv_group_size)
+                  v_ <- repeat_kv_heads(v_, kv_group_size)
                   mask_bool <- jnp$greater(x_mask_attn, 0)
                   mask_bool <- jnp$broadcast_to(mask_bool, list(num_heads, 
                     mask_bool$shape[[1]], mask_bool$shape[[2]]))
@@ -9090,7 +9187,8 @@
         MaxSteps = as.integer(10^6), DecoderInNeuralODE = FALSE, 
         endAppend = TRUE, OverDoDataFrac = 0.9, specificOptState = TRUE, 
         SharedListNames = c("TS"), nOutcomes = 1L, AppendTimeEmbeds = TRUE, 
-        AppendPlaceEmbeds = TRUE, nPlaces = length(unique(state$truth_df_red$location_id)), 
+        AppendPlaceEmbeds = TRUE, AttentionHeadDim = 64L, AttentionKVHeads = NULL, 
+        nPlaces = length(unique(state$truth_df_red$location_id)), 
         MaxTimeIndex = max_time_index, useLSTM = FALSE, doGrid = TRUE, 
         nRealGridSeed = 128L, nExamplesPerCell = 10L, nRealGrid = nrow(state$truth_df_red), 
         GPU_MEM_FRAC = NULL, AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita, 
@@ -9160,7 +9258,8 @@
         HolderFolder = holder_folder, TfRecordDir = tfrecord_dir, 
         GLOBAL_ODE_NPOP = 10000, rollCompute_window = 52L, nPolicies = 1L, 
         nOutcomes = 1L, af = 1L, AppendTimeEmbeds = FALSE, AppendPlaceEmbeds = FALSE, 
-        endAppend = TRUE, EnableKVCaching = TRUE, MaxTimeIndex = max_time_index, 
+        AttentionHeadDim = 64L, AttentionKVHeads = NULL, endAppend = TRUE, 
+        EnableKVCaching = TRUE, MaxTimeIndex = max_time_index, 
         nPlaces = 1L, nMonteEval = 1L, nBatch_SimGridGen = 8L, 
         SimScalingOuterLoops = 1L, SimScalingInnerLoops = 2L, 
         nTimesPast = n_times_past, nTimesLookahead = n_times_lookahead, 

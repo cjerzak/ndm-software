@@ -32,6 +32,9 @@ ndm_test_fit_sim_case <- function(model_type,
                                   n_sgd = NULL,
                                   n_checkpoints = 0L,
                                   enable_kv_cache = TRUE,
+                                  model_dims = 32L,
+                                  attention_head_dim = 64L,
+                                  attention_kv_heads = NULL,
                                   return_details = FALSE) {
   if (is.null(n_sgd)) {
     n_sgd <- if (identical(model_type, "NeuralODE")) 3L else 2L
@@ -132,7 +135,7 @@ ndm_test_fit_sim_case <- function(model_type,
       nSGD_pretrain = 0L,
       nSGD_posttrain = n_sgd,
       nCheckpoints = n_checkpoints,
-      ModelDims = 32L,
+      ModelDims = as.integer(model_dims),
       ModelDepth = 1L,
       nOutcomes = 1L,
       nPlaces = 1L,
@@ -140,6 +143,8 @@ ndm_test_fit_sim_case <- function(model_type,
       HolderFolder = file.path(work_dir, "results"),
       endAppend = TRUE,
       EnableKVCaching = enable_kv_cache,
+      AttentionHeadDim = as.integer(attention_head_dim),
+      AttentionKVHeads = if (is.null(attention_kv_heads)) NULL else as.integer(attention_kv_heads),
       paddingMethod = "left",
       nBatch_SimGridGen = 8L,
       nMonteEval = 1L,
@@ -310,6 +315,72 @@ test_that("decoder cache and non-cache predictions agree in jax_cpu", {
 
   expect_equal(dim(pred_cache_mu), dim(pred_no_cache_mu))
   expect_lt(max(abs(pred_cache_mu - pred_no_cache_mu)), 1e-4)
+})
+
+test_that("decoder transformer resolves GQA topology and KV cache shapes in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    model_dims = 256L,
+    return_details = TRUE
+  )
+
+  env <- details$runtime_env
+  expect_equal(as.integer(env$TransformerHeads), 4L)
+  expect_equal(as.integer(env$TransformerKVHeads), 1L)
+  expect_equal(as.integer(env$TransformerHeadDim), 64L)
+  expect_equal(as.integer(env$TransformerKVGroupSize), 4L)
+
+  layer <- details$model$env$ModelList$TSList$TSBackbone$d1$Multihead
+  wq_shape <- as.integer(unlist(reticulate::py_to_r(layer$W_q$shape)))
+  wk_shape <- as.integer(unlist(reticulate::py_to_r(layer$W_k$shape)))
+  wv_shape <- as.integer(unlist(reticulate::py_to_r(layer$W_v$shape)))
+  wo_shape <- as.integer(unlist(reticulate::py_to_r(layer$W_o$shape)))
+  expect_equal(wq_shape, c(256L, 256L))
+  expect_equal(wk_shape, c(256L, 64L))
+  expect_equal(wv_shape, c(256L, 64L))
+  expect_equal(wo_shape, c(256L, 256L))
+
+  cache <- env$kv_cache_allocate(
+    max_len = 11L,
+    num_layers = 1L,
+    num_kv_heads = env$TransformerKVHeads,
+    head_dim = env$TransformerHeadDim,
+    dtype = details$batch$XPred$dtype
+  )
+  cache_shape <- as.integer(unlist(reticulate::py_to_r(cache$d1$k$shape)))
+  expect_equal(cache_shape, c(11L, 1L, 64L))
+
+  topology_cases <- list(
+    "8" = c(1L, 1L, 8L),
+    "32" = c(1L, 1L, 32L),
+    "64" = c(1L, 1L, 64L),
+    "96" = c(2L, 1L, 48L),
+    "128" = c(2L, 1L, 64L),
+    "192" = c(3L, 1L, 64L),
+    "256" = c(4L, 1L, 64L)
+  )
+
+  for (case_name in names(topology_cases)) {
+    resolved <- env$resolve_transformer_topology(
+      model_dims = as.integer(case_name),
+      target_head_dim = 64L,
+      kv_heads_override = NULL
+    )
+    expect_equal(
+      c(
+        as.integer(resolved$num_query_heads),
+        as.integer(resolved$num_kv_heads),
+        as.integer(resolved$head_dim)
+      ),
+      topology_cases[[case_name]]
+    )
+    expect_equal(as.integer(resolved$head_dim) %% 2L, 0L)
+    expect_equal(as.integer(resolved$num_query_heads) %% as.integer(resolved$num_kv_heads), 0L)
+  }
 })
 
 test_that("checkpointed sim runs emit analytics artifacts in jax_cpu", {

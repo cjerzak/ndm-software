@@ -1,0 +1,14 @@
+\contentsline {subsection}{ndm-package}{2}{page.2}
+\contentsline {subsection}{ndm\_build\_model}{3}{page.3}
+\contentsline {subsection}{ndm\_check\_backend}{4}{page.4}
+\contentsline {subsection}{ndm\_create\_config}{6}{page.6}
+\contentsline {subsection}{ndm\_create\_real\_run\_config}{7}{page.7}
+\contentsline {subsection}{ndm\_create\_tfrecord\_parser}{9}{page.9}
+\contentsline {subsection}{ndm\_model\_spec\_presets}{11}{page.11}
+\contentsline {subsection}{ndm\_new\_runtime\_env}{12}{page.12}
+\contentsline {subsection}{ndm\_predict}{13}{page.13}
+\contentsline {subsection}{ndm\_prepare\_runtime}{14}{page.14}
+\contentsline {subsection}{ndm\_print}{15}{page.15}
+\contentsline {subsection}{ndm\_save\_model}{16}{page.16}
+\contentsline {subsection}{ndm\_tfrecord\_fields\_real}{17}{page.17}
+\contentsline {subsection}{ndm\_tf\_batch\_to\_r}{18}{page.18}
