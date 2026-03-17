@@ -1988,7 +1988,6 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
       ndm_pkg,
       "ndm_build_model",
       runtime_env = runtime_env,
-      analysis_root = paths$analysis_root,
       model_type = model_type,
       model_spec = model_spec,
       backbone = "transformer"
@@ -2000,7 +1999,6 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
       ndm_pkg,
       "ndm_train",
       x = model,
-      analysis_root = paths$analysis_root,
       run_define = TRUE,
       run_loop = TRUE
     )
@@ -2183,7 +2181,6 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
       ndm_pkg,
       "ndm_build_model",
       runtime_env = runtime_env,
-      analysis_root = paths$analysis_root,
       model_type = model_type,
       model_spec = model_spec,
       backbone = "transformer"
@@ -2195,7 +2192,6 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
       ndm_pkg,
       "ndm_train",
       x = model,
-      analysis_root = paths$analysis_root,
       run_define = TRUE,
       run_loop = TRUE
     )

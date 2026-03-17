@@ -9295,15 +9295,14 @@
             model_spec_name = row_values$model_spec_name, model_type = model_type, 
             project_root = paths$project_root, ndm_pkg = ndm_pkg)
         model <- analysis2_call(ndm_pkg, "ndm_build_model", runtime_env = runtime_env, 
-            analysis_root = paths$analysis_root, model_type = model_type, 
-            model_spec = model_spec, backbone = "transformer")
+            model_type = model_type, model_spec = model_spec, 
+            backbone = "transformer")
         analysis2_expose_runtime_env(runtime_env)
         analysis2_call(ndm_pkg, "ndm_source_runtime_calibration", 
             analysis_root = paths$analysis_root, env = runtime_env)
         analysis2_expose_runtime_env(runtime_env)
         trained <- analysis2_call(ndm_pkg, "ndm_train", x = model, 
-            analysis_root = paths$analysis_root, run_define = TRUE, 
-            run_loop = TRUE)
+            run_define = TRUE, run_loop = TRUE)
         analysis2_expose_runtime_env(trained$env)
         analysis2_call(ndm_pkg, "ndm_source_runtime_results_get", 
             analysis_root = paths$analysis_root, env = trained$env)
@@ -9430,15 +9429,14 @@
             model_spec_name = row_values$model_spec_name, model_type = model_type, 
             project_root = paths$project_root, ndm_pkg = ndm_pkg)
         model <- analysis2_call(ndm_pkg, "ndm_build_model", runtime_env = runtime_env, 
-            analysis_root = paths$analysis_root, model_type = model_type, 
-            model_spec = model_spec, backbone = "transformer")
+            model_type = model_type, model_spec = model_spec, 
+            backbone = "transformer")
         analysis2_expose_runtime_env(runtime_env)
         analysis2_call(ndm_pkg, "ndm_source_runtime_calibration", 
             analysis_root = paths$analysis_root, env = runtime_env)
         analysis2_expose_runtime_env(runtime_env)
         trained <- analysis2_call(ndm_pkg, "ndm_train", x = model, 
-            analysis_root = paths$analysis_root, run_define = TRUE, 
-            run_loop = TRUE)
+            run_define = TRUE, run_loop = TRUE)
         analysis2_expose_runtime_env(trained$env)
         analysis2_call(ndm_pkg, "ndm_source_runtime_results_get", 
             analysis_root = paths$analysis_root, env = trained$env)

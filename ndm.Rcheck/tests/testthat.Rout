@@ -23,8 +23,8 @@ Environment 'jax_cpu' is ready.
 Driver 590.12 detected (>=580): installing JAX CUDA 13 wheels.
 Environment 'jax_cpu' is ready.
 Environment 'jax_cpu' is ready.
-W0316 18:42:31.772604 12793987 cpp_gen_intrinsics.cc:74] Empty bitcode string provided for eigen. Optimizations relying on this IR will be disabled.
-[1] "[2026-03-16 18:42:32] Done loading helper functions..."
+W0316 19:04:49.177451 12847241 cpp_gen_intrinsics.cc:74] Empty bitcode string provided for eigen. Optimizations relying on this IR will be disabled.
+[1] "[2026-03-16 19:04:49] Done loading helper functions..."
 [ FAIL 0 | WARN 0 | SKIP 8 | PASS 171 ]
 
 ══ Skipped tests (8) ═══════════════════════════════════════════════════════════
@@ -38,4 +38,4 @@ W0316 18:42:31.772604 12793987 cpp_gen_intrinsics.cc:74] Empty bitcode string pr
 > 
 > proc.time()
    user  system elapsed 
-  6.484   1.420   8.461 
+  7.279   1.802   9.611 
