@@ -38,6 +38,21 @@
     invisible(output)
   }
 
+  run_rscript_step <- function(args) {
+    output <- system2(rscript_bin, args, stdout = TRUE, stderr = TRUE)
+    status <- attr(output, "status")
+
+    if (length(output) > 0L) {
+      cat(paste(output, collapse = "\n"), "\n")
+    }
+
+    if (!is.null(status) && status != 0L) {
+      stop(sprintf("Command failed: %s", paste(c(rscript_bin, args), collapse = " ")))
+    }
+
+    invisible(output)
+  }
+
   cleanup_rdpdf_dirs <- function(path) {
     rd2pdf_dirs <- list.files(path, pattern = "^\\.Rd2pdf", all.files = TRUE, full.names = TRUE)
     rd2pdf_dirs <- rd2pdf_dirs[dir.exists(rd2pdf_dirs)]
@@ -57,6 +72,15 @@
   pdf_path <- file.path(package_path, sprintf("%s.pdf", package_name))
   tarball_path <- file.path(package_path, sprintf("%s_%s.tar.gz", package_name, version_number))
   r_bin <- file.path(R.home("bin"), "R")
+  rscript_bin <- file.path(R.home("bin"), "Rscript")
+  runtime_registry_generator <- file.path(package_path, "tools", "generate_runtime_registry.R")
+
+  refresh_runtime_registry <- function() {
+    if (!file.exists(runtime_registry_generator)) {
+      stop(sprintf("Runtime registry generator not found: %s", runtime_registry_generator))
+    }
+    run_rscript_step(runtime_registry_generator)
+  }
 
   if (dir.exists(file.path(package_path, "data"))) {
     tools::add_datalist(package_path, force = TRUE, small.size = 1L)
@@ -66,6 +90,7 @@
     devtools::build_vignettes(package_path)
   }
 
+  refresh_runtime_registry()
   devtools::document(package_path)
 
   if (file.exists(pdf_path)) {
@@ -78,11 +103,14 @@
     finally = cleanup_rdpdf_dirs(package_path)
   )
 
+  refresh_runtime_registry()
   devtools::check(package_path)
 
+  refresh_runtime_registry()
   run_system_step(c("CMD", "build", "--resave-data", package_path))
 
   run_system_step(c("CMD", "check", "--as-cran", tarball_path))
 
+  refresh_runtime_registry()
   install.packages(package_path, repos = NULL, type = "source", force = FALSE)
 }
