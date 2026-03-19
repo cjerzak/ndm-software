@@ -68,6 +68,13 @@ buffer size from `batch_size`.}
 These wrappers construct parsers for the ndm TFRecord schema and use
 them to build TensorFlow datasets or eagerly collect batches into R.
 }
+\details{
+TFRecord parsing requires TensorFlow to be importable from the active
+reticulate environment. In practice this usually means provisioning the
+backend with `ndm_build_backend(include_tensorflow = TRUE)` and then calling
+`ndm_initialize_backend(import_tensorflow = TRUE)` for the same conda
+environment before reading datasets.
+}
 \examples{
 fields <- ndm_tfrecord_fields_real()
 parser <- ndm_create_tfrecord_parser(fields, ndm_tfrecord_dtype_map("real"))

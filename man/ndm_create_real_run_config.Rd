@@ -110,12 +110,40 @@ workflow result, or a dry-run preview when \code{config$dry_run} is \code{TRUE}.
 Package-native configuration constructors and workflow runners for the
 self-contained real, simulation, and multidisease execution paths.
 }
+\details{
+\code{dry_run = TRUE} resolves paths and selected rows without executing the
+underlying workflow. Dry runs can use lightweight in-memory grids such as the
+\code{BaseID} / \code{ModelType} preview shown in \code{README.md}.
+
+Non-dry execution expects Analysis2-compatible grids. The tested simulation
+grids in this package are produced by \code{ndmdatasets::ndm_sim_build_grid()}
+and then augmented with fields such as \code{paddingMethod},
+\code{lookahead}, \code{n_time_steps}, \code{n_inference_batches},
+\code{scaling_batches}, and either \code{model_spec_name} or
+\code{model_tex_loc}. The tested real and multidisease grids include
+\code{BaseID}, \code{ContextLength}, \code{evaluationTime},
+\code{initialTransform}, \code{initialNormType}, \code{paddingMethod},
+\code{OSSType}, \code{dataInputs}, \code{ModelType}, \code{ModelDepth},
+\code{ModelDims}, \code{nSamplesTrain}, \code{nObsInference},
+\code{floatType}, and either \code{model_spec_name} or \code{model_tex_loc}.
+
+Non-dry runner workflows also require the full execution stack: the
+\code{ndmdatasets} package, the helper packages used by the runtime, and a
+backend environment aligned with \code{NDM_SOFTWARE_CONDA_ENV} (or the
+platform-specific fallback used by the runner layer).
+}
 \examples{
 \dontrun{
+preview_grid <- data.frame(
+  BaseID = c(1L, 2L),
+  ModelType = c("DecoderOnly", "NeuralODE"),
+  stringsAsFactors = FALSE
+)
+
 cfg <- ndm_create_sim_run_config(
-  project_root = getwd(),
-  grid_file = "Data/RunGrids/SimGrids/SimGrid_BigSimsLatest.csv",
-  outer = 1L,
+  project_root = tempdir(),
+  grid = preview_grid,
+  outer = 1:2,
   dry_run = TRUE
 )
 

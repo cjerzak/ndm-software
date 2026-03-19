@@ -4,6 +4,16 @@
 #' a versioned artifact directory, restore them into a fresh runtime
 #' environment, and resume training from the restored optimizer state.
 #'
+#' @details
+#' These helpers assume `ndm_initialize_backend()` has already run for the
+#' active conda environment. `ndm_save_model()` only works for runtime-backed
+#' `ndm_model` / `ndm_trained_model` objects whose environments still contain
+#' the built model state, including `ModelList` and `state`. Exact resume also
+#' requires saved optimizer state. When `bundle = NULL` in
+#' `ndm_resume_training()`, the artifact metadata must already contain a
+#' recorded TFRecord bundle reference. `ndm_load_model()` and training-restore
+#' paths require the `rrapply` package.
+#'
 #' @param x An object of class `ndm_model` or `ndm_trained_model`.
 #' @param path Artifact directory path.
 #' @param bundle Optional `ndm_tfrecord_bundle` used to record TFRecord
@@ -22,8 +32,9 @@
 #'
 #' @examples
 #' \dontrun{
+#' # After ndm_initialize_backend() and ndm_train() / ndm_fit():
 #' artifact_dir <- ndm_save_model(trained_model, tempfile("ndm-artifact-"))
-#' restored <- ndm_load_model(artifact_dir)
+#' restored <- ndm_load_model(artifact_dir, bundle = tf_bundle)
 #' resumed <- ndm_resume_training(artifact_dir, bundle = tf_bundle)
 #' }
 #'

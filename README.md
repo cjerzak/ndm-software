@@ -24,14 +24,31 @@ remotes::install_local("/path/to/ndm-datasets")
 remotes::install_local("/path/to/ndm-software")
 ```
 
-If you need the Python/JAX backend for model execution:
+For full execution workflows rather than dry-run previews, also install the
+helper packages used by the runtime, training, and artifact paths:
 
 ```r
+install.packages(c("fastmatch", "progress", "rrapply", "zip", "zoo"))
+```
+
+If you need the Python/JAX backend for model execution, TFRecord parsing,
+artifacts, or `ndm_run_*()` workflows, point both backend helpers and runners
+at the same conda environment:
+
+```r
+Sys.setenv(NDM_SOFTWARE_CONDA_ENV = "ndm_software_env")
+
 library(ndm)
 
-ndm_build_backend()
-ndm_check_backend()
+conda_env <- Sys.getenv("NDM_SOFTWARE_CONDA_ENV")
+
+ndm_build_backend(conda_env = conda_env, include_tensorflow = TRUE)
+ndm_check_backend(conda_env = conda_env)
+ndm_initialize_backend(conda_env = conda_env, import_tensorflow = TRUE)
 ```
+
+When `NDM_SOFTWARE_CONDA_ENV` is unset, the Analysis2-backed runner helpers
+currently fall back to `jax_cpu` on macOS and `ndm_software_env` elsewhere.
 
 ## Quick Tutorial
 
@@ -66,7 +83,9 @@ stopifnot(
 ```
 
 The maintained orchestration surface is package-native. You can preview real,
-simulation, and multidisease runs with an in-memory grid and `dry_run = TRUE`:
+simulation, and multidisease runs with an in-memory grid and `dry_run = TRUE`.
+This minimal grid is for preview-only and is intentionally lighter than the
+grids required for executable non-dry runs:
 
 ```r
 # readme-test: tutorial
@@ -115,18 +134,42 @@ stopifnot(
 sim_preview$grid_preview
 ```
 
+For non-dry `ndm_run_*()` workflows, use Analysis2-compatible grids rather than
+the lightweight preview grid above:
+
+- `sim`: start from `ndmdatasets::ndm_sim_build_grid()` and keep fields such as
+  `BaseID`, `ContextLength`, `ModelType`, `ModelDepth`, `ModelDims`,
+  `nSamplesTrain`, `floatType`, `paddingMethod`, `lookahead`, `n_time_steps`,
+  `n_inference_batches`, `scaling_batches`, and either `model_spec_name` or
+  `model_tex_loc`.
+- `real` and `multidisease`: use grids that include `BaseID`, `ContextLength`,
+  `evaluationTime`, `initialTransform`, `initialNormType`, `paddingMethod`,
+  `OSSType`, `dataInputs`, `ModelType`, `ModelDepth`, `ModelDims`,
+  `nSamplesTrain`, `nObsInference`, `floatType`, and either `model_spec_name`
+  or `model_tex_loc`.
+
 For full execution rather than dry runs, the package also exposes
 `ndm_prepare_runtime()`, `ndm_prepare_data()`, `ndm_build_model()`,
 `ndm_train()`, `ndm_predict()`, and `ndm_fit()`. Those workflows need backend
 setup plus runtime globals and data inputs beyond the lightweight tutorial
-above.
+above. `ndm_prepare_runtime()` requires `fastmatch`; simulation data helpers
+also require `progress` and `zoo`; training and artifact restore paths use
+`rrapply`, checkpointed training uses `zip`, and multidisease training also
+uses `zoo`.
 
 Trained low-level models can also be persisted as versioned artifacts and
-restored later:
+restored later. These helpers assume that `ndm_initialize_backend()` has
+already run for the active conda environment and that `trained_model` came from
+`ndm_build_model()` plus `ndm_train()` or from `ndm_fit()`, so its runtime
+environment still contains objects such as `ModelList` and `state`. Exact
+resume also needs optimizer state; if you omit `bundle` in
+`ndm_resume_training()`, the artifact metadata must already contain a recorded
+TFRecord bundle reference:
 
 ```r
+# After ndm_initialize_backend() and ndm_train() / ndm_fit():
 artifact_dir <- ndm_save_model(trained_model, "artifacts/run-001")
-restored_model <- ndm_load_model(artifact_dir)
+restored_model <- ndm_load_model(artifact_dir, bundle = tf_bundle)
 resumed_model <- ndm_resume_training(artifact_dir, bundle = tf_bundle)
 ```
 

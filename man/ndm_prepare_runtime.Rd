@@ -40,6 +40,13 @@ runtime code is sourced.}
 These wrappers load package-owned runtime components into an isolated
 environment and then source the selected data generator.
 }
+\details{
+Before building, training, predicting, or restoring artifacts from a runtime
+environment, initialize the backend for the target conda environment with
+`ndm_initialize_backend()`. `ndm_prepare_runtime()` requires the
+`fastmatch` package. `ndm_prepare_data(generator = "sim")` additionally
+requires `progress` and `zoo`.
+}
 \examples{
 env <- ndm_new_runtime_env()
 cfg <- ndm_create_config()

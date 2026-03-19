@@ -4,6 +4,26 @@
 #' real, simulation, and multidisease runs. They replace the old expectation
 #' that callers execute an external runtime checkout.
 #'
+#' @details
+#' `dry_run = TRUE` resolves paths and selected rows without executing the
+#' underlying workflow. Dry runs can use lightweight in-memory grids such as the
+#' `BaseID` / `ModelType` preview shown in `README.md`.
+#'
+#' Non-dry execution expects Analysis2-compatible grids. The tested simulation
+#' grids in this package are produced by `ndmdatasets::ndm_sim_build_grid()` and
+#' then augmented with fields such as `paddingMethod`, `lookahead`,
+#' `n_time_steps`, `n_inference_batches`, `scaling_batches`, and either
+#' `model_spec_name` or `model_tex_loc`. The tested real and multidisease grids
+#' include `BaseID`, `ContextLength`, `evaluationTime`, `initialTransform`,
+#' `initialNormType`, `paddingMethod`, `OSSType`, `dataInputs`, `ModelType`,
+#' `ModelDepth`, `ModelDims`, `nSamplesTrain`, `nObsInference`, `floatType`,
+#' and either `model_spec_name` or `model_tex_loc`.
+#'
+#' Non-dry runner workflows also require the full execution stack: the
+#' `ndmdatasets` package, the helper packages used by the runtime, and a backend
+#' environment aligned with `NDM_SOFTWARE_CONDA_ENV` (or the platform-specific
+#' fallback used by the runner layer).
+#'
 #' @param project_root Working project directory used for grids, TFRecords, and
 #'   outputs.
 #' @param analysis_name Analysis label threaded through output paths.
@@ -27,6 +47,24 @@
 #'   resolving paths and grid rows.
 #'
 #' @returns A classed list describing the requested workflow.
+#'
+#' @examples
+#' \dontrun{
+#' preview_grid <- data.frame(
+#'   BaseID = c(1L, 2L),
+#'   ModelType = c("DecoderOnly", "NeuralODE"),
+#'   stringsAsFactors = FALSE
+#' )
+#'
+#' cfg <- ndm_create_sim_run_config(
+#'   project_root = tempdir(),
+#'   grid = preview_grid,
+#'   outer = 1:2,
+#'   dry_run = TRUE
+#' )
+#'
+#' ndm_run_sim(cfg)
+#' }
 #'
 #' @export
 ndm_create_real_run_config <- function(project_root = getwd(),

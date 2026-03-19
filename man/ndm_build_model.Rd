@@ -91,6 +91,14 @@ training in `ndm_fit()`.}
 These wrappers layer a small R API over package-managed Phase 1 model build
 and training stages.
 }
+\details{
+These functions assume the backend has already been initialized with
+`ndm_initialize_backend()` and that `runtime_env` already contains the
+upstream runtime and data globals required by the selected workflow.
+`ndm_train()` requires `rrapply`; it also requires `zip` when checkpointing
+is enabled and `zoo` for multidisease training. Simulation paths inherit the
+`progress` and `zoo` requirements documented on [ndm_prepare_runtime()].
+}
 \examples{
 cfg <- ndm_create_config()
 spec <- ndm_model_spec()

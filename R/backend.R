@@ -41,6 +41,13 @@
 #' `ndm_check_backend()` to verify availability, and
 #' `ndm_initialize_backend()` to import the active JAX stack into R.
 #'
+#' @details
+#' When you want backend helpers and the package-native `ndm_run_*()` runners to
+#' target the same conda environment, set `NDM_SOFTWARE_CONDA_ENV` (or
+#' `NDM_CONDA_ENV`) once and pass that value into these helpers. The runner
+#' layer currently falls back to `jax_cpu` on macOS and `ndm_software_env`
+#' elsewhere when neither environment variable is set.
+#'
 #' @param conda_env Name of the conda environment that should contain the JAX
 #'   runtime.
 #' @param conda Conda executable to use. `"auto"` delegates discovery to

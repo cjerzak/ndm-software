@@ -120,6 +120,13 @@ ndm_tfrecord_dtype_map <- function(kind = c("real", "sim")) {
 #' These wrappers construct parsers for the ndm TFRecord schema and use
 #' them to build TensorFlow datasets or eagerly collect batches into R.
 #'
+#' @details
+#' TFRecord parsing requires TensorFlow to be importable from the active
+#' reticulate environment. In practice this usually means provisioning the
+#' backend with `ndm_build_backend(include_tensorflow = TRUE)` and then calling
+#' `ndm_initialize_backend(import_tensorflow = TRUE)` for the same conda
+#' environment before reading datasets.
+#'
 #' @param field_names Character vector of TFRecord field names that should be
 #'   parsed from each example.
 #' @param dtype_map Optional named vector or list mapping `field_names` to

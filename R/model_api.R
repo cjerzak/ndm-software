@@ -3,6 +3,13 @@
 #' These wrappers load package-owned runtime components into an isolated
 #' environment and then source the selected data generator.
 #'
+#' @details
+#' Before building, training, predicting, or restoring artifacts from a runtime
+#' environment, initialize the backend for the target conda environment with
+#' `ndm_initialize_backend()`. `ndm_prepare_runtime()` requires the
+#' `fastmatch` package. `ndm_prepare_data(generator = "sim")` additionally
+#' requires `progress` and `zoo`.
+#'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.
 #' @param runtime_env Runtime environment that should receive the sourced
@@ -189,6 +196,14 @@ ndm_prepare_data <- function(runtime_env,
 #'
 #' These wrappers layer a small R API over package-managed Phase 1 model build
 #' and training stages.
+#'
+#' @details
+#' These functions assume the backend has already been initialized with
+#' `ndm_initialize_backend()` and that `runtime_env` already contains the
+#' upstream runtime and data globals required by the selected workflow.
+#' `ndm_train()` requires `rrapply`; it also requires `zip` when checkpointing
+#' is enabled and `zoo` for multidisease training. Simulation paths inherit the
+#' `progress` and `zoo` requirements documented on [ndm_prepare_runtime()].
 #'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.
