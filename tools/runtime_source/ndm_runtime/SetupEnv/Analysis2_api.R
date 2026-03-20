@@ -757,6 +757,194 @@ analysis2_normalize_row_values <- function(row_values) {
   row_values
 }
 
+analysis2_unique_preserve_order <- function(x) {
+  x[!duplicated(x)]
+}
+
+analysis2_canonical_variation_fields <- function(mode) {
+  switch(
+    mode,
+    real = c(
+      "ModelType",
+      "ModelDepth",
+      "ModelDims",
+      "nSamplesTrain",
+      "nObsInference",
+      "floatType",
+      "model_spec_name",
+      "model_tex_loc",
+      "ResaveThisTFRecord"
+    ),
+    sim = c(
+      "ModelType",
+      "ModelDepth",
+      "ModelDims",
+      "nSamplesTrain",
+      "floatType",
+      "model_spec_name",
+      "model_tex_loc",
+      "ResaveThisTFRecord"
+    ),
+    stop("Unsupported Analysis2 mode for canonical TFRecord validation: ", mode, call. = FALSE)
+  )
+}
+
+analysis2_scalar_equal <- function(x, y) {
+  if (is.null(x) || is.null(y)) {
+    return(is.null(x) && is.null(y))
+  }
+  if (length(x) == 1L && length(y) == 1L && is.na(x) && is.na(y)) {
+    return(TRUE)
+  }
+  identical(as.character(x), as.character(y))
+}
+
+analysis2_row_flag_true <- function(row_values, field = "ResaveThisTFRecord") {
+  if (!field %in% names(row_values)) {
+    return(FALSE)
+  }
+  value <- suppressWarnings(analysis2_as_int(row_values[[field]]))
+  !is.na(value) && value != 0L
+}
+
+analysis2_validate_canonical_group <- function(mode,
+                                               base_id,
+                                               row_indices,
+                                               row_group) {
+  varying_fields <- analysis2_canonical_variation_fields(mode)
+  fields_to_compare <- setdiff(names(row_group[[1L]]), c("BaseID", varying_fields))
+  conflicting_fields <- character()
+  reference_row <- row_group[[1L]]
+
+  for (field in fields_to_compare) {
+    same_field <- vapply(
+      row_group[-1L],
+      function(row_values) analysis2_scalar_equal(reference_row[[field]], row_values[[field]]),
+      logical(1)
+    )
+    if (!all(same_field)) {
+      conflicting_fields <- c(conflicting_fields, field)
+    }
+  }
+
+  if (length(conflicting_fields) > 0L) {
+    stop(
+      "Selected rows for BaseID ",
+      base_id,
+      " disagree on dataset-defining fields for ",
+      mode,
+      " TFRecord reuse/regeneration: ",
+      paste(conflicting_fields, collapse = ", "),
+      ". Rows: ",
+      paste(row_indices, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  invisible(TRUE)
+}
+
+analysis2_build_canonical_tfrecord_plan <- function(mode,
+                                                    grid,
+                                                    outer_iterations) {
+  outer_rows <- analysis2_unique_preserve_order(as.integer(outer_iterations))
+  if (length(outer_rows) == 0L) {
+    return(data.frame(
+      BaseID = integer(),
+      selected_rows = character(),
+      canonical_row = integer(),
+      artifact_n_samples_train = integer(),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  selected_rows <- lapply(
+    outer_rows,
+    function(row_idx) {
+      analysis2_normalize_row_values(
+        analysis2_row_to_list(grid[row_idx, , drop = FALSE])
+      )
+    }
+  )
+  base_ids <- vapply(selected_rows, function(row_values) analysis2_as_int(row_values$BaseID), integer(1))
+  ordered_base_ids <- analysis2_unique_preserve_order(base_ids)
+
+  plan_rows <- lapply(
+    ordered_base_ids,
+    function(base_id) {
+      group_positions <- which(base_ids == base_id)
+      row_indices <- outer_rows[group_positions]
+      row_group <- selected_rows[group_positions]
+
+      analysis2_validate_canonical_group(
+        mode = mode,
+        base_id = base_id,
+        row_indices = row_indices,
+        row_group = row_group
+      )
+
+      n_samples_train <- vapply(
+        row_group,
+        function(row_values) analysis2_as_int(row_values$nSamplesTrain),
+        integer(1)
+      )
+      if (anyNA(n_samples_train)) {
+        stop(
+          "Selected rows for BaseID ",
+          base_id,
+          " contain missing `nSamplesTrain` values.",
+          call. = FALSE
+        )
+      }
+
+      max_n_samples_train <- max(n_samples_train)
+      max_rows <- row_indices[n_samples_train == max_n_samples_train]
+      flagged_rows <- row_indices[vapply(row_group, analysis2_row_flag_true, logical(1))]
+
+      if (length(flagged_rows) > 1L) {
+        stop(
+          "Selected rows for BaseID ",
+          base_id,
+          " contain multiple `ResaveThisTFRecord = 1` rows: ",
+          paste(flagged_rows, collapse = ", "),
+          ".",
+          call. = FALSE
+        )
+      }
+
+      canonical_row <- min(max_rows)
+      if (length(flagged_rows) == 1L) {
+        canonical_row <- flagged_rows[[1L]]
+        if (!(canonical_row %in% max_rows)) {
+          stop(
+            "Selected rows for BaseID ",
+            base_id,
+            " mark row ",
+            canonical_row,
+            " with `ResaveThisTFRecord = 1`, but canonical TFRecord regeneration ",
+            "requires the flagged row to use the largest `nSamplesTrain`. ",
+            "Rows with max `nSamplesTrain`: ",
+            paste(max_rows, collapse = ", "),
+            ".",
+            call. = FALSE
+          )
+        }
+      }
+
+      data.frame(
+        BaseID = as.integer(base_id),
+        selected_rows = paste(row_indices, collapse = ","),
+        canonical_row = as.integer(canonical_row),
+        artifact_n_samples_train = as.integer(max_n_samples_train),
+        stringsAsFactors = FALSE
+      )
+    }
+  )
+
+  do.call(rbind, plan_rows)
+}
+
 analysis2_resolve_model_spec <- function(model_tex_loc = NULL,
                                          model_spec_name = NULL,
                                          model_type = "DecoderOnly",
@@ -1392,15 +1580,12 @@ analysis2_assert_canonical_tfrecords <- function(paths, base_id, output_dir) {
   )
 }
 
-analysis2_preflight_canonical_tfrecords <- function(grid,
-                                                    outer_iterations,
+analysis2_preflight_canonical_tfrecords <- function(base_ids,
                                                     tfrecord_dir) {
   missing_base_ids <- integer()
   legacy_base_ids <- integer()
 
-  for (outer_iteration in outer_iterations) {
-    row_values <- analysis2_row_to_list(grid[outer_iteration, , drop = FALSE])
-    base_id <- analysis2_as_int(row_values$BaseID)
+  for (base_id in analysis2_unique_preserve_order(as.integer(base_ids))) {
     paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
 
     if (analysis2_has_canonical_tfrecords(paths)) {
@@ -1832,6 +2017,11 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
 
   real_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)), outer_iterations)
   analysis2_validate_outer_iterations(real_grid, outer_iterations, grid_file)
+  write_plan <- analysis2_build_canonical_tfrecord_plan(
+    mode = "real",
+    grid = real_grid,
+    outer_iterations = outer_iterations
+  )
   holder_folder <- file.path(paths$project_root, "SavedResults", "Real", sprintf("Results_%s", analysis_name))
   analysis2_dir_create(holder_folder)
 
@@ -1843,8 +2033,7 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
   analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
   if (!isTRUE(resave_tfrecords)) {
     analysis2_preflight_canonical_tfrecords(
-      grid = real_grid,
-      outer_iterations = outer_iterations,
+      base_ids = write_plan$BaseID,
       tfrecord_dir = tfrecord_dir
     )
   }
@@ -1863,9 +2052,10 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
     tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
     written_base_ids <- integer()
 
-    for (outer_iteration in outer_iterations) {
+    for (plan_idx in seq_len(nrow(write_plan))) {
+      canonical_row <- write_plan$canonical_row[[plan_idx]]
       row_values <- analysis2_normalize_row_values(
-        analysis2_row_to_list(real_grid[outer_iteration, , drop = FALSE])
+        analysis2_row_to_list(real_grid[canonical_row, , drop = FALSE])
       )
       model_type <- analysis2_model_type(spec, row_values$ModelType, default = "DecoderOnly")
       dataset_spec <- analysis2_real_dataset_spec(
@@ -1875,8 +2065,16 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
         data_subset = spec$data_subset
       )
       training_spec <- analysis2_real_training_spec(ndmdatasets_pkg, row_values, model_type = model_type)
+      training_spec$n_samples_train <- as.integer(write_plan$artifact_n_samples_train[[plan_idx]])
 
-      analysis2_log(sprintf("Regenerating canonical real TFRecords for BaseID %s", row_values$BaseID))
+      analysis2_log(
+        sprintf(
+          "Regenerating canonical real TFRecords for BaseID %s from row %s with nSamplesTrain %s",
+          row_values$BaseID,
+          canonical_row,
+          write_plan$artifact_n_samples_train[[plan_idx]]
+        )
+      )
       analysis2_write_real_tfrecords(
         ndmdatasets_pkg = ndmdatasets_pkg,
         bundle = bundle,
@@ -1890,7 +2088,8 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
 
     return(invisible(list(
       written_base_ids = sort(unique(written_base_ids)),
-      tfrecord_dir = tfrecord_dir
+      tfrecord_dir = tfrecord_dir,
+      write_plan = write_plan
     )))
   }
 
@@ -2038,6 +2237,11 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
 
   sim_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)), outer_iterations)
   analysis2_validate_outer_iterations(sim_grid, outer_iterations, grid_file)
+  write_plan <- analysis2_build_canonical_tfrecord_plan(
+    mode = "sim",
+    grid = sim_grid,
+    outer_iterations = outer_iterations
+  )
   holder_folder <- file.path(paths$project_root, "SavedResults", "Sim", sprintf("Results_%s", analysis_name))
   analysis2_dir_create(holder_folder)
 
@@ -2049,8 +2253,7 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
   analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
   if (!isTRUE(resave_tfrecords)) {
     analysis2_preflight_canonical_tfrecords(
-      grid = sim_grid,
-      outer_iterations = outer_iterations,
+      base_ids = write_plan$BaseID,
       tfrecord_dir = tfrecord_dir
     )
   }
@@ -2067,15 +2270,24 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
     tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
     written_base_ids <- integer()
 
-    for (outer_iteration in outer_iterations) {
+    for (plan_idx in seq_len(nrow(write_plan))) {
+      canonical_row <- write_plan$canonical_row[[plan_idx]]
       row_values <- analysis2_normalize_row_values(
-        analysis2_row_to_list(sim_grid[outer_iteration, , drop = FALSE])
+        analysis2_row_to_list(sim_grid[canonical_row, , drop = FALSE])
       )
       model_type <- analysis2_model_type(spec, row_values$ModelType, default = "DecoderOnly")
       dataset_spec <- analysis2_sim_dataset_spec(ndmdatasets_pkg, row_values)
       training_spec <- analysis2_sim_training_spec(ndmdatasets_pkg, row_values, model_type = model_type)
+      training_spec$n_samples_train <- as.integer(write_plan$artifact_n_samples_train[[plan_idx]])
 
-      analysis2_log(sprintf("Regenerating canonical sim TFRecords for BaseID %s", row_values$BaseID))
+      analysis2_log(
+        sprintf(
+          "Regenerating canonical sim TFRecords for BaseID %s from row %s with nSamplesTrain %s",
+          row_values$BaseID,
+          canonical_row,
+          write_plan$artifact_n_samples_train[[plan_idx]]
+        )
+      )
       analysis2_write_sim_tfrecords(
         ndmdatasets_pkg = ndmdatasets_pkg,
         dataset_spec = dataset_spec,
@@ -2088,7 +2300,8 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
 
     return(invisible(list(
       written_base_ids = sort(unique(written_base_ids)),
-      tfrecord_dir = tfrecord_dir
+      tfrecord_dir = tfrecord_dir,
+      write_plan = write_plan
     )))
   }
 

@@ -32,6 +32,8 @@ test_that("package-native sim runner regenerates canonical TFRecords in non-dry 
   )
 
   expect_equal(resave$written_base_ids, 1L)
+  expect_true(is.data.frame(resave$write_plan))
+  expect_equal(resave$write_plan$artifact_n_samples_train, 4L)
   ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = 1L)
 
   from_file <- ndm_run_sim(
@@ -48,6 +50,43 @@ test_that("package-native sim runner regenerates canonical TFRecords in non-dry 
 
   expect_equal(from_file$written_base_ids, 1L)
   ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = 1L)
+})
+
+test_that("package-native sim runner regenerates one canonical TFRecord per BaseID", {
+  ndm_require_runner_test_stack("package-native sim duplicate BaseID tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  old_wd <- getwd()
+  on.exit(setwd(old_wd), add = TRUE)
+
+  analysis_name <- "SimDuplicateBaseID"
+  grid <- ndm_test_make_sim_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(0L, 1L)
+  )
+  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", analysis_name)
+
+  resave <- ndm_run_sim(
+    ndm_create_sim_run_config(
+      project_root = project_root,
+      analysis_name = analysis_name,
+      grid = grid,
+      outer = c(2L, 1L),
+      model_type = "DecoderOnly",
+      dry_run = FALSE,
+      resave_tfrecords = TRUE
+    )
+  )
+
+  manifest <- ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")
+
+  expect_equal(resave$written_base_ids, 1L)
+  expect_equal(nrow(resave$write_plan), 1L)
+  expect_equal(resave$write_plan$selected_rows, "2,1")
+  expect_equal(resave$write_plan$canonical_row, 2L)
+  expect_equal(resave$write_plan$artifact_n_samples_train, 8L)
+  expect_equal(manifest$metadata$n_examples, 8L)
 })
 
 test_that("package-native real runner regenerates canonical TFRecords and completes non-dry runs", {
@@ -91,6 +130,8 @@ test_that("package-native real runner regenerates canonical TFRecords and comple
   resave <- ndm_run_real(resave_config)
 
   expect_equal(resave$written_base_ids, 1L)
+  expect_true(is.data.frame(resave$write_plan))
+  expect_equal(resave$write_plan$artifact_n_samples_train, 4L)
   ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = 1L)
 
   result <- ndm_run_real(
@@ -115,6 +156,118 @@ test_that("package-native real runner regenerates canonical TFRecords and comple
   expect_gte(
     length(list.files(saved_model_root, pattern = paste0("^Model_", analysis_name), full.names = TRUE)),
     1L
+  )
+})
+
+test_that("package-native real runner reuses duplicate BaseID TFRecords after canonical regeneration", {
+  ndm_require_runner_test_stack("package-native real duplicate BaseID tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  old_wd <- getwd()
+  on.exit(setwd(old_wd), add = TRUE)
+
+  analysis_name <- "RealDuplicateBaseID"
+  raw_data_dir <- ndm_test_copy_raw_covid_fixture(project_root)
+  grid <- ndm_test_make_real_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(0L, 1L)
+  )
+  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "RealTFRecords", analysis_name)
+
+  resave <- ndm_run_real(
+    ndm_create_real_run_config(
+      project_root = project_root,
+      analysis_name = analysis_name,
+      grid = grid,
+      outer = c(2L, 1L),
+      model_type = "NeuralODE",
+      resave_tfrecords = TRUE,
+      raw_data_dir = raw_data_dir,
+      outcome_metric = "inc_death",
+      data_subset = "all",
+      dry_run = FALSE
+    )
+  )
+
+  manifest <- ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")
+  expect_equal(resave$written_base_ids, 1L)
+  expect_equal(nrow(resave$write_plan), 1L)
+  expect_equal(resave$write_plan$selected_rows, "2,1")
+  expect_equal(resave$write_plan$canonical_row, 2L)
+  expect_equal(resave$write_plan$artifact_n_samples_train, 8L)
+  expect_equal(manifest$metadata$n_examples, 8L)
+
+  result <- ndm_run_real(
+    ndm_create_real_run_config(
+      project_root = project_root,
+      analysis_name = analysis_name,
+      grid = grid,
+      outer = c(2L, 1L),
+      model_type = "NeuralODE",
+      resave_tfrecords = FALSE,
+      raw_data_dir = raw_data_dir,
+      outcome_metric = "inc_death",
+      data_subset = "all",
+      dry_run = FALSE
+    )
+  )
+
+  expect_true(isTRUE(result))
+})
+
+test_that("package-native sim runner rejects non-max canonical flags within a BaseID", {
+  ndm_require_runner_test_stack("package-native sim flag validation tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  grid <- ndm_test_make_sim_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(1L, 0L)
+  )
+
+  expect_error(
+    ndm_run_sim(
+      ndm_create_sim_run_config(
+        project_root = project_root,
+        analysis_name = "SimBadFlag",
+        grid = grid,
+        outer = c(1L, 2L),
+        model_type = "DecoderOnly",
+        dry_run = FALSE,
+        resave_tfrecords = TRUE
+      )
+    ),
+    "requires the flagged row to use the largest `nSamplesTrain`"
+  )
+})
+
+test_that("package-native sim runner rejects conflicting dataset fields within a BaseID", {
+  ndm_require_runner_test_stack("package-native sim duplicate field validation tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  grid <- ndm_test_make_sim_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(0L, 1L)
+  )
+  grid$gamma[[2L]] <- 0.4
+
+  expect_error(
+    ndm_run_sim(
+      ndm_create_sim_run_config(
+        project_root = project_root,
+        analysis_name = "SimConflict",
+        grid = grid,
+        outer = c(1L, 2L),
+        model_type = "DecoderOnly",
+        dry_run = FALSE,
+        resave_tfrecords = TRUE
+      )
+    ),
+    "disagree on dataset-defining fields.*gamma"
   )
 })
 

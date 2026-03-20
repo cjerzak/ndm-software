@@ -36,7 +36,9 @@
 #'   should be allowed to override the requested model type.
 #' @param resave_tfrecords Logical scalar controlling TFRecord regeneration.
 #'   Supported for real and simulation workflows. Multidisease workflows reject
-#'   `TRUE` because the legacy regeneration path has been retired.
+#'   `TRUE` because the legacy regeneration path has been retired. When
+#'   selected rows share a `BaseID`, regeneration writes one canonical TFRecord
+#'   pair per `BaseID` using the largest `nSamplesTrain` among those rows.
 #' @param tfrecord_dir Optional TFRecord output directory.
 #' @param raw_data_dir Real-data input directory.
 #' @param outcome_metric Outcome metric name for real-data or multidisease runs.
@@ -46,7 +48,11 @@
 #' @param dry_run Logical scalar indicating whether the run should stop after
 #'   resolving paths and grid rows.
 #'
-#' @returns A classed list describing the requested workflow.
+#' @returns `ndm_create_*_run_config()` returns a classed list describing the
+#'   requested workflow. `ndm_run_real()` and `ndm_run_sim()` return the
+#'   underlying workflow result; with `resave_tfrecords = TRUE` they return a
+#'   list containing the written `BaseID` values, TFRecord directory, and a
+#'   canonical write-plan summary.
 #'
 #' @examples
 #' \dontrun{

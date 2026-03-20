@@ -40,6 +40,13 @@ ndm_test_assert_canonical_tfrecords <- function(output_dir, base_id = 1L) {
   )
 }
 
+ndm_test_read_canonical_manifest <- function(output_dir,
+                                             base_id = 1L,
+                                             split = c("train", "inference")) {
+  split <- match.arg(split)
+  readRDS(file.path(output_dir, sprintf("%s_%s.tfrecord.manifest.rds", split, base_id)))
+}
+
 ndm_test_copy_raw_covid_fixture <- function(project_root) {
   source_dir <- system.file("extdata", "examples", "raw_covid", package = "ndmdatasets")
   if (!nzchar(source_dir) || !dir.exists(source_dir)) {
@@ -123,6 +130,18 @@ ndm_test_make_sim_run_grid <- function() {
   grid
 }
 
+ndm_test_make_sim_duplicate_base_grid <- function(n_samples_train = c(4L, 8L),
+                                                  resave_flags = c(0L, 1L)) {
+  stopifnot(length(n_samples_train) == length(resave_flags))
+
+  grid <- ndm_test_make_sim_run_grid()[rep(1L, length(n_samples_train)), , drop = FALSE]
+  grid$BaseID <- 1L
+  grid$nSamplesTrain <- as.integer(n_samples_train)
+  grid$ResaveThisTFRecord <- as.integer(resave_flags)
+  rownames(grid) <- NULL
+  grid
+}
+
 ndm_test_make_real_run_grid <- function() {
   data.frame(
     BaseID = 1L,
@@ -144,6 +163,18 @@ ndm_test_make_real_run_grid <- function() {
     model_tex_loc = ndm_test_model_spec_path(),
     stringsAsFactors = FALSE
   )
+}
+
+ndm_test_make_real_duplicate_base_grid <- function(n_samples_train = c(4L, 8L),
+                                                   resave_flags = c(0L, 1L)) {
+  stopifnot(length(n_samples_train) == length(resave_flags))
+
+  grid <- ndm_test_make_real_run_grid()[rep(1L, length(n_samples_train)), , drop = FALSE]
+  grid$BaseID <- 1L
+  grid$nSamplesTrain <- as.integer(n_samples_train)
+  grid$ResaveThisTFRecord <- as.integer(resave_flags)
+  rownames(grid) <- NULL
+  grid
 }
 
 ndm_test_make_multidisease_run_grid <- function() {
