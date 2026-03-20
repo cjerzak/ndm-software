@@ -5584,6 +5584,38 @@
 
 .ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics_Sim <- expression(if (SimMode == T) {
     print("Starting SuperLModel_GetAnalytics_Sim.R")
+    analytics_truth_matrix <- function(x, name, nrow_expected, 
+        ncol_expected) {
+        arr <- np$array(x)
+        dims <- dim(arr)
+        if (length(dims) == 3L && dims[[2]] == 1L) {
+            arr <- arr[, 1, ]
+            dims <- dim(arr)
+        }
+        if (length(dims) == 2L && dims[[1]] == nrow_expected && 
+            dims[[2]] == ncol_expected) {
+            return(arr)
+        }
+        stop(sprintf("Expected `%s` to resolve to a [%s x %s] batch matrix; got [%s]", 
+            name, nrow_expected, ncol_expected, paste(dims, collapse = " x ")))
+    }
+    analytics_truth_vector <- function(x, name, nrow_expected) {
+        arr <- np$array(x)
+        dims <- dim(arr)
+        if (length(dims) == 3L && dims[[2]] == 1L && dims[[3]] == 
+            1L) {
+            arr <- arr[, 1, 1]
+        }
+        else if (length(dims) == 2L && dims[[2]] == 1L) {
+            arr <- arr[, 1]
+        }
+        arr <- as.numeric(arr)
+        if (length(arr) == nrow_expected) {
+            return(arr)
+        }
+        stop(sprintf("Expected `%s` to resolve to a length-%s batch vector; got [%s]", 
+            name, nrow_expected, paste(dims, collapse = " x ")))
+    }
     res_list <- replicate({
         list()
     }, n = nMonteEval)
@@ -5718,6 +5750,13 @@
         beta_hat <- beta_MedianWithinR2_Fit <- beta_MedianWithinR2_Raw <- beta_true <- NA
         beta_GlobalR2_Raw <- beta_GlobalR2_Fit <- beta_FNorm_Rel <- beta_FNorm_Raw <- beta_AggNorm_Rel <- beta_AggNorm_Raw <- NA
         if (ModelType != "DecoderOnly") {
+            init_true_mat <- analytics_truth_matrix(batch_l$init_true, 
+                name = "init_true", nrow_expected = nrow(pred_l_mean), 
+                ncol_expected = 4L)
+            gamma_true_vec <- analytics_truth_vector(batch_l$gamma_true, 
+                name = "gamma_true", nrow_expected = nrow(pred_l_mean))
+            sigma_true_vec <- analytics_truth_vector(batch_l$sigma_true, 
+                name = "sigma_true", nrow_expected = nrow(pred_l_mean))
             init_s <- colMeans(do.call(rbind, lapply(pred_l, 
                 function(zer) {
                   np$asanyarray(zer$ODEParamsSampList$s_l_samp)
@@ -5735,9 +5774,9 @@
                   np$asanyarray(zer$ODEParamsSampList$r_l_samp)
                 })))
             init_hat <- cbind((init_s), (init_e), (init_i), (init_r))
-            AbsDiff_init <- median(rowSums(abs(init_hat - np$array(batch_l$init_true))))
-            KLDiv_init <- median(rowSums(np$array(batch_l$init_true) * 
-                (log(init_hat) - log(np$array(batch_l$init_true)))))
+            AbsDiff_init <- median(rowSums(abs(init_hat - init_true_mat)))
+            KLDiv_init <- median(rowSums(init_true_mat * (log(init_hat) - 
+                log(init_true_mat))))
             sigma_hat <- colMeans(do.call(rbind, lapply(pred_l, 
                 function(zer) {
                   np$asanyarray(zer$ODEParamsSampList$sigma_samp)
@@ -5746,14 +5785,10 @@
                 function(zer) {
                   np$asanyarray(zer$ODEParamsSampList$gamma_samp)
                 })))
-            AbsDiff_gamma <- median(abs(c(np$array(batch_l$gamma_true)) - 
-                gamma_hat))
-            RelAbsDiff_gamma <- median(abs(c(np$array(batch_l$gamma_true)) - 
-                gamma_hat)/c(np$array(batch_l$gamma_true)))
-            AbsDiff_sigma <- median(abs(c(np$array(batch_l$sigma_true)) - 
-                sigma_hat))
-            RelAbsDiff_sigma <- median(abs(c(np$array(batch_l$sigma_true)) - 
-                sigma_hat)/c(np$array(batch_l$sigma_true)))
+            AbsDiff_gamma <- median(abs(gamma_true_vec - gamma_hat))
+            RelAbsDiff_gamma <- median(abs(gamma_true_vec - gamma_hat)/gamma_true_vec)
+            AbsDiff_sigma <- median(abs(sigma_true_vec - sigma_hat))
+            RelAbsDiff_sigma <- median(abs(sigma_true_vec - sigma_hat)/sigma_true_vec)
             if (ModelType != "DecoderOnly") {
                 beta_hat <- lapply(pred_l, function(l_) {
                   ExtractBetaDraw(l_$ODEParamsSampList)$BetaDraw
@@ -5800,12 +5835,17 @@
                 Scenario = jnp$array(InterpolatorBasis_[1:NTimeSteps_SIM]))
             PolicyList_GetBatch_unnatural <- list(ComputeScenario = T, 
                 Scenario = jnp$array(InterpolatorBasis_[1:NTimeSteps_SIM]))
-            PolicyList_Model_natural <- list(ScenarioIndicatorBasis = jnp$array(rep(0, 
-                nTimesTotal + 0)), Scenario = jnp$array(InterpolatorBasis_[-c(1:ShiftFactor)][1:(nTimesTotal + 
-                0)]))
-            PolicyList_Model_unnatural <- list(ScenarioIndicatorBasis = jnp$array(IndicatorBasis_un[-c(1:ShiftFactor)][1:(nTimesTotal + 
-                0)]), Scenario = jnp$array(InterpolatorBasis_[-c(1:ShiftFactor)][1:(nTimesTotal + 
-                0)]))
+            model_policy_ts <- jnp$array(as.numeric(0:(nTimesTotal - 
+                1L)))
+            model_policy_scenario <- jnp$array(InterpolatorBasis_[-c(1:ShiftFactor)][1:(nTimesTotal + 
+                0)])
+            PolicyList_Model_natural <- list(diffrax$LinearInterpolation(model_policy_ts, 
+                jnp$array(rep(0, nTimesTotal + 0))), diffrax$LinearInterpolation(model_policy_ts, 
+                model_policy_scenario))
+            PolicyList_Model_unnatural <- list(diffrax$LinearInterpolation(model_policy_ts, 
+                jnp$array(IndicatorBasis_un[-c(1:ShiftFactor)][1:(nTimesTotal + 
+                  0)])), diffrax$LinearInterpolation(model_policy_ts, 
+                model_policy_scenario))
         }
         PolicyScenarioSkillRes <- PolicyScenarioSkillBaselineRes <- NULL
         nCounterfactuals <- 0

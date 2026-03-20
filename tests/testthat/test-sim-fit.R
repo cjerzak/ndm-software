@@ -417,3 +417,31 @@ test_that("checkpointed sim runs emit analytics artifacts in jax_cpu", {
   expect_true("RSSBaselineTime1" %in% metric_names)
   expect_true(is.finite(as.numeric(details$trained$env$Skill8SanityCheck)))
 })
+
+test_that("checkpointed NeuralODE sim runs emit structural analytics artifacts in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "NeuralODE",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    n_checkpoints = 1L,
+    return_details = TRUE
+  )
+
+  csv_files <- list.files(details$holder_folder, pattern = "^res.*\\.csv$", full.names = TRUE)
+  rdata_files <- list.files(details$holder_folder, pattern = "^res.*\\.Rdata$", full.names = TRUE)
+
+  expect_length(csv_files, 1L)
+  expect_length(rdata_files, 1L)
+
+  metrics <- as.data.frame(data.table::fread(csv_files[[1]]))
+  metric_names <- names(metrics)
+
+  expect_true("AbsDiff_init" %in% metric_names)
+  expect_true("AbsDiff_gamma" %in% metric_names)
+  expect_true("PolicySkill1" %in% metric_names)
+  expect_true(is.finite(as.numeric(metrics$AbsDiff_init[[1L]])))
+  expect_true(is.finite(as.numeric(metrics$AbsDiff_gamma[[1L]])))
+  expect_true(is.finite(as.numeric(details$trained$env$Skill8SanityCheck)))
+})
