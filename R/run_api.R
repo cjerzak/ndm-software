@@ -24,6 +24,11 @@
 #' environment aligned with `NDM_SOFTWARE_CONDA_ENV` (or the platform-specific
 #' fallback used by the runner layer).
 #'
+#' Distributed simulation TFRecord bootstrap is handled separately via
+#' [ndm_bootstrap_sim_tfrecords()]. Unlike `ndm_run_sim(..., outer = ...)`, the
+#' bootstrap entrypoint schedules work by canonical `BaseID` in raw grid order
+#' and is the supported surface for parallel TFRecord materialization.
+#'
 #' @param project_root Working project directory used for grids, TFRecords, and
 #'   outputs.
 #' @param analysis_name Analysis label threaded through output paths.
@@ -172,6 +177,84 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     disease_names = disease_names,
     data_format = data_format,
     dry_run = dry_run
+  )
+}
+
+#' Bootstrap canonical simulation TFRecords by BaseID
+#'
+#' This helper materializes canonical simulation TFRecords without going through
+#' the legacy `outer` scheduling path. It reads the simulation grid in raw CSV
+#' or data-frame order, builds one canonical write plan row per `BaseID`, and
+#' optionally writes those TFRecords with a per-`BaseID` cross-process lock.
+#'
+#' @param project_root Working project directory used to resolve relative grid
+#'   and TFRecord paths.
+#' @param analysis_name Analysis label used to derive default grid and TFRecord
+#'   paths.
+#' @param grid Optional in-memory simulation grid. When supplied, `grid_file`
+#'   must be `NULL`.
+#' @param grid_file Optional CSV path for the simulation grid.
+#' @param base_ids Optional integer vector of canonical `BaseID` values to
+#'   materialize. When `NULL`, bootstrap all `BaseID`s in raw grid order of
+#'   first appearance.
+#' @param tfrecord_dir Output directory for canonical TFRecords.
+#' @param overwrite Logical scalar controlling whether existing canonical
+#'   TFRecords should be regenerated.
+#' @param dry_run Logical scalar indicating whether to return the canonical
+#'   write plan without writing TFRecords.
+#'
+#' @returns A data frame with one row per canonical `BaseID` and columns
+#'   `BaseID`, `selected_rows`, `canonical_row`,
+#'   `artifact_n_samples_train`, `train_file`, `inference_file`, and `status`.
+#'
+#' @export
+ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
+                                        analysis_name = "BigSimsLatest",
+                                        grid = NULL,
+                                        grid_file = file.path("Data", "RunGrids", "SimGrids", sprintf("SimGrid_%s.csv", analysis_name)),
+                                        base_ids = NULL,
+                                        tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
+                                        overwrite = FALSE,
+                                        dry_run = FALSE) {
+  project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
+
+  if (!is.null(grid)) {
+    grid_file <- NULL
+  }
+
+  if (!is.null(grid) && !is.null(grid_file)) {
+    stop("Supply either `grid` or `grid_file`, not both.", call. = FALSE)
+  }
+  if (!is.null(grid) && !is.data.frame(grid)) {
+    stop("`grid` must be a data.frame when supplied.", call. = FALSE)
+  }
+
+  if (!is.null(grid)) {
+    grid_file <- NULL
+    sim_grid <- as.data.frame(grid, stringsAsFactors = FALSE)
+  } else {
+    if (!startsWith(grid_file, "/")) {
+      grid_file <- file.path(project_root, grid_file)
+    }
+    grid_file <- .ndm_normalize_path(grid_file, must_work = TRUE)
+    sim_grid <- as.data.frame(data.table::fread(grid_file), stringsAsFactors = FALSE)
+  }
+
+  if (!startsWith(tfrecord_dir, "/")) {
+    tfrecord_dir <- file.path(project_root, tfrecord_dir)
+  }
+  tfrecord_dir <- .ndm_normalize_path(tfrecord_dir, must_work = FALSE)
+
+  api_env <- .ndm_legacy_run_env()
+  bootstrap_fun <- get("analysis2_bootstrap_sim_tfrecords", envir = api_env, inherits = FALSE)
+  bootstrap_fun(
+    project_root = project_root,
+    analysis_name = as.character(analysis_name),
+    grid = sim_grid,
+    base_ids = base_ids,
+    tfrecord_dir = tfrecord_dir,
+    overwrite = isTRUE(overwrite),
+    dry_run = isTRUE(dry_run)
   )
 }
 

@@ -945,6 +945,330 @@ analysis2_build_canonical_tfrecord_plan <- function(mode,
   do.call(rbind, plan_rows)
 }
 
+analysis2_bootstrap_base_id_rows <- function(grid,
+                                             base_ids = NULL) {
+  if (nrow(grid) == 0L) {
+    return(integer())
+  }
+
+  grid_base_ids <- suppressWarnings(as.integer(grid$BaseID))
+  if (length(grid_base_ids) != nrow(grid) || anyNA(grid_base_ids)) {
+    stop(
+      "Simulation TFRecord bootstrap requires every grid row to contain an integer `BaseID`.",
+      call. = FALSE
+    )
+  }
+
+  if (is.null(base_ids)) {
+    return(seq_len(nrow(grid)))
+  }
+
+  requested_base_ids <- analysis2_unique_preserve_order(as.integer(base_ids))
+  if (length(requested_base_ids) == 0L || anyNA(requested_base_ids)) {
+    stop(
+      "`base_ids` must contain at least one integer BaseID.",
+      call. = FALSE
+    )
+  }
+
+  missing_base_ids <- setdiff(requested_base_ids, analysis2_unique_preserve_order(grid_base_ids))
+  if (length(missing_base_ids) > 0L) {
+    stop(
+      "Requested BaseID(s) are missing from the simulation grid: ",
+      paste(missing_base_ids, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  unlist(
+    lapply(
+      requested_base_ids,
+      function(base_id) which(grid_base_ids == base_id)
+    ),
+    use.names = FALSE
+  )
+}
+
+analysis2_canonical_tfrecord_artifact_paths <- function(paths) {
+  c(
+    paths$train_file,
+    paths$inference_file,
+    analysis2_manifest_path(paths$train_file),
+    analysis2_manifest_path(paths$inference_file)
+  )
+}
+
+analysis2_has_any_tfrecord_artifacts <- function(paths) {
+  any(file.exists(analysis2_canonical_tfrecord_artifact_paths(paths)))
+}
+
+analysis2_has_incomplete_tfrecord_artifacts <- function(paths) {
+  analysis2_has_any_tfrecord_artifacts(paths) && !analysis2_has_canonical_tfrecords(paths)
+}
+
+analysis2_bootstrap_lock_dir <- function(output_dir, base_id) {
+  file.path(output_dir, sprintf(".bootstrap_lock_%s", base_id))
+}
+
+analysis2_wait_for_canonical_tfrecords <- function(paths,
+                                                   timeout_seconds = 30,
+                                                   poll_seconds = 0.2) {
+  deadline <- Sys.time() + as.difftime(timeout_seconds, units = "secs")
+  repeat {
+    if (analysis2_has_canonical_tfrecords(paths)) {
+      return(TRUE)
+    }
+    if (Sys.time() >= deadline) {
+      return(FALSE)
+    }
+    Sys.sleep(poll_seconds)
+  }
+}
+
+analysis2_build_base_id_tfrecord_plan <- function(mode,
+                                                  grid,
+                                                  base_ids = NULL,
+                                                  tfrecord_dir = NULL) {
+  selected_rows <- analysis2_bootstrap_base_id_rows(
+    grid = grid,
+    base_ids = base_ids
+  )
+
+  plan <- analysis2_build_canonical_tfrecord_plan(
+    mode = mode,
+    grid = grid,
+    outer_iterations = selected_rows
+  )
+
+  if (is.null(tfrecord_dir)) {
+    return(plan)
+  }
+
+  if (nrow(plan) == 0L) {
+    plan$train_file <- character()
+    plan$inference_file <- character()
+    return(plan)
+  }
+
+  train_files <- character(nrow(plan))
+  inference_files <- character(nrow(plan))
+  for (plan_idx in seq_len(nrow(plan))) {
+    paths <- analysis2_tfrecord_paths(tfrecord_dir, plan$BaseID[[plan_idx]])
+    train_files[[plan_idx]] <- paths$train_file
+    inference_files[[plan_idx]] <- paths$inference_file
+  }
+
+  plan$train_file <- train_files
+  plan$inference_file <- inference_files
+  plan
+}
+
+analysis2_bootstrap_dry_run_status <- function(paths,
+                                               base_id,
+                                               output_dir,
+                                               overwrite = FALSE) {
+  if (!isTRUE(overwrite) && analysis2_has_incomplete_tfrecord_artifacts(paths)) {
+    stop(
+      "Found incomplete TFRecord artifacts for BaseID ",
+      base_id,
+      " under ",
+      output_dir,
+      ". Remove them or rerun with `overwrite = TRUE` before bootstrapping canonical TFRecords.",
+      call. = FALSE
+    )
+  }
+
+  if (!isTRUE(overwrite) && analysis2_has_canonical_tfrecords(paths)) {
+    return("skipped_existing")
+  }
+
+  "planned"
+}
+
+analysis2_bootstrap_write_sim_tfrecord <- function(base_id,
+                                                   canonical_row,
+                                                   artifact_n_samples_train,
+                                                   row_values,
+                                                   tfrecord_dir,
+                                                   ndmdatasets_pkg,
+                                                   ndm_pkg,
+                                                   tensorflow,
+                                                   overwrite = FALSE) {
+  paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
+  if (!isTRUE(overwrite) && analysis2_has_incomplete_tfrecord_artifacts(paths)) {
+    stop(
+      "Found incomplete TFRecord artifacts for BaseID ",
+      base_id,
+      " under ",
+      tfrecord_dir,
+      ". Remove them or rerun with `overwrite = TRUE` before bootstrapping canonical TFRecords.",
+      call. = FALSE
+    )
+  }
+
+  if (!isTRUE(overwrite) && analysis2_has_canonical_tfrecords(paths)) {
+    analysis2_log(
+      sprintf(
+        "Skipping canonical sim TFRecords for BaseID %s because canonical artifacts already exist",
+        base_id
+      )
+    )
+    return("skipped_existing")
+  }
+
+  lock_dir <- analysis2_bootstrap_lock_dir(tfrecord_dir, base_id)
+  acquired_lock <- dir.create(lock_dir, recursive = FALSE, showWarnings = FALSE)
+  if (!isTRUE(acquired_lock)) {
+    if (!isTRUE(overwrite) && analysis2_wait_for_canonical_tfrecords(paths)) {
+      analysis2_log(
+        sprintf(
+          "Skipping canonical sim TFRecords for BaseID %s because another worker materialized them first",
+          base_id
+        )
+      )
+      return("skipped_locked_existing")
+    }
+
+    stop(
+      "Could not acquire the canonical TFRecord bootstrap lock for BaseID ",
+      base_id,
+      " under ",
+      tfrecord_dir,
+      ". Another worker may still be writing this BaseID or a stale lock remains at ",
+      lock_dir,
+      ".",
+      call. = FALSE
+    )
+  }
+
+  on.exit(unlink(lock_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  if (!isTRUE(overwrite) && analysis2_has_incomplete_tfrecord_artifacts(paths)) {
+    stop(
+      "Found incomplete TFRecord artifacts for BaseID ",
+      base_id,
+      " under ",
+      tfrecord_dir,
+      " after acquiring the bootstrap lock. Remove them or rerun with `overwrite = TRUE`.",
+      call. = FALSE
+    )
+  }
+
+  if (!isTRUE(overwrite) && analysis2_has_canonical_tfrecords(paths)) {
+    analysis2_log(
+      sprintf(
+        "Skipping canonical sim TFRecords for BaseID %s because canonical artifacts were written before lock acquisition completed",
+        base_id
+      )
+    )
+    return("skipped_existing")
+  }
+
+  model_type <- analysis2_model_type(
+    opts = list(model_type = NULL, respect_grid_model_type = TRUE),
+    grid_model_type = row_values$ModelType,
+    default = "DecoderOnly"
+  )
+  dataset_spec <- analysis2_sim_dataset_spec(ndmdatasets_pkg, row_values)
+  training_spec <- analysis2_sim_training_spec(ndmdatasets_pkg, row_values, model_type = model_type)
+  training_spec$n_samples_train <- as.integer(artifact_n_samples_train)
+
+  analysis2_log(
+    sprintf(
+      "Regenerating canonical sim TFRecords for BaseID %s from row %s with nSamplesTrain %s",
+      base_id,
+      canonical_row,
+      artifact_n_samples_train
+    )
+  )
+  analysis2_write_sim_tfrecords(
+    ndmdatasets_pkg = ndmdatasets_pkg,
+    dataset_spec = dataset_spec,
+    training_spec = training_spec,
+    output_dir = tfrecord_dir,
+    tensorflow = tensorflow
+  )
+
+  "written"
+}
+
+analysis2_bootstrap_sim_tfrecords <- function(project_root,
+                                              analysis_name = "BigSimsLatest",
+                                              grid,
+                                              base_ids = NULL,
+                                              tfrecord_dir,
+                                              overwrite = FALSE,
+                                              dry_run = FALSE) {
+  stopifnot(is.data.frame(grid))
+
+  project_root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
+  paths <- analysis2_paths(project_root = project_root)
+  tfrecord_dir <- normalizePath(tfrecord_dir, winslash = "/", mustWork = FALSE)
+  write_plan <- analysis2_build_base_id_tfrecord_plan(
+    mode = "sim",
+    grid = grid,
+    base_ids = base_ids,
+    tfrecord_dir = tfrecord_dir
+  )
+
+  if (nrow(write_plan) == 0L) {
+    write_plan$status <- character()
+    return(write_plan)
+  }
+
+  if (isTRUE(dry_run)) {
+    write_plan$status <- vapply(
+      write_plan$BaseID,
+      function(base_id) {
+        analysis2_bootstrap_dry_run_status(
+          paths = analysis2_tfrecord_paths(tfrecord_dir, base_id),
+          base_id = base_id,
+          output_dir = tfrecord_dir,
+          overwrite = overwrite
+        )
+      },
+      character(1)
+    )
+    return(write_plan)
+  }
+
+  old_wd <- tryCatch(getwd(), error = function(e) NULL)
+  if (!is.null(old_wd) && nzchar(old_wd)) {
+    on.exit(setwd(old_wd), add = TRUE)
+  }
+  setwd(paths$project_root)
+  analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
+  analysis2_dir_create(tfrecord_dir)
+
+  ndmdatasets_pkg <- analysis2_require_ndmdatasets()
+  ndm_pkg <- analysis2_require_ndm()
+  tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
+
+  statuses <- character(nrow(write_plan))
+  for (plan_idx in seq_len(nrow(write_plan))) {
+    canonical_row <- write_plan$canonical_row[[plan_idx]]
+    row_values <- analysis2_normalize_row_values(
+      analysis2_row_to_list(grid[canonical_row, , drop = FALSE])
+    )
+
+    statuses[[plan_idx]] <- analysis2_bootstrap_write_sim_tfrecord(
+      base_id = analysis2_as_int(write_plan$BaseID[[plan_idx]]),
+      canonical_row = canonical_row,
+      artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]],
+      row_values = row_values,
+      tfrecord_dir = tfrecord_dir,
+      ndmdatasets_pkg = ndmdatasets_pkg,
+      ndm_pkg = ndm_pkg,
+      tensorflow = tensorflow,
+      overwrite = overwrite
+    )
+  }
+
+  write_plan$status <- statuses
+  write_plan
+}
+
 analysis2_resolve_model_spec <- function(model_tex_loc = NULL,
                                          model_spec_name = NULL,
                                          model_type = "DecoderOnly",

@@ -1,3 +1,195 @@
+test_that("canonical sim bootstrap coordinates concurrent writers per BaseID", {
+  ndm_require_runner_test_stack("package-native sim bootstrap concurrency tests")
+  skip_if(.Platform$OS.type == "windows")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  analysis_name <- "SimBootstrapConcurrency"
+  grid <- ndm_test_make_sim_duplicate_base_grid(
+    n_samples_train = c(1024L, 1024L),
+    resave_flags = c(0L, 1L)
+  )
+  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", analysis_name)
+
+  workers <- list(
+    parallel::mcparallel(
+      ndm_bootstrap_sim_tfrecords(
+        project_root = project_root,
+        analysis_name = analysis_name,
+        grid = grid,
+        base_ids = 1L,
+        overwrite = FALSE,
+        dry_run = FALSE
+      )
+    ),
+    parallel::mcparallel(
+      ndm_bootstrap_sim_tfrecords(
+        project_root = project_root,
+        analysis_name = analysis_name,
+        grid = grid,
+        base_ids = 1L,
+        overwrite = FALSE,
+        dry_run = FALSE
+      )
+    )
+  )
+  results <- parallel::mccollect(workers, wait = TRUE)
+
+  expect_false(any(vapply(results, inherits, logical(1), what = "try-error")))
+
+  statuses <- unname(vapply(results, function(res) res$status[[1L]], character(1)))
+  manifest <- ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")
+
+  expect_equal(sum(statuses == "written"), 1L)
+  expect_equal(sum(statuses %in% c("skipped_existing", "skipped_locked_existing")), 1L)
+  expect_equal(manifest$metadata$n_examples, 1024L)
+})
+
+test_that("canonical sim bootstrap dry run plans one row per BaseID in raw order", {
+  ndm_require_runner_test_stack("package-native sim bootstrap dry-run tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  analysis_name <- "SimBootstrapDryRun"
+  grid <- ndm_test_make_sim_bootstrap_grid(
+    n_base_ids = 12L,
+    rows_per_base_id = 4L,
+    canonical_n_samples_train = 8L,
+    other_n_samples_train = 4L
+  )
+
+  plan <- ndm_bootstrap_sim_tfrecords(
+    project_root = project_root,
+    analysis_name = analysis_name,
+    grid = grid,
+    dry_run = TRUE
+  )
+
+  expect_true(is.data.frame(plan))
+  expect_equal(nrow(plan), 12L)
+  expect_equal(plan$BaseID, 1:12)
+  expect_equal(plan$canonical_row, 1:12)
+  expect_true(all(plan$artifact_n_samples_train == 8L))
+  expect_true(all(plan$status == "planned"))
+})
+
+test_that("canonical sim bootstrap writes the first 10 canonical BaseIDs once each", {
+  ndm_require_runner_test_stack("package-native sim bootstrap integration tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  analysis_name <- "SimBootstrapIntegration"
+  grid <- ndm_test_make_sim_bootstrap_grid(
+    n_base_ids = 12L,
+    rows_per_base_id = 4L,
+    canonical_n_samples_train = 8L,
+    other_n_samples_train = 4L
+  )
+  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", analysis_name)
+
+  written <- ndm_bootstrap_sim_tfrecords(
+    project_root = project_root,
+    analysis_name = analysis_name,
+    grid = grid,
+    base_ids = 1:10,
+    overwrite = FALSE,
+    dry_run = FALSE
+  )
+
+  expect_equal(written$BaseID, 1:10)
+  expect_true(all(written$status == "written"))
+  expect_equal(length(unique(written$train_file)), 10L)
+  expect_equal(length(unique(written$inference_file)), 10L)
+  for (base_id in 1:10) {
+    ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = base_id)
+  }
+})
+
+test_that("canonical sim bootstrap skips existing artifacts on rerun", {
+  ndm_require_runner_test_stack("package-native sim bootstrap rerun tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  analysis_name <- "SimBootstrapRerun"
+  grid <- ndm_test_make_sim_bootstrap_grid(
+    n_base_ids = 4L,
+    rows_per_base_id = 3L,
+    canonical_n_samples_train = 8L,
+    other_n_samples_train = 4L
+  )
+  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", analysis_name)
+
+  first <- ndm_bootstrap_sim_tfrecords(
+    project_root = project_root,
+    analysis_name = analysis_name,
+    grid = grid,
+    overwrite = FALSE,
+    dry_run = FALSE
+  )
+  second <- ndm_bootstrap_sim_tfrecords(
+    project_root = project_root,
+    analysis_name = analysis_name,
+    grid = grid,
+    overwrite = FALSE,
+    dry_run = FALSE
+  )
+
+  manifest <- ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")
+
+  expect_true(all(first$status == "written"))
+  expect_true(all(second$status == "skipped_existing"))
+  expect_equal(manifest$metadata$n_examples, 8L)
+})
+
+test_that("canonical sim bootstrap rejects non-max canonical flags within a BaseID", {
+  ndm_require_runner_test_stack("package-native sim bootstrap flag validation tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  grid <- ndm_test_make_sim_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(1L, 0L)
+  )
+
+  expect_error(
+    ndm_bootstrap_sim_tfrecords(
+      project_root = project_root,
+      analysis_name = "SimBootstrapBadFlag",
+      grid = grid,
+      dry_run = TRUE
+    ),
+    "requires the flagged row to use the largest `nSamplesTrain`"
+  )
+})
+
+test_that("canonical sim bootstrap rejects conflicting dataset fields within a BaseID", {
+  ndm_require_runner_test_stack("package-native sim bootstrap duplicate field validation tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  grid <- ndm_test_make_sim_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(0L, 1L)
+  )
+  grid$gamma[[2L]] <- 0.4
+
+  expect_error(
+    ndm_bootstrap_sim_tfrecords(
+      project_root = project_root,
+      analysis_name = "SimBootstrapConflict",
+      grid = grid,
+      dry_run = TRUE
+    ),
+    "disagree on dataset-defining fields.*gamma"
+  )
+})
+
 test_that("package-native sim runner regenerates canonical TFRecords in non-dry mode", {
   ndm_require_runner_test_stack("package-native sim runner tests")
 

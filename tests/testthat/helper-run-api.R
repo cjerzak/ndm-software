@@ -142,6 +142,38 @@ ndm_test_make_sim_duplicate_base_grid <- function(n_samples_train = c(4L, 8L),
   grid
 }
 
+ndm_test_make_sim_bootstrap_grid <- function(n_base_ids = 10L,
+                                             rows_per_base_id = 4L,
+                                             canonical_n_samples_train = 8L,
+                                             other_n_samples_train = 4L) {
+  stopifnot(n_base_ids >= 1L)
+  stopifnot(rows_per_base_id >= 1L)
+
+  template <- ndm_test_make_sim_run_grid()[1L, , drop = FALSE]
+  rows <- vector("list", length = n_base_ids * rows_per_base_id)
+  row_idx <- 1L
+
+  for (pass_idx in seq_len(rows_per_base_id)) {
+    for (base_id in seq_len(n_base_ids)) {
+      row <- template
+      row$BaseID <- as.integer(base_id)
+      row$gamma <- as.numeric(template$gamma) + (base_id / 1000)
+      row$nSamplesTrain <- if (pass_idx == 1L) {
+        as.integer(canonical_n_samples_train)
+      } else {
+        as.integer(other_n_samples_train)
+      }
+      row$ResaveThisTFRecord <- if (pass_idx == 1L) 1L else 0L
+      rows[[row_idx]] <- row
+      row_idx <- row_idx + 1L
+    }
+  }
+
+  grid <- do.call(rbind, rows)
+  rownames(grid) <- NULL
+  grid
+}
+
 ndm_test_make_real_run_grid <- function() {
   data.frame(
     BaseID = 1L,
