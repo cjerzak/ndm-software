@@ -35,6 +35,8 @@ ndm_test_fit_sim_case <- function(model_type,
                                   model_dims = 32L,
                                   attention_head_dim = 64L,
                                   attention_kv_heads = NULL,
+                                  before_train = NULL,
+                                  expect_train_error = FALSE,
                                   return_details = FALSE) {
   if (is.null(n_sgd)) {
     n_sgd <- if (identical(model_type, "NeuralODE")) 3L else 2L
@@ -141,6 +143,7 @@ ndm_test_fit_sim_case <- function(model_type,
       nPlaces = 1L,
       af = 1L,
       HolderFolder = file.path(work_dir, "results"),
+      OUTER_ITERATION = 1L,
       endAppend = TRUE,
       EnableKVCaching = enable_kv_cache,
       AttentionHeadDim = as.integer(attention_head_dim),
@@ -209,13 +212,37 @@ ndm_test_fit_sim_case <- function(model_type,
       backbone = "transformer"
     )
   )
+  if (is.function(before_train)) {
+    before_train(runtime_env = runtime_env, model = model)
+  }
   trained <- suppressWarnings(
-    ndm_train(
-      model,
-      run_define = TRUE,
-      run_loop = TRUE
+    try(
+      ndm_train(
+        model,
+        run_define = TRUE,
+        run_loop = TRUE
+      ),
+      silent = TRUE
     )
   )
+  if (isTRUE(expect_train_error)) {
+    if (!inherits(trained, "try-error")) {
+      stop("Expected ndm_train() to fail for this simulation test case.")
+    }
+    if (isTRUE(return_details)) {
+      return(list(
+        train_error = trained,
+        model = model,
+        runtime_env = runtime_env,
+        work_dir = work_dir,
+        holder_folder = file.path(work_dir, "results")
+      ))
+    }
+    return(invisible(trained))
+  }
+  if (inherits(trained, "try-error")) {
+    stop(attr(trained, "condition"))
+  }
 
   losses <- as.numeric(trained$env$in_loss_vec[seq_len(n_sgd)])
   summary <- data.frame(
@@ -283,6 +310,17 @@ test_that("simulated pandemic fits improve across model families and endogeneity
   expect_true(all(results$loss_delta >= 0), info = results_info)
   expect_true(mean(results$loss_delta) > 1e-3, info = results_info)
   expect_true(min(neural_ode_results$loss_delta) > 1e-3, info = results_info)
+})
+
+test_that("safe log diagnostics plots tolerate non-finite loss histories", {
+  pdf_file <- tempfile(fileext = ".pdf")
+  grDevices::pdf(pdf_file)
+  on.exit({
+    try(grDevices::dev.off(), silent = TRUE)
+  }, add = TRUE)
+
+  expect_invisible(ndm:::.ndm_plot_log_series_safe(c(Inf, NA_real_, 0, -1), main = "Loss"))
+  expect_invisible(ndm:::.ndm_plot_log_series_safe(c(NA_real_, NaN, Inf), main = "Gradients"))
 })
 
 test_that("decoder cache and non-cache predictions agree in jax_cpu", {
@@ -444,4 +482,47 @@ test_that("checkpointed NeuralODE sim runs emit structural analytics artifacts i
   expect_true(is.finite(as.numeric(metrics$AbsDiff_init[[1L]])))
   expect_true(is.finite(as.numeric(metrics$AbsDiff_gamma[[1L]])))
   expect_true(is.finite(as.numeric(details$trained$env$Skill8SanityCheck)))
+})
+
+test_that("non-finite sim training fails fast and writes a debug artifact", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    before_train = function(runtime_env, model) {
+      zero_grads <- runtime_env$jax$tree_util$tree_map(
+        function(x) runtime_env$jnp$zeros_like(x),
+        model$env$ModelList
+      )
+      runtime_env$gradLoss_jax <- function(...) {
+        list(
+          list(runtime_env$jnp$array(Inf), runtime_env$state),
+          zero_grads
+        )
+      }
+    },
+    expect_train_error = TRUE,
+    return_details = TRUE
+  )
+
+  expect_match(
+    ndm:::.ndm_condition_message(details$train_error),
+    "Non-finite training state"
+  )
+
+  artifact_files <- list.files(
+    details$holder_folder,
+    pattern = "^nonfinite_outer1_i1\\.rds$",
+    full.names = TRUE
+  )
+  expect_length(artifact_files, 1L)
+
+  report <- readRDS(artifact_files[[1L]])
+  expect_identical(report$outer_iteration, 1L)
+  expect_identical(report$base_id, 1L)
+  expect_true(is.infinite(report$loss))
+  expect_true("batch_YTrue_out" %in% names(report$tensor_summaries))
+  expect_true("prediction_center_param" %in% names(report$tensor_summaries))
 })

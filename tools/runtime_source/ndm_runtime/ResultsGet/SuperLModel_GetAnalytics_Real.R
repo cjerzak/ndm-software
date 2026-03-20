@@ -1,6 +1,7 @@
 # Content of SuperLModel_GetAnalytics_Real.R
 if( !SimMode ){
     print("Starting SuperLModel_GetAnalytics_Real.R")
+    ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", "ndm")
     # get out-of-sample results
     #try(plot(rank(na.omit(in_loss_vec))), T) ; 
     #try(points(smooth.spline(rank(na.omit(in_loss_vec))),type = "l",lwd=3), T) 
@@ -216,9 +217,9 @@ if( !SimMode ){
     par(mfrow=c(2,1 + is.na(COMMAND_ARG_INPUT) ))
     loss_obs <- na.omit(in_loss_vec)
     grad_obs <- na.omit(grad_norm_vec)
-    if(length(loss_obs) > 0L){ plot(loss_obs, log = "y") } else { plot.new() }
+    ndm_plot_log_series_safe(loss_obs, main = "Loss")
     if(length(loss_obs) > 0L){ plot(rank(loss_obs), log = "") } else { plot.new() }
-    if(length(grad_obs) > 0L){ plot(grad_obs, log = "y") } else { plot.new() }
+    ndm_plot_log_series_safe(grad_obs, main = "Gradients")
     if(is.na(COMMAND_ARG_INPUT)){
       tmp555 <- as.matrix(tmp555);try(plot(tmp555[1,],ylim = c(0,max(c(tmp555[1:10,]))),type = 'l',main="Y-hat"),T)
       for(i3 in 2:10){ try(points(tmp555[i3,],type = 'l',col = "black", lwd = 2, lty = 1),T) }

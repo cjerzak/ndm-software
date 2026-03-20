@@ -5117,6 +5117,77 @@
         SIM_GLOBAL_SCALE_SD <<- jnp$take(recovered_payload[[4]], 
             1L, axis = 0L)$tolist()
         invisible(NULL)
+    }, ndm_condition_message <- getFromNamespace(".ndm_condition_message", 
+        "ndm"), ndm_numeric_summary <- getFromNamespace(".ndm_numeric_summary", 
+        "ndm"), ndm_first_nonfinite_name <- getFromNamespace(".ndm_first_nonfinite_name", 
+        "ndm"), ndm_write_nonfinite_report <- getFromNamespace(".ndm_write_nonfinite_report", 
+        "ndm"), nonfinite_empty_summary <- function(error = NA_character_) {
+        list(error = error, dims = integer(), length = 0L, finite_fraction = NA_real_, 
+            n_nonfinite = NA_integer_, n_nan = NA_integer_, n_inf = NA_integer_, 
+            min = NA_real_, max = NA_real_, mean = NA_real_, 
+            first_nonfinite_index = integer())
+    }, nonfinite_capture_summary <- function(expr) {
+        value <- try(eval.parent(substitute(expr)), silent = TRUE)
+        if (inherits(value, "try-error")) {
+            return(nonfinite_empty_summary(ndm_condition_message(value)))
+        }
+        ndm_numeric_summary(value, np = np)
+    }, capture_nonfinite_learning_rate <- function(iteration) {
+        if (!exists("LR_schedule_vec", inherits = TRUE) || length(LR_schedule_vec) < 
+            iteration) {
+            return(NA_real_)
+        }
+        suppressWarnings(as.numeric(LR_schedule_vec[[iteration]])[[1L]])
+    }, capture_nonfinite_base_id <- function() {
+        if (!exists("SimEntry", inherits = TRUE) || is.null(SimEntry) || 
+            is.null(SimEntry$BaseID)) {
+            return(NA_integer_)
+        }
+        suppressWarnings(as.integer(as.numeric(SimEntry$BaseID)[[1L]]))
+    }, capture_nonfinite_report <- function(batch_l, loss_value, 
+        grad_norm_value, iteration, keys_mat) {
+        prediction <- try(GetPred_train_jit(ModelList, batch2package(batch_l), 
+            state, PriorList, PolicyList, GetPredSaveAtInfo_default, 
+            keys_mat), silent = TRUE)
+        tensor_summaries <- list(batch_YTrue_out = nonfinite_capture_summary(batch_l$YTrue_out), 
+            batch_YTrue_out_mask = nonfinite_capture_summary(batch_l$YTrue_out_mask), 
+            batch_YTrue = nonfinite_capture_summary(batch_l$YTrue), 
+            batch_YTrue_mask = nonfinite_capture_summary(batch_l$YTrue_mask), 
+            batch_XPred = nonfinite_capture_summary(batch_l$XPred), 
+            batch_XPred_mask = nonfinite_capture_summary(batch_l$XPred_mask))
+        if (inherits(prediction, "try-error")) {
+            tensor_summaries$prediction_forward_pass <- nonfinite_empty_summary(ndm_condition_message(prediction))
+        }
+        else {
+            pred_obj <- prediction[[1]]
+            tensor_summaries$prediction_y_mu <- nonfinite_capture_summary(pred_obj$y_mu)
+            tensor_summaries$prediction_y_sigma <- nonfinite_capture_summary(pred_obj$y_sigma)
+            tensor_summaries$prediction_center_param <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$center_param)
+            tensor_summaries$prediction_scale_param <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$scale_param)
+            tensor_summaries$prediction_s_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$s_l_samp)
+            tensor_summaries$prediction_e_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$e_l_samp)
+            tensor_summaries$prediction_i_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$i_l_samp)
+            tensor_summaries$prediction_r_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$r_l_samp)
+            tensor_summaries$prediction_raw_beta_t <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$diff_eq_sol_ys$raw_beta_t)
+            tensor_summaries$prediction_raw_policy_t <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$diff_eq_sol_ys$raw_policy_t)
+            tensor_summaries$prediction_neural1 <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$diff_eq_sol_ys$Neural1)
+        }
+        outer_iteration <- get0("OUTER_ITERATION", ifnotfound = NA_integer_)
+        report <- list(analysis_name = get0("AnalysisName", ifnotfound = NA_character_), 
+            outer_iteration = outer_iteration, iteration = as.integer(iteration), 
+            base_id = capture_nonfinite_base_id(), model_type = get0("ModelType", 
+                ifnotfound = NA_character_), n_samples_train = suppressWarnings(as.integer(get0("nSamplesTrain", 
+                ifnotfound = NA_integer_))), model_depth = suppressWarnings(as.integer(get0("ModelDepth", 
+                ifnotfound = NA_integer_))), model_dims = suppressWarnings(as.integer(get0("ModelDims", 
+                ifnotfound = NA_integer_))), context_length = suppressWarnings(as.integer(get0("nTimesPast", 
+                ifnotfound = NA_integer_))), learning_rate = capture_nonfinite_learning_rate(iteration), 
+            loss = loss_value, grad_norm = grad_norm_value, sim_entry = if (exists("SimEntry", 
+                inherits = TRUE)) SimEntry else NULL, tensor_summaries = tensor_summaries, 
+            first_bad_tensor = ndm_first_nonfinite_name(tensor_summaries))
+        report_path <- ndm_write_nonfinite_report(report = report, 
+            holder_folder = HolderFolder, outer_iteration = outer_iteration, 
+            iteration = iteration)
+        list(report = report, report_path = report_path)
     }, for (i in i_:nSGD_model) {
         if (Sys.info()["sysname"] != "Darwin" & i > 2) {
         }
@@ -5248,14 +5319,23 @@
                       return(leave_grad)
                     }, GradientUpdatePackage)
                   }
-                  GradNorm_i <- grad_norm_vec[i] <- np$array(optax$global_norm(jax$tree_util$tree_leaves(GradientUpdatePackage)))
-                  if (is.na(GradNorm_i)) {
-                    print("NA in gradient!")
-                  }
-                  UpdateParametersCond <- !is.na(myLoss_fromGrad) & 
-                    !is.na(GradNorm_i)
+                  Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(myLoss_fromGrad)[[1L]])
+                  GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(optax$global_norm(jax$tree_util$tree_leaves(GradientUpdatePackage))))[[1L]])
+                  UpdateParametersCond <- is.finite(Loss_i) & 
+                    is.finite(GradNorm_i)
                   if (!UpdateParametersCond) {
-                    print("Warning: Not updating parameters; check code...")
+                    nonfinite_capture <- capture_nonfinite_report(batch_l = dat_, 
+                      loss_value = Loss_i, grad_norm_value = GradNorm_i, 
+                      iteration = i, keys_mat = keys_mat)
+                    stop(sprintf(paste("Non-finite training state in %s", 
+                      "[outer=%s, BaseID=%s, ModelType=%s, iter=%s, loss=%s, grad_norm=%s].", 
+                      "Saved debug report to %s.", sep = " "), 
+                      get0("AnalysisName", ifnotfound = "Analysis2"), 
+                      get0("OUTER_ITERATION", ifnotfound = NA_integer_), 
+                      capture_nonfinite_base_id(), get0("ModelType", 
+                        ifnotfound = NA_character_), i, format(Loss_i, 
+                        scientific = TRUE), format(GradNorm_i, 
+                        scientific = TRUE), nonfinite_capture$report_path))
                   }
                   if (UpdateParametersCond) {
                     ExecuteUpdateCounter <- ExecuteUpdateCounter + 
@@ -5276,7 +5356,6 @@
                       })
                     }
                     ModelList <- updatefxn_(ModelList, GradientUpdatePackage)
-                    in_loss_vec[i] <- as.numeric(myLoss_fromGrad)
                     rm(GradientUpdatePackage, dat_)
                   }
                   {
@@ -5380,6 +5459,8 @@
 
 .ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics_Real <- expression(if (!SimMode) {
     print("Starting SuperLModel_GetAnalytics_Real.R")
+    ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", 
+        "ndm")
     gc()
     py_gc$collect()
     TFDatasetIterator_inference <- reticulate::as_iterator(TFDataset_inference)
@@ -5545,24 +5626,14 @@
         par(mfrow = c(2, 1 + is.na(COMMAND_ARG_INPUT)))
         loss_obs <- na.omit(in_loss_vec)
         grad_obs <- na.omit(grad_norm_vec)
-        if (length(loss_obs) > 0L) {
-            plot(loss_obs, log = "y")
-        }
-        else {
-            plot.new()
-        }
+        ndm_plot_log_series_safe(loss_obs, main = "Loss")
         if (length(loss_obs) > 0L) {
             plot(rank(loss_obs), log = "")
         }
         else {
             plot.new()
         }
-        if (length(grad_obs) > 0L) {
-            plot(grad_obs, log = "y")
-        }
-        else {
-            plot.new()
-        }
+        ndm_plot_log_series_safe(grad_obs, main = "Gradients")
         if (is.na(COMMAND_ARG_INPUT)) {
             tmp555 <- as.matrix(tmp555)
             try(plot(tmp555[1, ], ylim = c(0, max(c(tmp555[1:10, 
@@ -5584,6 +5655,8 @@
 
 .ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics_Sim <- expression(if (SimMode == T) {
     print("Starting SuperLModel_GetAnalytics_Sim.R")
+    ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", 
+        "ndm")
     analytics_truth_matrix <- function(x, name, nrow_expected, 
         ncol_expected) {
         arr <- np$array(x)
@@ -5996,24 +6069,14 @@
         par(mfrow = c(2, 2))
         loss_obs <- na.omit(in_loss_vec)
         grad_obs <- na.omit(grad_norm_vec)
-        if (length(loss_obs) > 0L) {
-            plot(loss_obs, log = "y")
-        }
-        else {
-            plot.new()
-        }
+        ndm_plot_log_series_safe(loss_obs, main = "Loss")
         if (length(loss_obs) > 0L) {
             plot(rank(loss_obs), log = "")
         }
         else {
             plot.new()
         }
-        if (length(grad_obs) > 0L) {
-            plot(grad_obs, log = "y")
-        }
-        else {
-            plot.new()
-        }
+        ndm_plot_log_series_safe(grad_obs, main = "Gradients")
         dev.off()
     }
     par(mfrow = c(1, 1))
@@ -9102,8 +9165,9 @@
     }
 }, analysis2_sim_softplus <- function(x) log1p(exp(x)), analysis2_sim_sigmoid <- function(x) 1/(1 + 
     exp(-x)), analysis2_sim_inv_softplus <- function(x) log(exp(x) - 
-    1), analysis2_simulate_one <- function(dataset_spec, seed, 
-    compute_scenario = FALSE, policy_scenario = NULL) {
+    1), analysis2_sim_transition_fraction <- function(rate) 1 - 
+    exp(-max(as.numeric(rate), 0)), analysis2_simulate_one <- function(dataset_spec, 
+    seed, compute_scenario = FALSE, policy_scenario = NULL) {
     set.seed(seed)
     past <- as.integer(dataset_spec$context_length)
     lookahead <- as.integer(dataset_spec$lookahead)
@@ -9153,20 +9217,18 @@
         beta <- analysis2_sim_softplus(raw_beta[[t]])
         policy <- analysis2_sim_sigmoid(raw_policy[[t]])
         prevalence <- (10/n_pop) * I[[t]]
-        new_inf <- beta * I[[t]] * S[[t]]/n_pop
-        new_inf <- new_inf * (1 - as.numeric(dataset_spec$policy_effectiveness) * 
+        infection_force <- beta * I[[t]]/n_pop
+        infection_force <- infection_force * (1 - as.numeric(dataset_spec$policy_effectiveness) * 
             policy)
-        new_inf <- max(new_inf, 0)
-        dS <- -new_inf + as.numeric(dataset_spec$xi) * R[[t]]
-        dE <- new_inf - as.numeric(dataset_spec$sigma) * E[[t]]
-        dI <- as.numeric(dataset_spec$sigma) * E[[t]] - as.numeric(dataset_spec$gamma) * 
-            I[[t]]
-        dR <- as.numeric(dataset_spec$gamma) * I[[t]] - as.numeric(dataset_spec$xi) * 
-            R[[t]]
-        S[[t + 1L]] <- max(S[[t]] + dS, 0)
-        E[[t + 1L]] <- max(E[[t]] + dE, 0)
-        I[[t + 1L]] <- max(I[[t]] + dI, 0)
-        R[[t + 1L]] <- max(R[[t]] + dR, 0)
+        infection_force <- max(infection_force, 0)
+        new_inf <- S[[t]] * analysis2_sim_transition_fraction(infection_force)
+        move_ei <- E[[t]] * analysis2_sim_transition_fraction(dataset_spec$sigma)
+        move_ir <- I[[t]] * analysis2_sim_transition_fraction(dataset_spec$gamma)
+        move_rs <- R[[t]] * analysis2_sim_transition_fraction(dataset_spec$xi)
+        S[[t + 1L]] <- max(S[[t]] - new_inf + move_rs, 0)
+        E[[t + 1L]] <- max(E[[t]] + new_inf - move_ei, 0)
+        I[[t + 1L]] <- max(I[[t]] + move_ei - move_ir, 0)
+        R[[t + 1L]] <- max(R[[t]] + move_ir - move_rs, 0)
         raw_beta[[t + 1L]] <- raw_beta[[t]] + as.numeric(dataset_spec$beta_restore_rate) * 
             (invbeta_init - raw_beta[[t]]) - as.numeric(dataset_spec$c_endogeneous) * 
             prevalence * beta - policy * as.numeric(dataset_spec$policy_effectiveness) * 

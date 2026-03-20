@@ -1540,6 +1540,7 @@ analysis2_real_get_batch_factory <- function(ndmdatasets_pkg,
 analysis2_sim_softplus <- function(x) log1p(exp(x))
 analysis2_sim_sigmoid <- function(x) 1 / (1 + exp(-x))
 analysis2_sim_inv_softplus <- function(x) log(exp(x) - 1)
+analysis2_sim_transition_fraction <- function(rate) 1 - exp(-max(as.numeric(rate), 0))
 
 analysis2_simulate_one <- function(dataset_spec,
                                    seed,
@@ -1603,19 +1604,18 @@ analysis2_simulate_one <- function(dataset_spec,
     policy <- analysis2_sim_sigmoid(raw_policy[[t]])
     prevalence <- (10 / n_pop) * I[[t]]
 
-    new_inf <- beta * I[[t]] * S[[t]] / n_pop
-    new_inf <- new_inf * (1 - as.numeric(dataset_spec$policy_effectiveness) * policy)
-    new_inf <- max(new_inf, 0)
+    infection_force <- beta * I[[t]] / n_pop
+    infection_force <- infection_force * (1 - as.numeric(dataset_spec$policy_effectiveness) * policy)
+    infection_force <- max(infection_force, 0)
+    new_inf <- S[[t]] * analysis2_sim_transition_fraction(infection_force)
+    move_ei <- E[[t]] * analysis2_sim_transition_fraction(dataset_spec$sigma)
+    move_ir <- I[[t]] * analysis2_sim_transition_fraction(dataset_spec$gamma)
+    move_rs <- R[[t]] * analysis2_sim_transition_fraction(dataset_spec$xi)
 
-    dS <- -new_inf + as.numeric(dataset_spec$xi) * R[[t]]
-    dE <- new_inf - as.numeric(dataset_spec$sigma) * E[[t]]
-    dI <- as.numeric(dataset_spec$sigma) * E[[t]] - as.numeric(dataset_spec$gamma) * I[[t]]
-    dR <- as.numeric(dataset_spec$gamma) * I[[t]] - as.numeric(dataset_spec$xi) * R[[t]]
-
-    S[[t + 1L]] <- max(S[[t]] + dS, 0)
-    E[[t + 1L]] <- max(E[[t]] + dE, 0)
-    I[[t + 1L]] <- max(I[[t]] + dI, 0)
-    R[[t + 1L]] <- max(R[[t]] + dR, 0)
+    S[[t + 1L]] <- max(S[[t]] - new_inf + move_rs, 0)
+    E[[t + 1L]] <- max(E[[t]] + new_inf - move_ei, 0)
+    I[[t + 1L]] <- max(I[[t]] + move_ei - move_ir, 0)
+    R[[t + 1L]] <- max(R[[t]] + move_ir - move_rs, 0)
 
     raw_beta[[t + 1L]] <- raw_beta[[t]] +
       as.numeric(dataset_spec$beta_restore_rate) * (invbeta_init - raw_beta[[t]]) -

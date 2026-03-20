@@ -1,6 +1,7 @@
 # Content of SuperLModel_GetAnalytics_Sim.R
 if(SimMode == T){
   print("Starting SuperLModel_GetAnalytics_Sim.R")
+  ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", "ndm")
   analytics_truth_matrix <- function(x, name, nrow_expected, ncol_expected){
     arr <- np$array(x)
     dims <- dim(arr)
@@ -440,9 +441,9 @@ if(SimMode == T){
   par(mfrow=c(2,2))
   loss_obs <- na.omit(in_loss_vec)
   grad_obs <- na.omit(grad_norm_vec)
-  if(length(loss_obs) > 0L){ plot(loss_obs, log = "y") } else { plot.new() }
+  ndm_plot_log_series_safe(loss_obs, main = "Loss")
   if(length(loss_obs) > 0L){ plot(rank(loss_obs), log = "") } else { plot.new() }
-  if(length(grad_obs) > 0L){ plot(grad_obs, log = "y") } else { plot.new() }
+  ndm_plot_log_series_safe(grad_obs, main = "Gradients")
   dev.off()
   }
   par(mfrow = c(1,1))

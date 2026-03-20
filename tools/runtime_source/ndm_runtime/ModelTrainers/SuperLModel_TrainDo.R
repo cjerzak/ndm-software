@@ -68,6 +68,114 @@ restore_checkpoint_scale_state <- function(recovered_payload){
   SIM_GLOBAL_SCALE_SD <<- jnp$take(recovered_payload[[4]], 1L, axis = 0L)$tolist()
   invisible(NULL)
 }
+ndm_condition_message <- getFromNamespace(".ndm_condition_message", "ndm")
+ndm_numeric_summary <- getFromNamespace(".ndm_numeric_summary", "ndm")
+ndm_first_nonfinite_name <- getFromNamespace(".ndm_first_nonfinite_name", "ndm")
+ndm_write_nonfinite_report <- getFromNamespace(".ndm_write_nonfinite_report", "ndm")
+nonfinite_empty_summary <- function(error = NA_character_){
+  list(
+    error = error,
+    dims = integer(),
+    length = 0L,
+    finite_fraction = NA_real_,
+    n_nonfinite = NA_integer_,
+    n_nan = NA_integer_,
+    n_inf = NA_integer_,
+    min = NA_real_,
+    max = NA_real_,
+    mean = NA_real_,
+    first_nonfinite_index = integer()
+  )
+}
+nonfinite_capture_summary <- function(expr){
+  value <- try(eval.parent(substitute(expr)), silent = TRUE)
+  if(inherits(value, "try-error")){
+    return(nonfinite_empty_summary(ndm_condition_message(value)))
+  }
+  ndm_numeric_summary(value, np = np)
+}
+capture_nonfinite_learning_rate <- function(iteration){
+  if(!exists("LR_schedule_vec", inherits = TRUE) || length(LR_schedule_vec) < iteration){
+    return(NA_real_)
+  }
+  suppressWarnings(as.numeric(LR_schedule_vec[[iteration]])[[1L]])
+}
+capture_nonfinite_base_id <- function(){
+  if(!exists("SimEntry", inherits = TRUE) || is.null(SimEntry) || is.null(SimEntry$BaseID)){
+    return(NA_integer_)
+  }
+  suppressWarnings(as.integer(as.numeric(SimEntry$BaseID)[[1L]]))
+}
+capture_nonfinite_report <- function(batch_l,
+                                     loss_value,
+                                     grad_norm_value,
+                                     iteration,
+                                     keys_mat){
+  prediction <- try(
+    GetPred_train_jit(
+      ModelList,
+      batch2package(batch_l),
+      state,
+      PriorList,
+      PolicyList,
+      GetPredSaveAtInfo_default,
+      keys_mat
+    ),
+    silent = TRUE
+  )
+
+  tensor_summaries <- list(
+    batch_YTrue_out = nonfinite_capture_summary(batch_l$YTrue_out),
+    batch_YTrue_out_mask = nonfinite_capture_summary(batch_l$YTrue_out_mask),
+    batch_YTrue = nonfinite_capture_summary(batch_l$YTrue),
+    batch_YTrue_mask = nonfinite_capture_summary(batch_l$YTrue_mask),
+    batch_XPred = nonfinite_capture_summary(batch_l$XPred),
+    batch_XPred_mask = nonfinite_capture_summary(batch_l$XPred_mask)
+  )
+
+  if(inherits(prediction, "try-error")){
+    tensor_summaries$prediction_forward_pass <- nonfinite_empty_summary(ndm_condition_message(prediction))
+  } else {
+    pred_obj <- prediction[[1]]
+    tensor_summaries$prediction_y_mu <- nonfinite_capture_summary(pred_obj$y_mu)
+    tensor_summaries$prediction_y_sigma <- nonfinite_capture_summary(pred_obj$y_sigma)
+    tensor_summaries$prediction_center_param <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$center_param)
+    tensor_summaries$prediction_scale_param <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$scale_param)
+    tensor_summaries$prediction_s_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$s_l_samp)
+    tensor_summaries$prediction_e_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$e_l_samp)
+    tensor_summaries$prediction_i_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$i_l_samp)
+    tensor_summaries$prediction_r_l <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$r_l_samp)
+    tensor_summaries$prediction_raw_beta_t <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$diff_eq_sol_ys$raw_beta_t)
+    tensor_summaries$prediction_raw_policy_t <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$diff_eq_sol_ys$raw_policy_t)
+    tensor_summaries$prediction_neural1 <- nonfinite_capture_summary(pred_obj$ODEParamsSampList$diff_eq_sol_ys$Neural1)
+  }
+
+  outer_iteration <- get0("OUTER_ITERATION", ifnotfound = NA_integer_)
+  report <- list(
+    analysis_name = get0("AnalysisName", ifnotfound = NA_character_),
+    outer_iteration = outer_iteration,
+    iteration = as.integer(iteration),
+    base_id = capture_nonfinite_base_id(),
+    model_type = get0("ModelType", ifnotfound = NA_character_),
+    n_samples_train = suppressWarnings(as.integer(get0("nSamplesTrain", ifnotfound = NA_integer_))),
+    model_depth = suppressWarnings(as.integer(get0("ModelDepth", ifnotfound = NA_integer_))),
+    model_dims = suppressWarnings(as.integer(get0("ModelDims", ifnotfound = NA_integer_))),
+    context_length = suppressWarnings(as.integer(get0("nTimesPast", ifnotfound = NA_integer_))),
+    learning_rate = capture_nonfinite_learning_rate(iteration),
+    loss = loss_value,
+    grad_norm = grad_norm_value,
+    sim_entry = if(exists("SimEntry", inherits = TRUE)) SimEntry else NULL,
+    tensor_summaries = tensor_summaries,
+    first_bad_tensor = ndm_first_nonfinite_name(tensor_summaries)
+  )
+  report_path <- ndm_write_nonfinite_report(
+    report = report,
+    holder_folder = HolderFolder,
+    outer_iteration = outer_iteration,
+    iteration = iteration
+  )
+  list(report = report, report_path = report_path)
+}
 for(i in i_:nSGD_model){
   if(Sys.info()["sysname"] != "Darwin" & i > 2){  
     #write.csv( file="./i_.csv",data.frame("i" = i, "te_total" = as.numeric(te_total, units = "secs"), "te_grad" = as.numeric(te_grads, units = "secs") ))  
@@ -219,12 +327,40 @@ for(i in i_:nSGD_model){
         #unlist(GradientUpdatePackage); unlist(grad_list)
         #plot(unlist(grad_vec)+0.00001, main = sprintf("Grad mag: {%.3f%% are zero}...",100*mean(unlist(grad_vec)==0)), log = "y")
       }
-      GradNorm_i <- grad_norm_vec[i] <- np$array( optax$global_norm(  jax$tree_util$tree_leaves(GradientUpdatePackage) )  )
+      Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(myLoss_fromGrad)[[1L]])
+      GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(
+        optax$global_norm(jax$tree_util$tree_leaves(GradientUpdatePackage))
+      ))[[1L]])
 
       # update parameters if passing thru all checks
-      if(is.na(GradNorm_i)){print("NA in gradient!")}
-      UpdateParametersCond <- !is.na(myLoss_fromGrad) & !is.na(GradNorm_i)
-      if(! UpdateParametersCond ){ print("Warning: Not updating parameters; check code...") }
+      UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i)
+      if(! UpdateParametersCond ){
+        nonfinite_capture <- capture_nonfinite_report(
+          batch_l = dat_,
+          loss_value = Loss_i,
+          grad_norm_value = GradNorm_i,
+          iteration = i,
+          keys_mat = keys_mat
+        )
+        stop(
+          sprintf(
+            paste(
+              "Non-finite training state in %s",
+              "[outer=%s, BaseID=%s, ModelType=%s, iter=%s, loss=%s, grad_norm=%s].",
+              "Saved debug report to %s.",
+              sep = " "
+            ),
+            get0("AnalysisName", ifnotfound = "Analysis2"),
+            get0("OUTER_ITERATION", ifnotfound = NA_integer_),
+            capture_nonfinite_base_id(),
+            get0("ModelType", ifnotfound = NA_character_),
+            i,
+            format(Loss_i, scientific = TRUE),
+            format(GradNorm_i, scientific = TRUE),
+            nonfinite_capture$report_path
+          )
+        )
+      }
       if( UpdateParametersCond){
         ExecuteUpdateCounter <- ExecuteUpdateCounter + 1
 
@@ -248,7 +384,6 @@ for(i in i_:nSGD_model){
               })
         }
         ModelList <- updatefxn_(ModelList, GradientUpdatePackage)
-        in_loss_vec[i] <- as.numeric( myLoss_fromGrad )
         rm(GradientUpdatePackage, dat_)
       }
 
