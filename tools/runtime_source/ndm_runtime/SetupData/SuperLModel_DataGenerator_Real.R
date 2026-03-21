@@ -469,8 +469,8 @@
       if(ok_ctt_ == 10000){ stop("ok_ctt_ > 10000 in DataGenerator_Real.R") }
       batch_l <- try(GetBatch(nBatch = nBatch, 
                               INPUT_REF_DAT = input_df_red_in ),T)
-      if(class(batch_l) != "try-error"){ ok<-T }
-      if(class(batch_l) == "try-error"){ print("Failed GetBatch()"); write.csv(as.character(batch_l), file = "./FailedInDataGenReal.csv")}
+      if(!("try-error" %in% class(batch_l))){ ok<-T }
+      if("try-error" %in% class(batch_l)){ print("Failed GetBatch()"); write.csv(as.character(batch_l), file = "./FailedInDataGenReal.csv")}
       
       # sanity checks 
       if(T == F){ 

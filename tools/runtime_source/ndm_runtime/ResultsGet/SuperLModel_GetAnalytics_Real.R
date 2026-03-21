@@ -40,7 +40,7 @@ if( !SimMode ){
           print2(sprintf("GetAnalytics_Real [@ sgd iter: %s, analytics iter: %s]", i, ok_counter_))
           #plot(as.matrix(batch_l$XPred_Mask[1,,])[,100],as.matrix(batch_l$XPred[1,,])[,100])
           #input_df_red_full[input_df_red_full$location_id %in% loc_id & input_df_red_full$time_id %in% time_id,]
-          if(class(batch_l)!="try-error"){
+          if(!("try-error" %in% class(batch_l))){
             #if(!is.null(batch_l) & !all(batch_l$is_null_indicator) & (length(batch_l_prior)>0)){
             #if(!is.null(batch_l)  & (length(batch_l_prior)>0)){
             #if(place_counter__ == 1 & time_counter__ == 1 & outSampCounter == 1){

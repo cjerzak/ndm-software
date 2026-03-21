@@ -322,7 +322,7 @@ for(i in i_:nSGD_model){
         grad_list <- jax$tree_util$tree_map(function(ze){
           leave_grad <- try(as.numeric(np$array(jnp$abs( 
             jax$tree_util$tree_leaves(ze)[[1]] )$mean()) ),T)
-          if(class(leave_grad) == "try-error"){browser()}
+          if("try-error" %in% class(leave_grad)){browser()}
           return(leave_grad)}, GradientUpdatePackage)
         #unlist(GradientUpdatePackage); unlist(grad_list)
         #plot(unlist(grad_vec)+0.00001, main = sprintf("Grad mag: {%.3f%% are zero}...",100*mean(unlist(grad_vec)==0)), log = "y")

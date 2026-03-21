@@ -1894,10 +1894,10 @@
             }
             batch_l <- try(GetBatch(nBatch = nBatch, INPUT_REF_DAT = input_df_red_in), 
                 T)
-            if (class(batch_l) != "try-error") {
+            if (!("try-error" %in% class(batch_l))) {
                 ok <- T
             }
-            if (class(batch_l) == "try-error") {
+            if ("try-error" %in% class(batch_l)) {
                 print("Failed GetBatch()")
                 write.csv(as.character(batch_l), file = "./FailedInDataGenReal.csv")
             }
@@ -4298,7 +4298,7 @@
                 no = zer2[1])
         }
         ret_ <- try(c(zer1, zer2, IsContext), T)
-        if (class(ret_) == "try-error") {
+        if ("try-error" %in% class(ret_)) {
             browser()
         }
         return(ret_)
@@ -4522,7 +4522,7 @@
         text_new <- text__[1]
         for (i in indices_) {
             doNext <- try(text__[i + 1], T)
-            if (class(doNext) == "try-error") {
+            if ("try-error" %in% class(doNext)) {
                 doNext <- F
             }
             if (is.na(doNext)) {
@@ -5313,7 +5313,7 @@
                     grad_list <- jax$tree_util$tree_map(function(ze) {
                       leave_grad <- try(as.numeric(np$array(jnp$abs(jax$tree_util$tree_leaves(ze)[[1]])$mean())), 
                         T)
-                      if (class(leave_grad) == "try-error") {
+                      if ("try-error" %in% class(leave_grad)) {
                         browser()
                       }
                       return(leave_grad)
@@ -5500,7 +5500,7 @@
         if (!ok_) {
             print2(sprintf("GetAnalytics_Real [@ sgd iter: %s, analytics iter: %s]", 
                 i, ok_counter_))
-            if (class(batch_l) != "try-error") {
+            if (!("try-error" %in% class(batch_l))) {
                 {
                   add_pred_all <- replicate(5, list(try(GetPred_inference(ModelList, 
                     batch2package(batch_l), state, PriorList, 

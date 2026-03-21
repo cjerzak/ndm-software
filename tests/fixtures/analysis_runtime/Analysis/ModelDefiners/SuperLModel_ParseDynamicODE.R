@@ -91,7 +91,7 @@
                         no = zer2[1])
     }
     ret_ <- try(c(zer1, zer2, IsContext),T)
-    if( class(ret_)=="try-error" ){browser()}
+    if("try-error" %in% class(ret_)){browser()}
     return( ret_ )
   })
 
@@ -302,7 +302,7 @@
     text_new <- text__[1]
     for(i in indices_){
       doNext <- try(text__[i+1],T)
-      if(class(doNext) == "try-error"){doNext <- F}
+      if("try-error" %in% class(doNext)){doNext <- F}
       if(is.na(doNext)){doNext <- F}
       if(is.character(doNext)){doNext <- T}
       if(doNext){
