@@ -349,6 +349,11 @@ test_that("package-native real runner regenerates canonical TFRecords and comple
     length(list.files(saved_model_root, pattern = paste0("^Model_", analysis_name), full.names = TRUE)),
     1L
   )
+  csv_files <- list.files(holder_folder, pattern = "\\.csv$", full.names = TRUE, recursive = TRUE)
+  expect_gt(length(csv_files), 0L)
+  metrics <- utils::read.csv(csv_files[[1L]], stringsAsFactors = FALSE)
+  expect_true(all(c("nSGDPolicy", "nSGDAnchorMaxSamplesTrain", "nSGDAnchorScope") %in% names(metrics)))
+  expect_true(all(metrics$nSGDPolicy == "anchored_mode_max_nSamplesTrain"))
 })
 
 test_that("package-native real runner reuses duplicate BaseID TFRecords after canonical regeneration", {
@@ -495,6 +500,126 @@ test_that("package-native multidisease runner completes a non-dry run", {
   expect_true(isTRUE(result))
   expect_true(dir.exists(holder_folder))
   expect_gt(length(list.files(holder_folder, full.names = TRUE)), 0L)
+  csv_files <- list.files(holder_folder, pattern = "\\.csv$", full.names = TRUE, recursive = TRUE)
+  expect_gt(length(csv_files), 0L)
+  metrics <- utils::read.csv(csv_files[[1L]], stringsAsFactors = FALSE)
+  expect_true(all(c("nSGDPolicy", "nSGDAnchorMaxSamplesTrain", "nSGDAnchorScope") %in% names(metrics)))
+  expect_true(all(metrics$nSGDPolicy == "anchored_mode_max_nSamplesTrain"))
+})
+
+test_that("package-native sim dry runs anchor nSGD to the largest sibling sim grid", {
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  ndm_test_write_grid(
+    ndm_test_make_sim_run_grid_with_samples(100L),
+    ndm_test_grid_path(project_root, mode = "sim", analysis_name = "SimAnchorPrimary")
+  )
+  ndm_test_write_grid(
+    ndm_test_make_sim_run_grid_with_samples(1000L),
+    ndm_test_grid_path(project_root, mode = "sim", analysis_name = "SimAnchorSibling")
+  )
+
+  primary <- ndm_run_sim(
+    ndm_create_sim_run_config(
+      project_root = project_root,
+      analysis_name = "SimAnchorPrimary",
+      outer = 1L,
+      dry_run = TRUE
+    )
+  )
+  sibling <- ndm_run_sim(
+    ndm_create_sim_run_config(
+      project_root = project_root,
+      analysis_name = "SimAnchorSibling",
+      outer = 1L,
+      dry_run = TRUE
+    )
+  )
+
+  expect_equal(primary$training_schedule$anchor_scope, "mode_folder_sim")
+  expect_equal(primary$training_schedule$anchor_max_n_samples_train, 1000L)
+  expect_equal(primary$training_schedule$resolved_n_sgd, as.integer(round(6 * (1000 / 32))))
+  expect_equal(primary$training_schedule$resolved_n_sgd, sibling$training_schedule$resolved_n_sgd)
+})
+
+test_that("package-native real dry runs anchor nSGD to non-multidisease real grid maxima", {
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  ndm_test_write_grid(
+    ndm_test_make_real_run_grid_with_samples(100L),
+    ndm_test_grid_path(project_root, mode = "real", analysis_name = "RealAnchorPrimary")
+  )
+  ndm_test_write_grid(
+    ndm_test_make_real_run_grid_with_samples(640L),
+    ndm_test_grid_path(project_root, mode = "real", analysis_name = "RealAnchorSibling")
+  )
+  ndm_test_write_grid(
+    ndm_test_make_multidisease_run_grid_with_samples(4096L),
+    ndm_test_grid_path(project_root, mode = "multidisease", analysis_name = "RealAnchor_MULTIDISEASE")
+  )
+
+  primary <- ndm_run_real(
+    ndm_create_real_run_config(
+      project_root = project_root,
+      analysis_name = "RealAnchorPrimary",
+      outer = 1L,
+      dry_run = TRUE
+    )
+  )
+  sibling <- ndm_run_real(
+    ndm_create_real_run_config(
+      project_root = project_root,
+      analysis_name = "RealAnchorSibling",
+      outer = 1L,
+      dry_run = TRUE
+    )
+  )
+
+  expect_equal(primary$training_schedule$anchor_scope, "mode_folder_real")
+  expect_equal(primary$training_schedule$anchor_max_n_samples_train, 640L)
+  expect_equal(primary$training_schedule$resolved_n_sgd, as.integer(round(9 * (640 / 32))))
+  expect_equal(primary$training_schedule$resolved_n_sgd, sibling$training_schedule$resolved_n_sgd)
+})
+
+test_that("package-native multidisease dry runs anchor nSGD to sibling multidisease grids only", {
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  active_path <- ndm_test_grid_path(
+    project_root,
+    mode = "multidisease",
+    analysis_name = "RealAnchorPrimary_MULTIDISEASE"
+  )
+  ndm_test_write_grid(
+    ndm_test_make_multidisease_run_grid_with_samples(100L),
+    active_path
+  )
+  ndm_test_write_grid(
+    ndm_test_make_multidisease_run_grid_with_samples(800L),
+    ndm_test_grid_path(project_root, mode = "multidisease", analysis_name = "RealAnchorSibling_MULTIDISEASE")
+  )
+  ndm_test_write_grid(
+    ndm_test_make_real_run_grid_with_samples(4096L),
+    ndm_test_grid_path(project_root, mode = "real", analysis_name = "RealAnchorSibling")
+  )
+
+  dry_run <- ndm_run_multidisease(
+    ndm_create_multidisease_run_config(
+      project_root = project_root,
+      analysis_name = "RealAnchorPrimary_MULTIDISEASE",
+      grid_file = active_path,
+      outer = 1L,
+      disease_names = "hiv",
+      data_format = "IHME",
+      dry_run = TRUE
+    )
+  )
+
+  expect_equal(dry_run$training_schedule$anchor_scope, "mode_folder_multidisease")
+  expect_equal(dry_run$training_schedule$anchor_max_n_samples_train, 800L)
+  expect_equal(dry_run$training_schedule$resolved_n_sgd, as.integer(round(9 * (800 / 32))))
 })
 
 test_that("legacy Analysis2-branded entrypoints are not exported", {

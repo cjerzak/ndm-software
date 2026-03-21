@@ -1,7 +1,7 @@
 # Content of SuperLModel_GetAnalytics_Real.R
 if( !SimMode ){
     print("Starting SuperLModel_GetAnalytics_Real.R")
-    ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", "ndm")
+    ndm_plot_log_series_safe <- utils::getFromNamespace(".ndm_plot_log_series_safe", "ndm")
     # get out-of-sample results
     #try(plot(rank(na.omit(in_loss_vec))), T) ; 
     #try(points(smooth.spline(rank(na.omit(in_loss_vec))),type = "l",lwd=3), T) 
@@ -168,6 +168,10 @@ if( !SimMode ){
                     %s,
                     "modelingStrategy_name" = modelingStrategyNameKey,
                     "nSGD" = nSGD_model,
+                    "nSGDPolicy" = get0("nSGDPolicy", inherits = TRUE, ifnotfound = NA_character_),
+                    "nSGDAnchorMaxSamplesTrain" = get0("nSGDAnchorMaxSamplesTrain", inherits = TRUE, ifnotfound = NA_integer_),
+                    "nSGDAnchorScope" = get0("nSGDAnchorScope", inherits = TRUE, ifnotfound = NA_character_),
+                    "nSGDAnchorBatch" = get0("nSGDAnchorBatch", inherits = TRUE, ifnotfound = NA_integer_),
                     "nBatch" = nBatch,
                     "maxTimesPast" = maxTimesPast, # past context
                     "evaluationTime" = evaluationTime,

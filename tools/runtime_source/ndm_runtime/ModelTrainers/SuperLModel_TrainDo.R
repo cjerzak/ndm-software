@@ -68,10 +68,10 @@ restore_checkpoint_scale_state <- function(recovered_payload){
   SIM_GLOBAL_SCALE_SD <<- jnp$take(recovered_payload[[4]], 1L, axis = 0L)$tolist()
   invisible(NULL)
 }
-ndm_condition_message <- getFromNamespace(".ndm_condition_message", "ndm")
-ndm_numeric_summary <- getFromNamespace(".ndm_numeric_summary", "ndm")
-ndm_first_nonfinite_name <- getFromNamespace(".ndm_first_nonfinite_name", "ndm")
-ndm_write_nonfinite_report <- getFromNamespace(".ndm_write_nonfinite_report", "ndm")
+ndm_condition_message <- utils::getFromNamespace(".ndm_condition_message", "ndm")
+ndm_numeric_summary <- utils::getFromNamespace(".ndm_numeric_summary", "ndm")
+ndm_first_nonfinite_name <- utils::getFromNamespace(".ndm_first_nonfinite_name", "ndm")
+ndm_write_nonfinite_report <- utils::getFromNamespace(".ndm_write_nonfinite_report", "ndm")
 nonfinite_empty_summary <- function(error = NA_character_){
   list(
     error = error,

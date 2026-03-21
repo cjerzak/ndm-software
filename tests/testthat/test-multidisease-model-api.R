@@ -11,6 +11,24 @@ test_that("multidisease preparation validates required globals early", {
   )
 })
 
+test_that("multidisease nSGD calibration falls back to the active grid when the default is ambiguous", {
+  project_root <- ndm_test_multidisease_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  calibration <- ndm:::.ndm_resolve_nsgd_calibration(
+    mode = "multidisease",
+    project_root = project_root,
+    analysis_name = "RealLatest",
+    n_epoches_max = 9L,
+    grid = ndm_test_make_multidisease_run_grid_with_samples(64L),
+    grid_file = NULL
+  )
+
+  expect_equal(calibration$anchor_scope, "active_grid_only_multidisease")
+  expect_equal(calibration$anchor_max_n_samples_train, 64L)
+  expect_equal(calibration$resolved_n_sgd, as.integer(round(9 * (64 / 32))))
+})
+
 test_that("IHME bundle loading resolves aliases and rejects unsupported diseases", {
   project_root <- ndm_test_multidisease_project_root()
   ndm_test_write_ihme_fixture(project_root)

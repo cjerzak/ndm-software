@@ -480,15 +480,27 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
 
     paths <- spec$paths
     grid_file <- normalizePath(spec$grid_file, winslash = "/", mustWork = TRUE)
-    real_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)), spec$outer)
+    real_grid_raw <- as.data.frame(data.table::fread(grid_file), stringsAsFactors = FALSE)
+    nsgd_resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", "ndm")
+    nsgd_formatter <- utils::getFromNamespace(".ndm_nsgd_calibration_message", "ndm")
+    nsgd_calibration <- nsgd_resolver(
+      mode = "multidisease",
+      project_root = spec$project_root,
+      analysis_name = spec$analysis_name,
+      n_epoches_max = 9L,
+      grid = real_grid_raw,
+      grid_file = grid_file
+    )
+    real_grid <- analysis2_order_grid(real_grid_raw, spec$outer)
     analysis2_validate_outer_iterations(real_grid, spec$outer, grid_file)
 
     if (isTRUE(spec$dry_run)) {
-      return(analysis2_dry_run_result(spec, real_grid))
+      return(analysis2_dry_run_result(spec, real_grid, nsgd_calibration = nsgd_calibration))
     }
 
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
+    analysis2_log(nsgd_formatter("multidisease", nsgd_calibration))
     holder_folder <- file.path(paths$project_root, "SavedResults", "Real", sprintf("Results_%s", spec$analysis_name))
     analysis2_dir_create(holder_folder)
 
@@ -499,6 +511,7 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     driver_env$analysis2_model_type <- analysis2_model_type
     driver_env$analysis2_multidisease_spec <- spec
     driver_env$analysis2_multidisease_grid <- real_grid
+    driver_env$analysis2_nsgd_calibration <- nsgd_calibration
     source(
       file.path(paths$analysis_root, "SetupEnv", "Analysis2_legacy_multidisease_driver.R"),
       local = driver_env,

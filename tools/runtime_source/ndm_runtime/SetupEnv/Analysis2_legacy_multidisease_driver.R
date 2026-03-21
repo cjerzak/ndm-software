@@ -67,7 +67,8 @@ doGrid <- TRUE
 SimMode <- FALSE
 nBatch <- as.integer(32L)
 nSGD_pretrain <- 0L
-nCheckpoints <- 10L
+nCheckpointsDefault <- 10L
+nCheckpoints <- nCheckpointsDefault
 nEpochesMax <- 9L
 nSamples_max <- 20000L
 nSGD_DefiningLRSeq <- nSGD_model <- as.integer(round(nEpochesMax * (nSamples_max / nBatch)))
@@ -134,6 +135,27 @@ if (exists("analysis2_multidisease_grid", inherits = TRUE)) {
 } else {
   RealGrid <- as.data.frame(data.table::fread(sprintf("./Data/RunGrids/RealGrids/RealGrid_%s.csv", AnalysisName)))
 }
+nsgd_calibration <- get0("analysis2_nsgd_calibration", inherits = TRUE, ifnotfound = NULL)
+if (is.null(nsgd_calibration)) {
+  nsgd_resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", "ndm")
+  nsgd_calibration <- nsgd_resolver(
+    mode = "multidisease",
+    project_root = analysis2_multidisease_spec$project_root,
+    analysis_name = AnalysisName,
+    n_epoches_max = nEpochesMax,
+    grid = RealGrid,
+    grid_file = analysis2_multidisease_spec$grid_file,
+    fallback_n_samples_train = nSamples_max
+  )
+}
+nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
+nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
+nSGD_posttrain <- nSGD_model
+nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, nSGD_model, nCheckpointsDefault)
+nSGDPolicy <- as.character(nsgd_calibration$policy)
+nSGDAnchorScope <- as.character(nsgd_calibration$anchor_scope)
+nSGDAnchorMaxSamplesTrain <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
+nSGDAnchorBatch <- as.integer(nsgd_calibration$anchor_n_batch)
 nRealGrid <- nrow(RealGrid)
 
 summary(which(RealGrid$ResaveThisTFRecord==1))
@@ -176,13 +198,10 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   }
   if(exists("nSamplesTrain") && !is.na(nSamplesTrain) && nSamplesTrain > 0){
     nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
-    nSamples_max <- as.integer(nSamplesTrain)
-    nSGD_DefiningLRSeq <- nSGD_model <- as.integer(round(nEpochesMax * (nSamples_max / nBatch)))
-    if (nSamples_max < 32L) {
-      nSGD_DefiningLRSeq <- nSGD_model <- 1L
-    }
+    nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
+    nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
     nSGD_posttrain <- nSGD_model
-    nCheckpoints <- analysis2_small_run_n_checkpoints(nSamplesTrain, nSGD_model, nCheckpoints)
+    nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, nSGD_model, nCheckpointsDefault)
     nObsInference <- analysis2_small_run_n_obs_inference(
       n_samples_train = nSamplesTrain,
       n_batch = nBatch,

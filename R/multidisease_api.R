@@ -501,11 +501,30 @@
   max_times_past <- as.integer(.ndm_runtime_get0(runtime_env, "ContextLength"))
   n_times_lookahead <- as.integer(.ndm_runtime_get0(runtime_env, "nTimesLookahead", ifnotfound = 12L))
   n_batch <- as.integer(.ndm_runtime_get0(runtime_env, "nBatch", ifnotfound = 32L))
-  n_checkpoints <- as.integer(.ndm_runtime_get0(runtime_env, "nCheckpoints", ifnotfound = 10L))
+  n_checkpoints_default <- as.integer(.ndm_runtime_get0(runtime_env, "nCheckpoints", ifnotfound = 10L))
   n_epoches_max <- as.integer(.ndm_runtime_get0(runtime_env, "nEpochesMax", ifnotfound = 9L))
   n_samples_train <- as.integer(.ndm_runtime_get0(runtime_env, "nSamplesTrain"))
   n_time_steps_sim <- as.integer((n_times_lookahead + abs(max_times_past)) * 2L)
-  n_sgd <- as.integer(round(n_epoches_max * (n_samples_train / n_batch)))
+  nsgd_calibration <- .ndm_resolve_nsgd_calibration(
+    mode = "multidisease",
+    project_root = project_root,
+    analysis_name = analysis_name,
+    n_epoches_max = n_epoches_max,
+    grid = .ndm_runtime_get0(runtime_env, "grid", ifnotfound = NULL),
+    grid_file = .ndm_runtime_get0(runtime_env, "grid_file", ifnotfound = NULL),
+    fallback_n_samples_train = .ndm_runtime_get0(
+      runtime_env,
+      "nSamples_max",
+      ifnotfound = n_samples_train
+    )
+  )
+  n_sgd <- as.integer(nsgd_calibration$resolved_n_sgd)
+  n_samples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
+  n_checkpoints <- .ndm_small_run_n_checkpoints(
+    n_samples_max,
+    n_sgd,
+    n_checkpoints_default
+  )
   max_time_index <- max(bundle$truth_df_red$time_id, na.rm = TRUE)
   jnp <- runtime_env$jnp
   diffrax <- runtime_env$diffrax
@@ -563,7 +582,8 @@
 
   ndm_set_runtime_globals(
     runtime_env,
-    list(
+    c(
+      list(
       project_root = project_root,
       AnalysisName = analysis_name,
       AnalysisDate = Sys.Date(),
@@ -584,7 +604,7 @@
       nBatch = n_batch,
       nCheckpoints = n_checkpoints,
       nEpochesMax = n_epoches_max,
-      nSamples_max = as.integer(.ndm_runtime_get0(runtime_env, "nSamples_max", ifnotfound = 20000L)),
+      nSamples_max = n_samples_max,
       nSGD_pretrain = 0L,
       nSGD_DefiningLRSeq = n_sgd,
       nSGD_model = n_sgd,
@@ -639,6 +659,10 @@
       RealGrid = real_entry,
       ndm_multidisease_resolved_diseases = bundle$resolved_diseases,
       ndm_data_generator = "multidisease"
+      ),
+      .ndm_nsgd_calibration_globals(
+        nsgd_calibration
+      )
     )
   )
 

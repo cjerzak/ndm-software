@@ -27,6 +27,33 @@ ndm_test_write_grid <- function(grid, path) {
   invisible(path)
 }
 
+ndm_test_grid_path <- function(project_root,
+                               mode = c("sim", "real", "multidisease"),
+                               analysis_name) {
+  mode <- match.arg(mode)
+  file.path(
+    project_root,
+    "Data",
+    "RunGrids",
+    switch(
+      mode,
+      sim = "SimGrids",
+      real = "RealGrids",
+      multidisease = "RealGrids"
+    ),
+    sprintf(
+      "%s_%s.csv",
+      switch(
+        mode,
+        sim = "SimGrid",
+        real = "RealGrid",
+        multidisease = "RealGrid"
+      ),
+      analysis_name
+    )
+  )
+}
+
 ndm_test_assert_canonical_tfrecords <- function(output_dir, base_id = 1L) {
   expected <- c(
     file.path(output_dir, sprintf("train_%s.tfrecord", base_id)),
@@ -130,6 +157,13 @@ ndm_test_make_sim_run_grid <- function() {
   grid
 }
 
+ndm_test_make_sim_run_grid_with_samples <- function(n_samples_train) {
+  grid <- ndm_test_make_sim_run_grid()
+  grid$nSamplesTrain <- as.integer(n_samples_train)
+  grid$ResaveThisTFRecord <- 1L
+  grid
+}
+
 ndm_test_make_sim_duplicate_base_grid <- function(n_samples_train = c(4L, 8L),
                                                   resave_flags = c(0L, 1L)) {
   stopifnot(length(n_samples_train) == length(resave_flags))
@@ -197,6 +231,13 @@ ndm_test_make_real_run_grid <- function() {
   )
 }
 
+ndm_test_make_real_run_grid_with_samples <- function(n_samples_train) {
+  grid <- ndm_test_make_real_run_grid()
+  grid$nSamplesTrain <- as.integer(n_samples_train)
+  grid$ResaveThisTFRecord <- 1L
+  grid
+}
+
 ndm_test_make_real_duplicate_base_grid <- function(n_samples_train = c(4L, 8L),
                                                    resave_flags = c(0L, 1L)) {
   stopifnot(length(n_samples_train) == length(resave_flags))
@@ -230,6 +271,13 @@ ndm_test_make_multidisease_run_grid <- function() {
     model_tex_loc = ndm_test_model_spec_path(),
     stringsAsFactors = FALSE
   )
+}
+
+ndm_test_make_multidisease_run_grid_with_samples <- function(n_samples_train) {
+  grid <- ndm_test_make_multidisease_run_grid()
+  grid$nSamplesTrain <- as.integer(n_samples_train)
+  grid$ResaveThisTFRecord <- 1L
+  grid
 }
 
 ndm_test_multidisease_project_root <- function() {

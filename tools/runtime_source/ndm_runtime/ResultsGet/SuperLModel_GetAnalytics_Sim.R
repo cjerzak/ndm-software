@@ -1,7 +1,7 @@
 # Content of SuperLModel_GetAnalytics_Sim.R
 if(SimMode == T){
   print("Starting SuperLModel_GetAnalytics_Sim.R")
-  ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", "ndm")
+  ndm_plot_log_series_safe <- utils::getFromNamespace(".ndm_plot_log_series_safe", "ndm")
   analytics_truth_matrix <- function(x, name, nrow_expected, ncol_expected){
     arr <- np$array(x)
     dims <- dim(arr)
@@ -465,6 +465,10 @@ if(SimMode == T){
                  "nTrainingSamplesSeen" = i*nBatch,
                  "atEpoch" = i*nBatch/nSamplesTrain, 
                  "nSGD" = nSGD_model,
+                 "nSGDPolicy" = get0("nSGDPolicy", inherits = TRUE, ifnotfound = NA_character_),
+                 "nSGDAnchorMaxSamplesTrain" = get0("nSGDAnchorMaxSamplesTrain", inherits = TRUE, ifnotfound = NA_integer_),
+                 "nSGDAnchorScope" = get0("nSGDAnchorScope", inherits = TRUE, ifnotfound = NA_character_),
+                 "nSGDAnchorBatch" = get0("nSGDAnchorBatch", inherits = TRUE, ifnotfound = NA_integer_),
                  "nParamsModel" = nParamsModel,
                  "te_total" = te_total, 
                  "te_grads" = te_grads, 

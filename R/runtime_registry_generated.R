@@ -5117,10 +5117,10 @@
         SIM_GLOBAL_SCALE_SD <<- jnp$take(recovered_payload[[4]], 
             1L, axis = 0L)$tolist()
         invisible(NULL)
-    }, ndm_condition_message <- getFromNamespace(".ndm_condition_message", 
-        "ndm"), ndm_numeric_summary <- getFromNamespace(".ndm_numeric_summary", 
-        "ndm"), ndm_first_nonfinite_name <- getFromNamespace(".ndm_first_nonfinite_name", 
-        "ndm"), ndm_write_nonfinite_report <- getFromNamespace(".ndm_write_nonfinite_report", 
+    }, ndm_condition_message <- utils::getFromNamespace(".ndm_condition_message", 
+        "ndm"), ndm_numeric_summary <- utils::getFromNamespace(".ndm_numeric_summary", 
+        "ndm"), ndm_first_nonfinite_name <- utils::getFromNamespace(".ndm_first_nonfinite_name", 
+        "ndm"), ndm_write_nonfinite_report <- utils::getFromNamespace(".ndm_write_nonfinite_report", 
         "ndm"), nonfinite_empty_summary <- function(error = NA_character_) {
         list(error = error, dims = integer(), length = 0L, finite_fraction = NA_real_, 
             n_nonfinite = NA_integer_, n_nan = NA_integer_, n_inf = NA_integer_, 
@@ -5459,7 +5459,7 @@
 
 .ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics_Real <- expression(if (!SimMode) {
     print("Starting SuperLModel_GetAnalytics_Real.R")
-    ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", 
+    ndm_plot_log_series_safe <- utils::getFromNamespace(".ndm_plot_log_series_safe", 
         "ndm")
     gc()
     py_gc$collect()
@@ -5614,7 +5614,7 @@
             }
         }
     }
-    sl_dat <- eval(parse(text = sprintf("cbind(sl_dat,\n                    %s,\n                    \"modelingStrategy_name\" = modelingStrategyNameKey,\n                    \"nSGD\" = nSGD_model,\n                    \"nBatch\" = nBatch,\n                    \"maxTimesPast\" = maxTimesPast, # past context\n                    \"evaluationTime\" = evaluationTime,\n                    \"evaluationMethod\" = evaluationMethod,\n                    \"OUTER_ITERATION\" = OUTER_ITERATION,\n                    \"i_in_sgd\" = i,\n                    \"te_total\" = te_total, \n                    \"te_grads\" = te_grads, \n                    \"nTrainingSamplesSeen\" = i*nBatch, \n                    \"Skill8SanityCheck\" = Skill8SanityCheck, \n                    \"atEpoch\" = i*nBatch/nSamplesTrain, \n                    \"nParamsModel\" = nParamsModel, \n                    \"maxInSampleTime_id\" = max( input_df_red_in$time_id ),\n                    \"model_id\" = rlang::hash(modelingStrategyNameKey) )", 
+    sl_dat <- eval(parse(text = sprintf("cbind(sl_dat,\n                    %s,\n                    \"modelingStrategy_name\" = modelingStrategyNameKey,\n                    \"nSGD\" = nSGD_model,\n                    \"nSGDPolicy\" = get0(\"nSGDPolicy\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorMaxSamplesTrain\" = get0(\"nSGDAnchorMaxSamplesTrain\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"nSGDAnchorScope\" = get0(\"nSGDAnchorScope\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorBatch\" = get0(\"nSGDAnchorBatch\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"nBatch\" = nBatch,\n                    \"maxTimesPast\" = maxTimesPast, # past context\n                    \"evaluationTime\" = evaluationTime,\n                    \"evaluationMethod\" = evaluationMethod,\n                    \"OUTER_ITERATION\" = OUTER_ITERATION,\n                    \"i_in_sgd\" = i,\n                    \"te_total\" = te_total, \n                    \"te_grads\" = te_grads, \n                    \"nTrainingSamplesSeen\" = i*nBatch, \n                    \"Skill8SanityCheck\" = Skill8SanityCheck, \n                    \"atEpoch\" = i*nBatch/nSamplesTrain, \n                    \"nParamsModel\" = nParamsModel, \n                    \"maxInSampleTime_id\" = max( input_df_red_in$time_id ),\n                    \"model_id\" = rlang::hash(modelingStrategyNameKey) )", 
         paste(paste("'", names(unlist(RealEntry)), "'='", unlist(RealEntry), 
             "'", sep = ""), collapse = ","))))
     sl_dat <- as.data.frame(sl_dat)
@@ -5655,7 +5655,7 @@
 
 .ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics_Sim <- expression(if (SimMode == T) {
     print("Starting SuperLModel_GetAnalytics_Sim.R")
-    ndm_plot_log_series_safe <- getFromNamespace(".ndm_plot_log_series_safe", 
+    ndm_plot_log_series_safe <- utils::getFromNamespace(".ndm_plot_log_series_safe", 
         "ndm")
     analytics_truth_matrix <- function(x, name, nrow_expected, 
         ncol_expected) {
@@ -6093,8 +6093,13 @@
     }
     res_vec <- t(c(sim_index = af, i_in_sgd = i, nTrainingSamplesSeen = i * 
         nBatch, atEpoch = i * nBatch/nSamplesTrain, nSGD = nSGD_model, 
-        nParamsModel = nParamsModel, te_total = te_total, te_grads = te_grads, 
-        unlist(SimEntry), colMeans(do.call(rbind, res_list))))
+        nSGDPolicy = get0("nSGDPolicy", inherits = TRUE, ifnotfound = NA_character_), 
+        nSGDAnchorMaxSamplesTrain = get0("nSGDAnchorMaxSamplesTrain", 
+            inherits = TRUE, ifnotfound = NA_integer_), nSGDAnchorScope = get0("nSGDAnchorScope", 
+            inherits = TRUE, ifnotfound = NA_character_), nSGDAnchorBatch = get0("nSGDAnchorBatch", 
+            inherits = TRUE, ifnotfound = NA_integer_), nParamsModel = nParamsModel, 
+        te_total = te_total, te_grads = te_grads, unlist(SimEntry), 
+        colMeans(do.call(rbind, res_list))))
     print(sprintf("WRITING af of %s", af))
     data.table::fwrite(file = file.path(HolderFolder, sprintf("res%s_i%s.csv", 
         af, i)), res_vec)
@@ -8214,6 +8219,21 @@
         return(max(32L, as.integer(8L * max(1L, analysis2_as_int(n_batch)))))
     }
     analysis2_as_int(default)
+}, analysis2_resolve_nsgd_calibration <- function(mode, spec, 
+    grid, n_epoches_max, fallback_n_samples_train = NULL) {
+    resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", 
+        "ndm")
+    resolver(mode = mode, project_root = spec$project_root, analysis_name = spec$analysis_name, 
+        n_epoches_max = n_epoches_max, grid = grid, grid_file = spec$grid_file, 
+        fallback_n_samples_train = fallback_n_samples_train)
+}, analysis2_nsgd_calibration_globals <- function(calibration) {
+    globals_fun <- utils::getFromNamespace(".ndm_nsgd_calibration_globals", 
+        "ndm")
+    globals_fun(calibration)
+}, analysis2_log_nsgd_calibration <- function(mode, calibration) {
+    formatter <- utils::getFromNamespace(".ndm_nsgd_calibration_message", 
+        "ndm")
+    analysis2_log(formatter(mode, calibration))
 }, analysis2_parse_bool <- function(x) {
     if (is.null(x)) {
         return(NULL)
@@ -9503,13 +9523,10 @@
         quiet = TRUE)
 }, analysis2_real_runtime_globals <- function(row_values, dataset_spec, 
     training_spec, state, runtime_env, analysis_name, analysis_date, 
-    outer_iteration, holder_folder, tfrecord_dir) {
+    outer_iteration, holder_folder, tfrecord_dir, nsgd_calibration) {
     n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
     n_batch <- min(32L, n_samples_train)
-    n_sgd <- as.integer(round(9L * (n_samples_train/n_batch)))
-    if (n_samples_train < 32L) {
-        n_sgd <- 1L
-    }
+    n_sgd <- analysis2_as_int(nsgd_calibration$resolved_n_sgd)
     max_times_past <- analysis2_as_int(row_values$ContextLength)
     n_times_lookahead <- analysis2_as_int(dataset_spec$lookahead)
     jnp <- runtime_env$jnp
@@ -9527,7 +9544,7 @@
     else {
         max(0L, max_times_past + n_times_lookahead - 1L)
     }
-    n_checkpoints <- analysis2_small_run_n_checkpoints(n_samples_train, 
+    n_checkpoints <- analysis2_small_run_n_checkpoints(nsgd_calibration$anchor_max_n_samples_train, 
         n_sgd)
     n_obs_inference <- analysis2_small_run_n_obs_inference(n_samples_train = n_samples_train, 
         n_batch = n_batch, configured = row_values$nObsInference %||% 
@@ -9589,6 +9606,7 @@
             "ihme_true_value_inc_death_per_capita"), true_value_names = "ihme_true_value_per_capita", 
         outcome_metric = dataset_spec$outcome_metric %||% "inc_death", 
         training_spec = training_spec)
+    globals <- c(globals, analysis2_nsgd_calibration_globals(nsgd_calibration))
     if (!is.null(state$coordinates_mat)) {
         globals$coordinates_mat <- state$coordinates_mat
     }
@@ -9596,13 +9614,10 @@
 }, analysis2_sim_runtime_globals <- function(row_values, dataset_spec, 
     training_spec, runtime_env, analysis_name, analysis_date, 
     outer_iteration, holder_folder, tfrecord_dir, sim_scaler, 
-    sim_outcome_sd, sim_covariates, get_batch) {
+    sim_outcome_sd, sim_covariates, get_batch, nsgd_calibration) {
     n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
     n_batch <- min(32L, n_samples_train)
-    n_sgd <- as.integer(round(6L * (n_samples_train/n_batch)))
-    if (n_samples_train < 32L) {
-        n_sgd <- 1L
-    }
+    n_sgd <- analysis2_as_int(nsgd_calibration$resolved_n_sgd)
     n_times_past <- analysis2_as_int(dataset_spec$context_length)
     n_times_lookahead <- analysis2_as_int(dataset_spec$lookahead)
     n_times_total <- n_times_past + n_times_lookahead
@@ -9611,12 +9626,12 @@
     jnp <- runtime_env$jnp
     diffrax <- runtime_env$diffrax
     max_time_index <- max(0L, n_time_steps_sim - 1L)
-    n_checkpoints <- analysis2_small_run_n_checkpoints(n_samples_train, 
+    n_checkpoints <- analysis2_small_run_n_checkpoints(nsgd_calibration$anchor_max_n_samples_train, 
         n_sgd)
-    list(AnalysisName = analysis_name, AnalysisDate = analysis_date, 
+    c(list(AnalysisName = analysis_name, AnalysisDate = analysis_date, 
         BaseID = analysis2_as_int(row_values$BaseID), SimEntry = row_values, 
         ContextLength = analysis2_as_int(row_values$ContextLength), 
-        nSamplesTrain = n_samples_train, nSamples_max = n_samples_train, 
+        nSamplesTrain = n_samples_train, nSamples_max = analysis2_as_int(nsgd_calibration$anchor_max_n_samples_train), 
         floatType = as.character(row_values$floatType), paddingMethod = as.character(row_values$paddingMethod %||% 
             "left"), ModelDepth = analysis2_as_int(row_values$ModelDepth), 
         ModelDims = analysis2_as_int(row_values$ModelDims), nBatch = n_batch, 
@@ -9652,12 +9667,13 @@
         input_df_red_in = data.frame(dummy = 0), input_df_red_out = data.frame(dummy = 0), 
         input_df_red_full = data.frame(dummy = 0), SIM_GLOBAL_SCALE_MEAN = sim_scaler$mean, 
         SIM_GLOBAL_SCALE_SD = sim_scaler$sd, SIM_GLOBAL_OUTCOME_SD = sim_outcome_sd, 
-        training_spec = training_spec)
-}, analysis2_dry_run_result <- function(spec, grid) {
+        training_spec = training_spec), analysis2_nsgd_calibration_globals(nsgd_calibration))
+}, analysis2_dry_run_result <- function(spec, grid, nsgd_calibration = NULL) {
     preview_rows <- spec$outer[seq_len(min(3L, length(spec$outer)))]
     preview <- grid[preview_rows, , drop = FALSE]
     invisible(list(run_spec = spec[setdiff(names(spec), "paths")], 
-        grid_rows = nrow(grid), outer_rows = spec$outer, grid_preview = preview))
+        grid_rows = nrow(grid), outer_rows = spec$outer, grid_preview = preview, 
+        training_schedule = nsgd_calibration))
 }, analysis2_run_real <- function(args = commandArgs(TRUE)) {
     options(error = NULL)
     analysis2_log("Starting Analysis2 SuperLModel_MasterReal.R")
@@ -9677,8 +9693,11 @@
         mustWork = FALSE)
     grid_file <- normalizePath(spec$grid_file, winslash = "/", 
         mustWork = TRUE)
-    real_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)), 
-        outer_iterations)
+    real_grid_raw <- as.data.frame(data.table::fread(grid_file), 
+        stringsAsFactors = FALSE)
+    nsgd_calibration <- analysis2_resolve_nsgd_calibration(mode = "real", 
+        spec = spec, grid = real_grid_raw, n_epoches_max = 9L)
+    real_grid <- analysis2_order_grid(real_grid_raw, outer_iterations)
     analysis2_validate_outer_iterations(real_grid, outer_iterations, 
         grid_file)
     write_plan <- analysis2_build_canonical_tfrecord_plan(mode = "real", 
@@ -9687,10 +9706,11 @@
         "Real", sprintf("Results_%s", analysis_name))
     analysis2_dir_create(holder_folder)
     if (isTRUE(spec$dry_run)) {
-        return(analysis2_dry_run_result(spec, real_grid))
+        return(analysis2_dry_run_result(spec, real_grid, nsgd_calibration = nsgd_calibration))
     }
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
+    analysis2_log_nsgd_calibration("real", nsgd_calibration)
     if (!isTRUE(resave_tfrecords)) {
         analysis2_preflight_canonical_tfrecords(base_ids = write_plan$BaseID, 
             tfrecord_dir = tfrecord_dir)
@@ -9756,10 +9776,11 @@
                 dataset_spec = dataset_spec, training_spec = training_spec, 
                 state = state, runtime_env = runtime_env, analysis_name = analysis_name, 
                 analysis_date = analysis_date, outer_iteration = outer_iteration, 
-                holder_folder = holder_folder, tfrecord_dir = tfrecord_dir), 
-                list(RealGrid = real_grid, GetBatch = get_batch, 
-                  GetBatch_base = get_batch, GetBatch_real = get_batch, 
-                  analysis2_run_spec = spec)))
+                holder_folder = holder_folder, tfrecord_dir = tfrecord_dir, 
+                nsgd_calibration = nsgd_calibration), list(RealGrid = real_grid, 
+                GetBatch = get_batch, GetBatch_base = get_batch, 
+                GetBatch_real = get_batch, analysis2_run_spec = spec, 
+                analysis2_nsgd_calibration = nsgd_calibration)))
         preview_batch <- get_batch(nBatch = get("nBatch", envir = runtime_env), 
             training = TRUE, INPUT_REF_DAT = state$input_df_red_in)
         analysis2_seed_runtime_batch(runtime_env, preview_batch)
@@ -9809,8 +9830,11 @@
         mustWork = FALSE)
     grid_file <- normalizePath(spec$grid_file, winslash = "/", 
         mustWork = TRUE)
-    sim_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)), 
-        outer_iterations)
+    sim_grid_raw <- as.data.frame(data.table::fread(grid_file), 
+        stringsAsFactors = FALSE)
+    nsgd_calibration <- analysis2_resolve_nsgd_calibration(mode = "sim", 
+        spec = spec, grid = sim_grid_raw, n_epoches_max = 6L)
+    sim_grid <- analysis2_order_grid(sim_grid_raw, outer_iterations)
     analysis2_validate_outer_iterations(sim_grid, outer_iterations, 
         grid_file)
     write_plan <- analysis2_build_canonical_tfrecord_plan(mode = "sim", 
@@ -9819,10 +9843,11 @@
         "Sim", sprintf("Results_%s", analysis_name))
     analysis2_dir_create(holder_folder)
     if (isTRUE(spec$dry_run)) {
-        return(analysis2_dry_run_result(spec, sim_grid))
+        return(analysis2_dry_run_result(spec, sim_grid, nsgd_calibration = nsgd_calibration))
     }
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
+    analysis2_log_nsgd_calibration("sim", nsgd_calibration)
     if (!isTRUE(resave_tfrecords)) {
         analysis2_preflight_canonical_tfrecords(base_ids = write_plan$BaseID, 
             tfrecord_dir = tfrecord_dir)
@@ -9888,8 +9913,9 @@
                 analysis_date = analysis_date, outer_iteration = outer_iteration, 
                 holder_folder = holder_folder, tfrecord_dir = tfrecord_dir, 
                 sim_scaler = sim_scaler, sim_outcome_sd = sim_outcome_sd, 
-                sim_covariates = sim_covariates, get_batch = get_batch), 
-                list(SimGrid = sim_grid, analysis2_run_spec = spec)))
+                sim_covariates = sim_covariates, get_batch = get_batch, 
+                nsgd_calibration = nsgd_calibration), list(SimGrid = sim_grid, 
+                analysis2_run_spec = spec, analysis2_nsgd_calibration = nsgd_calibration)))
         if (!exists("paddingMethod", envir = runtime_env, inherits = FALSE) || 
             is.null(get("paddingMethod", envir = runtime_env, 
                 inherits = FALSE))) {
@@ -10018,7 +10044,8 @@
         SimMode <- FALSE
         nBatch <- as.integer(32L)
         nSGD_pretrain <- 0L
-        nCheckpoints <- 10L
+        nCheckpointsDefault <- 10L
+        nCheckpoints <- nCheckpointsDefault
         nEpochesMax <- 9L
         nSamples_max <- 20000L
         nSGD_DefiningLRSeq <- nSGD_model <- as.integer(round(nEpochesMax * 
@@ -10066,6 +10093,26 @@
             RealGrid <- as.data.frame(data.table::fread(sprintf("./Data/RunGrids/RealGrids/RealGrid_%s.csv", 
                 AnalysisName)))
         }
+        nsgd_calibration <- get0("analysis2_nsgd_calibration", 
+            inherits = TRUE, ifnotfound = NULL)
+        if (is.null(nsgd_calibration)) {
+            nsgd_resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", 
+                "ndm")
+            nsgd_calibration <- nsgd_resolver(mode = "multidisease", 
+                project_root = analysis2_multidisease_spec$project_root, 
+                analysis_name = AnalysisName, n_epoches_max = nEpochesMax, 
+                grid = RealGrid, grid_file = analysis2_multidisease_spec$grid_file, 
+                fallback_n_samples_train = nSamples_max)
+        }
+        nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
+        nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
+        nSGD_posttrain <- nSGD_model
+        nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, 
+            nSGD_model, nCheckpointsDefault)
+        nSGDPolicy <- as.character(nsgd_calibration$policy)
+        nSGDAnchorScope <- as.character(nsgd_calibration$anchor_scope)
+        nSGDAnchorMaxSamplesTrain <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
+        nSGDAnchorBatch <- as.integer(nsgd_calibration$anchor_n_batch)
         nRealGrid <- nrow(RealGrid)
         summary(which(RealGrid$ResaveThisTFRecord == 1))
         length(which(RealGrid$ResaveThisTFRecord == 1))
@@ -10104,15 +10151,11 @@
                 if (exists("nSamplesTrain") && !is.na(nSamplesTrain) && 
                   nSamplesTrain > 0) {
                   nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
-                  nSamples_max <- as.integer(nSamplesTrain)
-                  nSGD_DefiningLRSeq <- nSGD_model <- as.integer(round(nEpochesMax * 
-                    (nSamples_max/nBatch)))
-                  if (nSamples_max < 32L) {
-                    nSGD_DefiningLRSeq <- nSGD_model <- 1L
-                  }
+                  nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
+                  nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
                   nSGD_posttrain <- nSGD_model
-                  nCheckpoints <- analysis2_small_run_n_checkpoints(nSamplesTrain, 
-                    nSGD_model, nCheckpoints)
+                  nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, 
+                    nSGD_model, nCheckpointsDefault)
                   nObsInference <- analysis2_small_run_n_obs_inference(n_samples_train = nSamplesTrain, 
                     n_batch = nBatch, configured = get0("nObsInference", 
                       inherits = FALSE, ifnotfound = NULL))
