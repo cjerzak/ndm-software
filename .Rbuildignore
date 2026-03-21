@@ -1,0 +1,14 @@
+^\.github$
+^AGENTS\.md$
+^LICENSE$
+^documentPackage\.R$
+^ndm\.pdf$
+^tmp$
+^SavedModels$
+^tests/fixtures/analysis_runtime$
+^tools/runtime_source$
+^\.DS_Store$
+(^|/)\.DS_Store$
+^\.{2}Rcheck$
+^[^/]+\.Rcheck$
+^ndm_.*\.tar\.gz$

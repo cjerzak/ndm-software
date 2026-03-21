@@ -269,6 +269,10 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
   invisible(TRUE)
 }
 
+.ndm_run_env_get <- function(env, name) {
+  get(name, envir = env, inherits = FALSE)
+}
+
 .ndm_make_run_config <- function(mode,
                                  project_root,
                                  analysis_name,
@@ -405,17 +409,17 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
   # The maintained `ndm_run_*()` entrypoints consume structured config objects
   # directly and no longer require the legacy YAML manifest layer.
   require_yaml <- function() invisible("yaml")
-  environment(require_yaml) <- env
   assign("analysis2_require_yaml", require_yaml, envir = env)
 
   resolve_config_file <- function(mode, opts, analysis_root, project_root) {
-    explicit_path <- analysis2_normalize_string(opts$config)
+    normalize_string <- .ndm_run_env_get(env, "analysis2_normalize_string")
+    path_from_project <- .ndm_run_env_get(env, "analysis2_path_from_project")
+    explicit_path <- normalize_string(opts$config)
     if (is.null(explicit_path)) {
       return(NULL)
     }
-    analysis2_path_from_project(explicit_path, project_root = project_root, must_work = FALSE)
+    path_from_project(explicit_path, project_root = project_root, must_work = FALSE)
   }
-  environment(resolve_config_file) <- env
   assign("analysis2_resolve_config_file", resolve_config_file, envir = env)
 
   invisible(env)
@@ -438,12 +442,15 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
 
 .ndm_override_legacy_model_tex_loc <- function(env) {
   resolve_model_tex_loc <- function(row_values) {
-    legacy_path <- analysis2_normalize_string(row_values$model_tex_loc)
+    normalize_string <- .ndm_run_env_get(env, "analysis2_normalize_string")
+    model_spec_name <- .ndm_run_env_get(env, "analysis2_model_spec_name")
+
+    legacy_path <- normalize_string(row_values$model_tex_loc)
     if (!is.null(legacy_path)) {
       return(legacy_path)
     }
 
-    spec_name <- analysis2_model_spec_name(
+    spec_name <- model_spec_name(
       model_spec_name = row_values$model_spec_name,
       model_tex_loc = row_values$model_tex_loc
     )
@@ -463,7 +470,6 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
 
     file.path("./Analysis2/ModelStructureTex", sprintf("%s.tex", spec_name))
   }
-  environment(resolve_model_tex_loc) <- env
   assign("analysis2_resolve_model_tex_loc", resolve_model_tex_loc, envir = env)
 
   invisible(env)
@@ -471,6 +477,19 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
 
 .ndm_override_legacy_multidisease_runner <- function(env) {
   run_real_multidisease <- function(args = commandArgs(TRUE)) {
+    analysis2_log <- .ndm_run_env_get(env, "analysis2_log")
+    analysis2_build_run_spec <- .ndm_run_env_get(env, "analysis2_build_run_spec")
+    analysis2_print_usage <- .ndm_run_env_get(env, "analysis2_print_usage")
+    analysis2_order_grid <- .ndm_run_env_get(env, "analysis2_order_grid")
+    analysis2_validate_outer_iterations <- .ndm_run_env_get(env, "analysis2_validate_outer_iterations")
+    analysis2_dry_run_result <- .ndm_run_env_get(env, "analysis2_dry_run_result")
+    analysis2_prepare_output_roots <- .ndm_run_env_get(env, "analysis2_prepare_output_roots")
+    analysis2_dir_create <- .ndm_run_env_get(env, "analysis2_dir_create")
+    analysis2_as_int <- .ndm_run_env_get(env, "analysis2_as_int")
+    analysis2_small_run_n_checkpoints <- .ndm_run_env_get(env, "analysis2_small_run_n_checkpoints")
+    analysis2_small_run_n_obs_inference <- .ndm_run_env_get(env, "analysis2_small_run_n_obs_inference")
+    analysis2_model_type <- .ndm_run_env_get(env, "analysis2_model_type")
+
     options(error = NULL)
     analysis2_log("Starting package-native multidisease runner")
     spec <- analysis2_build_run_spec("multidisease", args)
@@ -483,13 +502,22 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     real_grid_raw <- as.data.frame(data.table::fread(grid_file), stringsAsFactors = FALSE)
     nsgd_resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", "ndm")
     nsgd_formatter <- utils::getFromNamespace(".ndm_nsgd_calibration_message", "ndm")
-    nsgd_calibration <- nsgd_resolver(
-      mode = "multidisease",
-      project_root = spec$project_root,
-      analysis_name = spec$analysis_name,
-      n_epoches_max = 9L,
-      grid = real_grid_raw,
-      grid_file = grid_file
+    nsgd_calibration <- tryCatch(
+      nsgd_resolver(
+        mode = "multidisease",
+        project_root = spec$project_root,
+        analysis_name = spec$analysis_name,
+        n_epoches_max = 9L,
+        grid = real_grid_raw,
+        grid_file = grid_file
+      ),
+      error = function(e) {
+        missing_anchor_msg <- "Unable to resolve an nSGD calibration anchor because no candidate grid with `nSamplesTrain` was found"
+        if (isTRUE(spec$dry_run) && grepl(missing_anchor_msg, conditionMessage(e), fixed = TRUE)) {
+          return(NULL)
+        }
+        stop(e)
+      }
     )
     real_grid <- analysis2_order_grid(real_grid_raw, spec$outer)
     analysis2_validate_outer_iterations(real_grid, spec$outer, grid_file)
@@ -520,7 +548,6 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
 
     invisible(get0("analysis2_multidisease_result", envir = driver_env, inherits = FALSE, ifnotfound = TRUE))
   }
-  environment(run_real_multidisease) <- env
   assign("analysis2_run_real_multidisease", run_real_multidisease, envir = env)
 
   invisible(env)

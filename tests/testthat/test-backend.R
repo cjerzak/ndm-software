@@ -36,6 +36,15 @@ ndm_test_fake_backend_modules <- function(default_backend = "cpu") {
   list(jax = jax, jnp = jnp, np = list(), config_updates = config_updates)
 }
 
+ndm_test_fake_conda_env <- function(prefix = "ndm-fake-conda-") {
+  root <- tempfile(prefix)
+  python <- file.path(root, "bin", "python")
+  dir.create(dirname(python), recursive = TRUE, showWarnings = FALSE)
+  file.create(python)
+
+  list(root = root, python = python)
+}
+
 test_that("ndm_check_backend reports unavailable environments and modules", {
   local_mocked_bindings(
     .ndm_backend_use_condaenv = function(...) stop("missing env", call. = FALSE),
@@ -90,6 +99,8 @@ test_that("ndm_build_backend selects Apple Silicon Metal wheels", {
 
 test_that("ndm_build_backend falls back from CUDA 13 to CUDA 12", {
   installs <- list()
+  fake_env <- ndm_test_fake_conda_env()
+  on.exit(unlink(fake_env$root, recursive = TRUE, force = TRUE), add = TRUE)
 
   local_mocked_bindings(
     .ndm_backend_conda_create = function(...) invisible(NULL),
@@ -102,7 +113,7 @@ test_that("ndm_build_backend falls back from CUDA 13 to CUDA 12", {
     },
     .ndm_backend_sys_info = function() c(sysname = "Linux", machine = "x86_64"),
     .ndm_backend_system = function(...) "590.12",
-    .ndm_backend_conda_list = function(...) data.frame(name = "jax_cpu", python = tempfile("python")),
+    .ndm_backend_conda_list = function(...) data.frame(name = "jax_cpu", python = fake_env$python),
     .package = "ndm"
   )
 
@@ -118,6 +129,8 @@ test_that("ndm_build_backend falls back from CUDA 13 to CUDA 12", {
 
 test_that("ndm_build_backend uses CPU-only JAX when no supported GPU driver is detected", {
   installs <- list()
+  fake_env <- ndm_test_fake_conda_env()
+  on.exit(unlink(fake_env$root, recursive = TRUE, force = TRUE), add = TRUE)
 
   local_mocked_bindings(
     .ndm_backend_conda_create = function(...) invisible(NULL),
@@ -127,7 +140,7 @@ test_that("ndm_build_backend uses CPU-only JAX when no supported GPU driver is d
     },
     .ndm_backend_sys_info = function() c(sysname = "Linux", machine = "x86_64"),
     .ndm_backend_system = function(...) character(),
-    .ndm_backend_conda_list = function(...) data.frame(name = "jax_cpu", python = tempfile("python")),
+    .ndm_backend_conda_list = function(...) data.frame(name = "jax_cpu", python = fake_env$python),
     .package = "ndm"
   )
 

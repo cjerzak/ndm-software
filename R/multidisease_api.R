@@ -213,6 +213,10 @@
 .ndm_multidisease_load_tycho <- function(project_root,
                                          disease_names,
                                          outcome_metric = "CountValue") {
+  Admin1ISO <- Admin1Name <- CountValue <- POP_population <- PeriodStartDate <- NULL
+  date_start <- location_id <- location_id_numeric <- location_name <- NULL
+  population <- state_abbr <- targetTime_id <- time_id <- year <- NULL
+
   resolved_diseases <- .ndm_multidisease_resolve_diseases(
     disease_names = disease_names,
     data_format = "Tycho"
@@ -271,11 +275,11 @@
 
   truth_df_red <- raw_input[
     ,
-    .(
+    list(
       CountValue = sum(CountValue, na.rm = TRUE),
       POP_population = max(POP_population, na.rm = TRUE)
     ),
-    by = .(location_id, location_id_numeric, location_name, time_id, targetTime_id)
+    by = list(location_id, location_id_numeric, location_name, time_id, targetTime_id)
   ]
   if (!identical(outcome_metric, "CountValue")) {
     data.table::setnames(truth_df_red, "CountValue", outcome_metric)
@@ -295,6 +299,9 @@
 .ndm_multidisease_load_who <- function(project_root,
                                        disease_names,
                                        outcome_metric = "CountValue") {
+  CasesPerPop <- CountValue <- Covariate1 <- location_id <- location_id_numeric <- NULL
+  location_name <- targetTime_id <- time_id <- year <- NULL
+
   resolved_diseases <- .ndm_multidisease_resolve_diseases(
     disease_names = disease_names,
     data_format = "WHO"
@@ -328,13 +335,13 @@
 
   truth_df_red <- who_dt[
     !is.na(CountValue),
-    .(CountValue = sum(CountValue, na.rm = TRUE)),
-    by = .(location_id, location_id_numeric, location_name, time_id, targetTime_id)
+    list(CountValue = sum(CountValue, na.rm = TRUE)),
+    by = list(location_id, location_id_numeric, location_name, time_id, targetTime_id)
   ]
   if (!identical(outcome_metric, "CountValue")) {
     data.table::setnames(truth_df_red, "CountValue", outcome_metric)
   }
-  truth_df_red[, Covariate1 := get(outcome_metric)]
+  truth_df_red$Covariate1 <- truth_df_red[[outcome_metric]]
   input_df_red <- data.table::copy(truth_df_red)
 
   .ndm_multidisease_make_bundle(
@@ -352,6 +359,10 @@
                                         disease_names,
                                         outcome_metric = "CountValue",
                                         desired_measure = NULL) {
+  age_name <- cause_name <- CountFraction_tmp <- CountValue <- Covariate1 <- NULL
+  location_id <- location_id_numeric <- location_name <- measure_name <- metric_name <- NULL
+  metric_rank <- sex_name <- targetTime_id <- time_id <- val <- year <- NULL
+
   ihme_file <- .ndm_multidisease_require_paths(
     c(
       file.path(project_root, "Data", "MultiDiseaseRuns", "IHMEData", "IHME-GBD_2021_DATA-ea2ad67b-1", "IHME-GBD_2021_DATA-ea2ad67b-1.csv"),
@@ -397,11 +408,11 @@
   )]
   ihme_dt <- ihme_dt[!is.na(CountFraction_tmp)]
   data.table::setorderv(ihme_dt, c("location_id", "year", "metric_rank"))
-  ihme_dt <- ihme_dt[, .SD[1L], by = .(location_id, location_name, cause_name, year)]
+  ihme_dt <- ihme_dt[, .SD[1L], by = list(location_id, location_name, cause_name, year)]
   ihme_dt <- ihme_dt[
     ,
-    .(CountValue = sum(CountFraction_tmp, na.rm = TRUE)),
-    by = .(location_id, location_name, year)
+    list(CountValue = sum(CountFraction_tmp, na.rm = TRUE)),
+    by = list(location_id, location_name, year)
   ]
   min_year <- min(ihme_dt$year, na.rm = TRUE)
   ihme_dt[, `:=`(
@@ -413,13 +424,13 @@
 
   truth_df_red <- ihme_dt[
     !is.na(CountValue),
-    .(CountValue = sum(CountValue, na.rm = TRUE)),
-    by = .(location_id, location_id_numeric, location_name, time_id, targetTime_id)
+    list(CountValue = sum(CountValue, na.rm = TRUE)),
+    by = list(location_id, location_id_numeric, location_name, time_id, targetTime_id)
   ]
   if (!identical(outcome_metric, "CountValue")) {
     data.table::setnames(truth_df_red, "CountValue", outcome_metric)
   }
-  truth_df_red[, Covariate1 := get(outcome_metric)]
+  truth_df_red$Covariate1 <- truth_df_red[[outcome_metric]]
   input_df_red <- data.table::copy(truth_df_red)
 
   .ndm_multidisease_make_bundle(
@@ -670,6 +681,8 @@
 }
 
 .ndm_prepare_multidisease_data <- function(runtime_env) {
+  LOC2_region_name <- NULL
+
   .ndm_multidisease_reject_retired_tfrecord_regeneration(runtime_env)
   missing <- .ndm_multidisease_required_globals_missing(runtime_env)
   if (length(missing) > 0L) {
@@ -711,28 +724,30 @@
       warning("high_income subset requested but LOC2_region_name not available; using all locations")
       keep_place_ids <- unique(truth_df_red$location_id)
     } else {
-      keep_place_ids <- unique(truth_df_red[
-        LOC2_region_name %in% c(
+      keep_place_ids <- unique(truth_df_red$location_id[
+        truth_df_red$LOC2_region_name %in% c(
           "Western Europe",
           "High-income North America",
           "Central Europe",
           "High-income Asia Pacific"
         )
-      ]$location_id)
+      ])
     }
   } else {
     stop("Unsupported multidisease `data_subset`: ", data_subset, call. = FALSE)
   }
 
-  truth_df_red <- truth_df_red[location_id %in% keep_place_ids]
+  truth_df_red <- truth_df_red[truth_df_red$location_id %in% keep_place_ids]
   if ("POP_population" %in% names(truth_df_red)) {
-    truth_df_red[, Pop := POP_population]
+    truth_df_red$Pop <- truth_df_red$POP_population
   } else {
-    truth_df_red[, Pop := NA_real_]
+    truth_df_red$Pop <- NA_real_
     warning("POP_population column not available; Pop set to NA")
   }
-  truth_df_red <- truth_df_red[!is.na(location_name)]
-  truth_df_red[, location_id_numeric := as.integer(factor(location_id, levels = sort(unique(location_id)))) - 1L]
+  truth_df_red <- truth_df_red[!is.na(truth_df_red$location_name)]
+  truth_df_red$location_id_numeric <- as.integer(
+    factor(truth_df_red$location_id, levels = sort(unique(truth_df_red$location_id)))
+  ) - 1L
   if (!any(truth_df_red$time_id == 0L)) {
     stop("time_id seems to be non-zero indexed!", call. = FALSE)
   }

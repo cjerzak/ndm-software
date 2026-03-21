@@ -8223,9 +8223,17 @@
     grid, n_epoches_max, fallback_n_samples_train = NULL) {
     resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", 
         "ndm")
-    resolver(mode = mode, project_root = spec$project_root, analysis_name = spec$analysis_name, 
-        n_epoches_max = n_epoches_max, grid = grid, grid_file = spec$grid_file, 
-        fallback_n_samples_train = fallback_n_samples_train)
+    tryCatch(resolver(mode = mode, project_root = spec$project_root, 
+        analysis_name = spec$analysis_name, n_epoches_max = n_epoches_max, 
+        grid = grid, grid_file = spec$grid_file, fallback_n_samples_train = fallback_n_samples_train), 
+        error = function(e) {
+            missing_anchor_msg <- "Unable to resolve an nSGD calibration anchor because no candidate grid with `nSamplesTrain` was found"
+            if (isTRUE(spec$dry_run) && grepl(missing_anchor_msg, 
+                conditionMessage(e), fixed = TRUE)) {
+                return(NULL)
+            }
+            stop(e)
+        })
 }, analysis2_nsgd_calibration_globals <- function(calibration) {
     globals_fun <- utils::getFromNamespace(".ndm_nsgd_calibration_globals", 
         "ndm")
@@ -8899,7 +8907,7 @@
     "planned"
 }, analysis2_bootstrap_write_sim_tfrecord <- function(base_id, 
     canonical_row, artifact_n_samples_train, row_values, tfrecord_dir, 
-    ndmdatasets_pkg, ndm_pkg, tensorflow, overwrite = FALSE) {
+    resolve_backend, overwrite = FALSE) {
     paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
     if (!isTRUE(overwrite) && analysis2_has_incomplete_tfrecord_artifacts(paths)) {
         stop("Found incomplete TFRecord artifacts for BaseID ", 
@@ -8936,19 +8944,20 @@
             base_id))
         return("skipped_existing")
     }
+    backend <- resolve_backend()
     model_type <- analysis2_model_type(opts = list(model_type = NULL, 
         respect_grid_model_type = TRUE), grid_model_type = row_values$ModelType, 
         default = "DecoderOnly")
-    dataset_spec <- analysis2_sim_dataset_spec(ndmdatasets_pkg, 
+    dataset_spec <- analysis2_sim_dataset_spec(backend$ndmdatasets_pkg, 
         row_values)
-    training_spec <- analysis2_sim_training_spec(ndmdatasets_pkg, 
+    training_spec <- analysis2_sim_training_spec(backend$ndmdatasets_pkg, 
         row_values, model_type = model_type)
     training_spec$n_samples_train <- as.integer(artifact_n_samples_train)
     analysis2_log(sprintf("Regenerating canonical sim TFRecords for BaseID %s from row %s with nSamplesTrain %s", 
         base_id, canonical_row, artifact_n_samples_train))
-    analysis2_write_sim_tfrecords(ndmdatasets_pkg = ndmdatasets_pkg, 
+    analysis2_write_sim_tfrecords(ndmdatasets_pkg = backend$ndmdatasets_pkg, 
         dataset_spec = dataset_spec, training_spec = training_spec, 
-        output_dir = tfrecord_dir, tensorflow = tensorflow)
+        output_dir = tfrecord_dir, tensorflow = backend$tensorflow)
     "written"
 }, analysis2_bootstrap_sim_tfrecords <- function(project_root, 
     analysis_name = "BigSimsLatest", grid, base_ids = NULL, tfrecord_dir, 
@@ -8980,9 +8989,21 @@
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
     analysis2_dir_create(tfrecord_dir)
-    ndmdatasets_pkg <- analysis2_require_ndmdatasets()
-    ndm_pkg <- analysis2_require_ndm()
-    tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
+    ndmdatasets_pkg <- NULL
+    ndm_pkg <- NULL
+    tensorflow <- NULL
+    resolve_backend <- function() {
+        if (is.null(ndmdatasets_pkg)) {
+            ndmdatasets_pkg <<- analysis2_require_ndmdatasets()
+        }
+        if (is.null(ndm_pkg)) {
+            ndm_pkg <<- analysis2_require_ndm()
+        }
+        if (is.null(tensorflow)) {
+            tensorflow <<- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
+        }
+        list(ndmdatasets_pkg = ndmdatasets_pkg, tensorflow = tensorflow)
+    }
     statuses <- character(nrow(write_plan))
     for (plan_idx in seq_len(nrow(write_plan))) {
         canonical_row <- write_plan$canonical_row[[plan_idx]]
@@ -8991,8 +9012,7 @@
         statuses[[plan_idx]] <- analysis2_bootstrap_write_sim_tfrecord(base_id = analysis2_as_int(write_plan$BaseID[[plan_idx]]), 
             canonical_row = canonical_row, artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]], 
             row_values = row_values, tfrecord_dir = tfrecord_dir, 
-            ndmdatasets_pkg = ndmdatasets_pkg, ndm_pkg = ndm_pkg, 
-            tensorflow = tensorflow, overwrite = overwrite)
+            resolve_backend = resolve_backend, overwrite = overwrite)
     }
     write_plan$status <- statuses
     write_plan
@@ -9700,14 +9720,14 @@
     real_grid <- analysis2_order_grid(real_grid_raw, outer_iterations)
     analysis2_validate_outer_iterations(real_grid, outer_iterations, 
         grid_file)
+    if (isTRUE(spec$dry_run)) {
+        return(analysis2_dry_run_result(spec, real_grid, nsgd_calibration = nsgd_calibration))
+    }
     write_plan <- analysis2_build_canonical_tfrecord_plan(mode = "real", 
         grid = real_grid, outer_iterations = outer_iterations)
     holder_folder <- file.path(paths$project_root, "SavedResults", 
         "Real", sprintf("Results_%s", analysis_name))
     analysis2_dir_create(holder_folder)
-    if (isTRUE(spec$dry_run)) {
-        return(analysis2_dry_run_result(spec, real_grid, nsgd_calibration = nsgd_calibration))
-    }
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
     analysis2_log_nsgd_calibration("real", nsgd_calibration)
@@ -9837,14 +9857,14 @@
     sim_grid <- analysis2_order_grid(sim_grid_raw, outer_iterations)
     analysis2_validate_outer_iterations(sim_grid, outer_iterations, 
         grid_file)
+    if (isTRUE(spec$dry_run)) {
+        return(analysis2_dry_run_result(spec, sim_grid, nsgd_calibration = nsgd_calibration))
+    }
     write_plan <- analysis2_build_canonical_tfrecord_plan(mode = "sim", 
         grid = sim_grid, outer_iterations = outer_iterations)
     holder_folder <- file.path(paths$project_root, "SavedResults", 
         "Sim", sprintf("Results_%s", analysis_name))
     analysis2_dir_create(holder_folder)
-    if (isTRUE(spec$dry_run)) {
-        return(analysis2_dry_run_result(spec, sim_grid, nsgd_calibration = nsgd_calibration))
-    }
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
     analysis2_log_nsgd_calibration("sim", nsgd_calibration)
