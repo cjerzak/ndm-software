@@ -34,6 +34,40 @@
   reticulate::import(...)
 }
 
+.ndm_backend_jax_install_plan <- function(os_name, machine, driver_major = NA_integer_) {
+  if (identical(os_name, "Darwin") && identical(machine, "arm64")) {
+    return(list(
+      message = "Apple Silicon detected: installing CPU-only JAX. Current official JAX docs mark Apple GPU support as experimental rather than the default install path.",
+      packages = "jax",
+      fallback_packages = NULL
+    ))
+  }
+
+  if (identical(os_name, "Linux")) {
+    if (!is.na(driver_major) && driver_major >= 580) {
+      return(list(
+        message = sprintf("Driver %s detected (>=580): installing JAX CUDA 13 wheels.", driver_major),
+        packages = "jax[cuda13]",
+        fallback_packages = "jax[cuda12]"
+      ))
+    }
+
+    if (!is.na(driver_major) && driver_major >= 525) {
+      return(list(
+        message = sprintf("Driver %s detected (>=525,<580): installing JAX CUDA 12 wheels.", driver_major),
+        packages = "jax[cuda12]",
+        fallback_packages = NULL
+      ))
+    }
+  }
+
+  list(
+    message = "Installing CPU-only JAX.",
+    packages = "jax",
+    fallback_packages = NULL
+  )
+}
+
 #' Provision and initialize the Python backend
 #'
 #' These helpers manage the reticulate-backed Python environment used by
@@ -144,12 +178,7 @@ ndm_build_backend <- function(conda_env = "ndm_software_env",
   pip_install("numpy")
 
   install_jax <- function() {
-    if (identical(os_name, "Darwin") && identical(machine, "arm64")) {
-      msg("Apple Silicon detected: installing JAX 0.5.0 with Metal support.")
-      pip_install(c("jax==0.5.0", "jaxlib==0.5.0", "jax-metal==0.1.1"))
-      return(invisible(TRUE))
-    }
-
+    drv_major <- NA_integer_
     if (identical(os_name, "Linux")) {
       drv <- try(
         suppressWarnings(
@@ -161,28 +190,27 @@ ndm_build_backend <- function(conda_env = "ndm_software_env",
         silent = TRUE
       )
       drv_major <- suppressWarnings(as.integer(sub("^([0-9]+).*", "\\1", drv[1])))
-
-      if (!is.na(drv_major) && drv_major >= 580) {
-        msg("Driver %s detected (>=580): installing JAX CUDA 13 wheels.", drv[1])
-        tryCatch(
-          pip_install("jax[cuda13]"),
-          error = function(e) {
-            msg("CUDA 13 wheels failed (%s); falling back to CUDA 12.", e$message)
-            pip_install("jax[cuda12]")
-          }
-        )
-        return(invisible(TRUE))
-      }
-
-      if (!is.na(drv_major) && drv_major >= 525) {
-        msg("Driver %s detected (>=525,<580): installing JAX CUDA 12 wheels.", drv[1])
-        pip_install("jax[cuda12]")
-        return(invisible(TRUE))
-      }
     }
-
-    msg("Installing CPU-only JAX.")
-    pip_install("jax")
+    install_plan <- .ndm_backend_jax_install_plan(
+      os_name = os_name,
+      machine = machine,
+      driver_major = drv_major
+    )
+    msg("%s", install_plan$message)
+    tryCatch(
+      pip_install(install_plan$packages),
+      error = function(e) {
+        if (is.null(install_plan$fallback_packages)) {
+          stop(e)
+        }
+        msg(
+          "Primary JAX install failed (%s); falling back to %s.",
+          e$message,
+          install_plan$fallback_packages
+        )
+        pip_install(install_plan$fallback_packages)
+      }
+    )
   }
 
   install_jax()

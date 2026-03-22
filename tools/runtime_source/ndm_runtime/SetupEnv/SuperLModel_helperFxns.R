@@ -203,13 +203,27 @@ ExtractBetaDraw <- function(PARAM_DRAW){
               "BetaDraw" = BetaDraw)  )
 }
 
-TFConst2JAXArray <- function(l_){ lapply(l_,function(l_){ jnp$array(l_) })}
+TFConst2JAXArray <- function(l_) {
+  lapply(l_, function(l_) {
+    arr <- jnp$array(l_)
+    if (exists("ndm_runtime_data_to_device", inherits = TRUE)) {
+      return(ndm_runtime_data_to_device(arr))
+    }
+    arr
+  })
+}
 
 batch2package <- function(l_){
-  return( list(list(l_$XPred, l_$XPred_mask),
-               list(l_$Context, l_$Context_mask),
-               list(l_$location_id_numeric),
-               list(l_$time_id_numeric) ) )
+  packaged <- list(
+    list(l_$XPred, l_$XPred_mask),
+    list(l_$Context, l_$Context_mask),
+    list(l_$location_id_numeric),
+    list(l_$time_id_numeric)
+  )
+  if (exists("ndm_runtime_data_to_device", inherits = TRUE)) {
+    return(ndm_runtime_data_to_device(packaged))
+  }
+  packaged
 }
 
 # gen fig functions 
@@ -527,6 +541,5 @@ robust_cut <- function(x, n_bins = 2L){
 }
 
 print2("Done loading helper functions...")
-
 
 

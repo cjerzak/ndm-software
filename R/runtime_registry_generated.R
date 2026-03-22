@@ -212,11 +212,19 @@
         return(list(TSDraw = TSDraw, BetaDraw = BetaDraw))
     }, TFConst2JAXArray <- function(l_) {
         lapply(l_, function(l_) {
-            jnp$array(l_)
+            arr <- jnp$array(l_)
+            if (exists("ndm_runtime_data_to_device", inherits = TRUE)) {
+                return(ndm_runtime_data_to_device(arr))
+            }
+            arr
         })
     }, batch2package <- function(l_) {
-        return(list(list(l_$XPred, l_$XPred_mask), list(l_$Context, 
-            l_$Context_mask), list(l_$location_id_numeric), list(l_$time_id_numeric)))
+        packaged <- list(list(l_$XPred, l_$XPred_mask), list(l_$Context, 
+            l_$Context_mask), list(l_$location_id_numeric), list(l_$time_id_numeric))
+        if (exists("ndm_runtime_data_to_device", inherits = TRUE)) {
+            return(ndm_runtime_data_to_device(packaged))
+        }
+        packaged
     }, heatMap <- function(x, y, z, main = "", N, yaxt = NULL, 
         xlab = "", ylab = "", horizontal = NULL, useLog = "", 
         legend.width = 1, ylim = NULL, xlim = NULL, zlim = NULL, 
@@ -590,6 +598,8 @@
     switch_filter_jit <- eq$filter_jit
     library(fastmatch)
     library(reticulate)
+    jax_sharding <- tryCatch(reticulate::import("jax.sharding"), 
+        error = function(...) NULL)
     JaxKey <- function(int_) {
         if (is.environment(int_) || "python.builtin.object" %in% 
             class(int_)) {
@@ -597,6 +607,167 @@
         }
         jax$random$PRNGKey(as.integer(int_))
     }
+    ndm_runtime_is_python_array <- function(x) {
+        if (!("python.builtin.object" %in% class(x))) {
+            return(FALSE)
+        }
+        shape <- try(x$shape, silent = TRUE)
+        !inherits(shape, "try-error") && !is.null(shape)
+    }
+    ndm_runtime_array_rank <- function(x) {
+        if (!ndm_runtime_is_python_array(x)) {
+            dims <- dim(x)
+            return(if (is.null(dims)) 0L else length(dims))
+        }
+        dims <- try(reticulate::py_to_r(x$shape), silent = TRUE)
+        if (inherits(dims, "try-error") || is.null(dims)) {
+            return(0L)
+        }
+        length(dims)
+    }
+    ndm_runtime_make_mesh <- function() {
+        if (is.null(jax_sharding) || num_devices <= 1L) {
+            return(NULL)
+        }
+        tryCatch({
+            if (!is.null(jax$make_mesh)) {
+                return(jax$make_mesh(list(as.integer(num_devices)), 
+                  list("data")))
+            }
+            jax_sharding$Mesh(jax$devices(), list("data"))
+        }, error = function(...) NULL)
+    }
+    ndm_mesh <- ndm_runtime_make_mesh()
+    ndm_sharding_enabled <- !is.null(ndm_mesh)
+    ndm_runtime_partition_spec <- function(rank, sharded = FALSE) {
+        if (is.null(jax_sharding)) {
+            return(NULL)
+        }
+        rank <- as.integer(rank)
+        entries <- rep(list(NULL), max(rank, 0L))
+        if (isTRUE(sharded) && rank > 0L) {
+            entries[[1L]] <- "data"
+        }
+        do.call(jax_sharding$PartitionSpec, entries)
+    }
+    ndm_runtime_named_sharding <- function(x, sharded = FALSE) {
+        if (!ndm_sharding_enabled || !ndm_runtime_is_python_array(x)) {
+            return(NULL)
+        }
+        jax_sharding$NamedSharding(ndm_mesh, ndm_runtime_partition_spec(ndm_runtime_array_rank(x), 
+            sharded = sharded))
+    }
+    ndm_runtime_shard_tree <- function(x, sharded = FALSE) {
+        if (!ndm_sharding_enabled || is.null(eq$filter_shard)) {
+            return(NULL)
+        }
+        shardings <- tryCatch(jax$tree_util$tree_map(function(leaf) {
+            if (!ndm_runtime_is_python_array(leaf)) {
+                return(NULL)
+            }
+            ndm_runtime_named_sharding(leaf, sharded = sharded)
+        }, x), error = function(...) NULL)
+        if (is.null(shardings)) {
+            return(NULL)
+        }
+        tryCatch(eq$filter_shard(x, shardings), error = function(...) NULL)
+    }
+    ndm_runtime_data_to_device <- function(x) {
+        if (!ndm_sharding_enabled) {
+            return(x)
+        }
+        if (is.list(x)) {
+            return(lapply(x, ndm_runtime_data_to_device))
+        }
+        if (!ndm_runtime_is_python_array(x)) {
+            return(x)
+        }
+        sharding <- ndm_runtime_named_sharding(x, sharded = ndm_runtime_array_rank(x) > 
+            0L)
+        if (is.null(sharding)) {
+            return(x)
+        }
+        tryCatch(jax$device_put(x, sharding), error = function(...) x)
+    }
+    ndm_runtime_replicate_tree <- function(x) {
+        if (!ndm_sharding_enabled) {
+            return(x)
+        }
+        sharded_tree <- ndm_runtime_shard_tree(x, sharded = FALSE)
+        if (!is.null(sharded_tree)) {
+            return(sharded_tree)
+        }
+        if (is.list(x)) {
+            return(lapply(x, ndm_runtime_replicate_tree))
+        }
+        if (!ndm_runtime_is_python_array(x)) {
+            return(x)
+        }
+        sharding <- ndm_runtime_named_sharding(x, sharded = FALSE)
+        if (is.null(sharding)) {
+            return(x)
+        }
+        tryCatch(jax$device_put(x, sharding), error = function(...) x)
+    }
+    ndm_runtime_host_integer <- function(x) {
+        if (is.null(x)) {
+            return(NULL)
+        }
+        if ("python.builtin.object" %in% class(x)) {
+            value <- try(reticulate::py_to_r(x), silent = TRUE)
+            if (!inherits(value, "try-error") && !is.null(value)) {
+                return(as.integer(value)[[1L]])
+            }
+            value <- try(np$array(x), silent = TRUE)
+            if (!inherits(value, "try-error") && !is.null(value)) {
+                return(as.integer(value)[[1L]])
+            }
+        }
+        as.integer(x)[[1L]]
+    }
+    ndm_runtime_normalize_getpred_saveat_info <- function(info) {
+        if (!is.list(info) || length(info) == 0L) {
+            return(info)
+        }
+        info[[1L]] <- ndm_runtime_host_integer(info[[1L]])
+        info
+    }
+    ndm_runtime_sync_value <- function(x) {
+        if (is.list(x)) {
+            invisible(lapply(x, ndm_runtime_sync_value))
+            return(invisible(x))
+        }
+        if (!("python.builtin.object" %in% class(x))) {
+            return(invisible(x))
+        }
+        blocker <- try(x$block_until_ready, silent = TRUE)
+        if (!inherits(blocker, "try-error") && !is.null(blocker)) {
+            try(blocker(), silent = TRUE)
+        }
+        invisible(x)
+    }
+    ndm_runtime_benchmark <- function(fn, ..., warmup = 1L, runs = 5L) {
+        args <- list(...)
+        if (warmup > 0L) {
+            for (warm_i in seq_len(warmup)) {
+                ndm_runtime_sync_value(do.call(fn, args))
+            }
+        }
+        elapsed <- numeric(runs)
+        for (run_i in seq_len(runs)) {
+            started <- proc.time()[["elapsed"]]
+            ndm_runtime_sync_value(do.call(fn, args))
+            elapsed[[run_i]] <- proc.time()[["elapsed"]] - started
+        }
+        list(seconds = elapsed, mean_seconds = mean(elapsed), 
+            runs = as.integer(runs), warmup = as.integer(warmup))
+    }
+    ndm_shardings <- list(enabled = ndm_sharding_enabled, mesh = ndm_mesh, 
+        data = function(x) ndm_runtime_named_sharding(x, sharded = TRUE), 
+        replicate = function(x) ndm_runtime_named_sharding(x, 
+            sharded = FALSE))
+    ndm_benchmark_helpers <- list(sync_value = ndm_runtime_sync_value, 
+        benchmark = ndm_runtime_benchmark)
     SoftPlus_r <- function(x) {
         x[x < 100] <- log(exp(x) + 1)[x < 100]
         x[x >= 100] <- x[x >= 100]
@@ -653,12 +824,14 @@
                   }
                   hat_y <- GetPred_train(ModelList, (jax_batchx <- batch2package(batch_l)), 
                     state, PriorList, PolicyList, GetPredSaveAtInfo_default, 
-                    jax$random$split(JaxKey(999L), nBatch))[[1]]
+                    ndm_runtime_data_to_device(jax$random$split(JaxKey(999L), 
+                      nBatch)))[[1]]
                   print2("Getting trial loss...")
                   loss <- getLoss_train(ModelList, jax_batchx, 
                     jax_batchy, jax_batchymask, jnp$array(4), 
                     state, PriorList, PolicyList, GetPredSaveAtInfo_default, 
-                    jax$random$split(JaxKey(9L), nBatch))
+                    ndm_runtime_data_to_device(jax$random$split(JaxKey(9L), 
+                      nBatch)))
                   if (is.na(loss[[1]]$tolist())) {
                     stop("NA in loss in CalibrateML")
                   }
@@ -1047,12 +1220,14 @@
                     eval(parse(text = sprintf("list('%s'=jnp$array(%s))", 
                       names(SimEntry_numeric)[re_], SimEntry_numeric[re_])))
                   })
-                diff_eq_sol <- GetDataFromODE_sim_batch(send2cpu(init_true), 
-                  send2cpu(invbeta_true_init), send2cpu(inv_beta_noise), 
-                  send2cpu(PolicyScenarioSimBasis), send2cpu(PolicyList$Scenario), 
-                  send2cpu(initial_shift), send2cpu(TheSimEntry), 
-                  send2cpu(jnp$array(nTimes)), send2cpu(jnp$arange(nTimes)))
-                diff_eq_sol <- send2gpu(diff_eq_sol)
+                diff_eq_sol <- GetDataFromODE_sim_batch(ndm_runtime_data_to_device(init_true), 
+                  ndm_runtime_data_to_device(invbeta_true_init), 
+                  ndm_runtime_data_to_device(inv_beta_noise), 
+                  ndm_runtime_data_to_device(PolicyScenarioSimBasis), 
+                  ndm_runtime_replicate_tree(PolicyList$Scenario), 
+                  ndm_runtime_data_to_device(initial_shift), 
+                  ndm_runtime_replicate_tree(TheSimEntry), ndm_runtime_replicate_tree(jnp$array(nTimes)), 
+                  ndm_runtime_replicate_tree(jnp$arange(nTimes)))
                 {
                   inv_beta_true <- try(diff_eq_sol$ys$raw_beta_t, 
                     T)
@@ -2869,9 +3044,8 @@
             x_mask <- xt[[2]]
             xt <- xt[[1]]
             if ("transformer" %in% BackboneType) {
-                backbonePath <- "run"
-                ndm_source_extracted("ModelDefiners/SuperLModel_BackboneTransformer.R")
-                print("Done sourcing SuperLModel_BackboneTransformer.R in run path")
+                xt <- RunTransformerBackbone(xt = xt, x_mask = x_mask, 
+                  TransformerList = TSList$TSBackbone)
             }
             if ("mamba" %in% BackboneType) {
                 stop("Mamba is not included in ndm.", call. = FALSE)
@@ -3458,11 +3632,11 @@
                     dynamicglobal_x_params_samp <- diffrax$diffeqsolve(terms = VI_ODE_term_globalOnly, 
                       solver = VI_diff_eq_solver_optim, saveat = VI_SaveAt_ODE_GlobalNeural, 
                       args = {
-                        eval(parse(text = sprintf("send2cpu(list(\"Neural2\" = %s))", 
+                        ndm_runtime_replicate_tree(eval(parse(text = sprintf("list(\"Neural2\" = %s)", 
                           gsub(coreNeuralText, pattern = "LocalNeural", 
-                            replace = "GlobalNeural"))))
+                            replace = "GlobalNeural")))))
                       }, y0 = {
-                        send2cpu(list(Neural2 = ModelList$GlobalNeural$NeuralInitialConditions))
+                        ndm_runtime_replicate_tree(list(Neural2 = ModelList$GlobalNeural$NeuralInitialConditions))
                       }, max_steps = MaxSteps, t0 = 0, t1 = f2n(NTimeGlobalNeuralMax), 
                       dt0 = (dt0_init_optim), stepsize_controller = stepsize_controller_optim)
                     dynamicglobal_x0_samp <- jnp$take(dynamicglobal_x_params_samp$ys$Neural2, 
@@ -3542,7 +3716,7 @@
                   print2("Starting predictive ODE...")
                   diff_eq_sol <- diffrax$diffeqsolve(terms = VI_ODE_term, 
                     solver = VI_diff_eq_solver_optim, args = {
-                      send2cpu(c(eval(parse(text = paste(neuralArgsText, 
+                      ndm_runtime_replicate_tree(c(eval(parse(text = paste(neuralArgsText, 
                         ifelse(length(uq_args_vec) > 0 & length(uq_globalneural_vec) > 
                           0, yes = ",", no = ""), ifelse(length(uq_args_vec) > 
                           0, yes = list(paste(sapply(c(uq_args_vec), 
@@ -3553,7 +3727,7 @@
                         ")", collapse = ""))), policy_scenario_indicator = PolicyList[[1]], 
                         policy_scenario = PolicyList[[2]]))
                     }, y0 = {
-                      send2cpu(eval(parse(text = paste("list(", 
+                      ndm_runtime_replicate_tree(eval(parse(text = paste("list(", 
                         paste(sapply(y0_names, function(ze) {
                           sprintf("'%s' = ODEParamsSampList_y0$%s_samp%s", 
                             ze, ze, ifelse(ze %in% uq_encneural_vec, 
@@ -3563,7 +3737,6 @@
                     }, max_steps = (MaxSteps), t0 = (jnp$array(0)), 
                     t1 = GetPredSaveAtInfo[[1]], saveat = GetPredSaveAtInfo[[2]], 
                     dt0 = dt0_init_optim, stepsize_controller = stepsize_controller_optim)
-                  diff_eq_sol <- send2gpu(diff_eq_sol)
                   print2("Done with predictive ODE...")
                   if (length(ODEParamsSampList_args$p_l_samp$shape) == 
                     0) {
@@ -3666,8 +3839,8 @@
                 }
                 return(list(minThis, state))
             }
-            GetPredSaveAtInfo_default <- list(jnp$array(VI_TotalTimesInLikelihood), 
-                VI_SaveAt_ODE_optim)
+            GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(list(as.integer(VI_TotalTimesInLikelihood), 
+                VI_SaveAt_ODE_optim))
             gradLoss_jax <- switch_filter_jit(eq$filter_value_and_grad(getLoss_train, 
                 has_aux = T))
             if (prior_sampling) {
@@ -3687,6 +3860,16 @@
                   labels = PriorDefinitions_jax[2, ])
                 image2(np$asanyarray(prior_grad_checks[[2]][[2]]))
             }
+        }
+        predict_step_compiled <- GetPred_inference
+        predict_train_step_compiled <- GetPred_train_jit
+        loss_step_compiled <- switch_filter_jit(getLoss_train)
+        if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+            ModelList <- ndm_runtime_replicate_tree(ModelList)
+            state <- ndm_runtime_replicate_tree(state)
+            PriorList <- ndm_runtime_replicate_tree(PriorList)
+            PolicyList <- ndm_runtime_replicate_tree(PolicyList)
+            GetPredSaveAtInfo_default <- ndm_runtime_replicate_tree(GetPredSaveAtInfo_default)
         }
     }
     print("Done with this round of SuperLModel_BuildML.R!")
@@ -4035,6 +4218,72 @@
                 .__kv_helpers_defined <- TRUE
             }
         }
+        TransformerStep_NoCache <- function(xt, TransformerList_d, 
+            x_mask_attn) {
+            xt <- jnp$multiply(NormFxn(xtm1 <- xt), TransformerList_d$NormScalerInput)
+            if (UseLatentAttention) {
+                stop("Latent Attention not double checked -- do not use")
+            }
+            q_ <- jnp$dot(xt, TransformerList_d$Multihead$W_q)
+            k_ <- jnp$dot(xt, TransformerList_d$Multihead$W_k)
+            v_ <- jnp$dot(xt, TransformerList_d$Multihead$W_v)
+            q_ <- jnp$reshape(q_, list(q_$shape[[1]], num_heads, 
+                head_dim))
+            k_ <- jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, 
+                head_dim))
+            v_ <- jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, 
+                head_dim))
+            pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
+            apply_rope_one_row <- function(NH_row, p) {
+                (jax$vmap(function(hvec) {
+                  rope_apply_single(hvec, p, head_dim)
+                }, in_axes = 0L))(NH_row)
+            }
+            apply_rope_all <- jax$vmap(apply_rope_one_row, in_axes = list(0L, 
+                0L))
+            q_ <- apply_rope_all(q_, pos_ids)
+            k_ <- apply_rope_all(k_, pos_ids)
+            k_ <- repeat_kv_heads(k_, kv_group_size)
+            v_ <- repeat_kv_heads(v_, kv_group_size)
+            mask_bool <- jnp$greater(x_mask_attn, 0)
+            mask_bool <- jnp$broadcast_to(mask_bool, list(num_heads, 
+                mask_bool$shape[[1]], mask_bool$shape[[2]]))
+            xt_attn <- dot_product_attention_unified(q = q_, 
+                k = k_, v = v_, mask = mask_bool, is_causal = (ModelType == 
+                  "DecoderOnly"), prefer = "auto")$astype(k_$dtype)
+            xt_attn <- jnp$reshape(xt_attn, list(xt_attn$shape[[1]], 
+                num_heads * head_dim))
+            xt <- jnp$dot(xt_attn, TransformerList_d$Multihead$W_o)
+            xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon1$WtSkipPath) + 
+                xt * jax$nn$softplus(TransformerList_d$ResidCon1$WtResidPath)
+            xt <- NormFxn(xt) * TransformerList_d$NormScalerPostMultiHead
+            xt <- jax$nn$swish(ffmap(TransformerList_d$FFN$WideProj1, 
+                xt)) * ffmap(TransformerList_d$FFN$WideProj2, 
+                xt)
+            xt <- ffmap(TransformerList_d$FFN$OutProj1, xt)
+            xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon2$WtSkipPath) + 
+                xt * jax$nn$softplus(TransformerList_d$ResidCon2$WtResidPath)
+            xt
+        }
+        RunTransformerBackbone <- function(xt, x_mask, TransformerList) {
+            x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
+            layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
+            layer_branches <- lapply(layer_names, function(layer_name) {
+                layer_params <- TransformerList[[layer_name]]
+                function(xt_in) TransformerStep_NoCache(xt_in, 
+                  layer_params, x_mask_attn)
+            })
+            if (length(layer_branches) == 0L) {
+                return(xt)
+            }
+            scan_body <- function(carry_xt, i) {
+                xt_next <- jax$lax$switch(index = i, branches = layer_branches, 
+                  operand = carry_xt)
+                list(xt_next, jnp$array(0L, dtype = jnp$int32))
+            }
+            jax$lax$scan(f = scan_body, init = xt, xs = jnp$arange(start = 0L, 
+                stop = as.integer(ModelDepth), dtype = jnp$int32))[[1]]
+        }
         print("Generating TransformerList objects...")
         for (l_ in 1L:length(TransformerList)) {
             if (UseLatentAttention) {
@@ -4110,90 +4359,12 @@
                 key * 233L)
         print("Done with init path in SuperLModel_BackboneTransformer.R...")
     }, if (backbonePath == "run") {
-        num_heads <- TransformerHeads
-        num_kv_heads <- TransformerKVHeads
-        head_dim <- TransformerHeadDim
-        kv_group_size <- TransformerKVGroupSize
-        x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
-        print2(sprintf("Starting Transformer block [depth: %s]...", 
-            ModelDepth))
-        TransformerStep_NoCache <- switch_filter_jit(function(xt, 
-            TransformerList_d, x_mask_attn) {
-            xt <- jnp$multiply(NormFxn(xtm1 <- xt), TransformerList_d$NormScalerInput)
-            if (UseLatentAttention) {
-                stop("Latent Attention not double checked -- do not use")
-                xt <- LatentMultiheadAttention(Multihead = TransformerList_d$LatentMultihead, 
-                  query = (xt_pos <- (eq$nn$RotaryPositionalEmbedding(ModelDims))(xt)), 
-                  key_ = xt_pos, value = xt, mask = x_mask_attn)
-            }
-            if (!UseLatentAttention) {
-                {
-                  q_ = jnp$dot(xt, TransformerList_d$Multihead$W_q)
-                  k_ = jnp$dot(xt, TransformerList_d$Multihead$W_k)
-                  v_ = jnp$dot(xt, TransformerList_d$Multihead$W_v)
-                  q_ = jnp$reshape(q_, list(q_$shape[[1]], num_heads, 
-                    head_dim))
-                  k_ = jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, 
-                    head_dim))
-                  v_ = jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, 
-                    head_dim))
-                  pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
-                  apply_rope_one_row <- function(NH_row, p) {
-                    (jax$vmap(function(hvec) {
-                      rope_apply_single(hvec, p, head_dim)
-                    }, in_axes = 0L))(NH_row)
-                  }
-                  apply_rope_all <- jax$vmap(apply_rope_one_row, 
-                    in_axes = list(0L, 0L))
-                  q_ <- apply_rope_all(q_, pos_ids)
-                  k_ <- apply_rope_all(k_, pos_ids)
-                  k_ <- repeat_kv_heads(k_, kv_group_size)
-                  v_ <- repeat_kv_heads(v_, kv_group_size)
-                  mask_bool <- jnp$greater(x_mask_attn, 0)
-                  mask_bool <- jnp$broadcast_to(mask_bool, list(num_heads, 
-                    mask_bool$shape[[1]], mask_bool$shape[[2]]))
-                  xt_attn <- dot_product_attention_unified(q = q_, 
-                    k = k_, v = v_, mask = mask_bool, is_causal = (ModelType == 
-                      "DecoderOnly"), prefer = "auto")$astype(k_$dtype)
-                  xt_attn <- jnp$reshape(xt_attn, list(xt_attn$shape[[1]], 
-                    num_heads * head_dim))
-                  xt <- jnp$dot(xt_attn, TransformerList_d$Multihead$W_o)
-                }
-            }
-            xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon1$WtSkipPath) + 
-                xt * jax$nn$softplus(TransformerList_d$ResidCon1$WtResidPath)
-            xt <- NormFxn(xt) * TransformerList_d$NormScalerPostMultiHead
-            xt <- jax$nn$swish(ffmap(TransformerList_d$FFN$WideProj1, 
-                xt)) * ffmap(TransformerList_d$FFN$WideProj2, 
-                xt)
-            xt <- ffmap(TransformerList_d$FFN$OutProj1, xt)
-            xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon2$WtSkipPath) + 
-                xt * jax$nn$softplus(TransformerList_d$ResidCon2$WtResidPath)
-            return(xt)
-        })
-        if (TRUE) {
-            for (d_ in 1:ModelDepth) {
-                print(d_)
-                xt <- TransformerStep_NoCache(xt, eval(parse(text = sprintf("TSList$TSBackbone$d%s", 
-                  d_))), x_mask_attn)
-            }
+        if (!exists("RunTransformerBackbone", inherits = TRUE)) {
+            stop("Transformer runtime helpers were not initialized before the run path.", 
+                call. = FALSE)
         }
-        if (FALSE) {
-            layer_branches <- lapply(seq_len(ModelDepth), function(d_) {
-                L_d <- TSList$TSBackbone[[paste0("d", d_)]]
-                function(xt_in) TransformerStep_NoCache(xt_in, 
-                  L_d, x_mask_attn)
-            })
-            scan_body <- function(carry_xt, i) {
-                xt_next <- jax$lax$switch(index = i, branches = layer_branches, 
-                  operand = carry_xt)
-                list(xt_next, jnp$array(0L))
-            }
-            xt <- jax$lax$scan(f = scan_body, init = xt, xs = jnp$arange(start = 0L, 
-                stop = as.integer(ModelDepth), dtype = jnp$int32))[[1]]
-        }
-        print2(sprintf("Done with Transformer block [depth: %s]...", 
-            ModelDepth))
+        xt <- RunTransformerBackbone(xt = xt, x_mask = x_mask, 
+            TransformerList = TSList$TSBackbone)
     }, print("Done sourcing SuperLModel_BackboneTransformer.R"))
 
 .ndm_stage_expr_ModelDefiners_SuperLModel_ParseDynamicODE <- expression({
@@ -5030,8 +5201,30 @@
     }
     opt_state <- optax_optimizer$init(eq$partition(ModelList, 
         eq$is_array)[[1]])
+    if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+        opt_state <- ndm_runtime_replicate_tree(opt_state)
+    }
     jit_apply_updates <- eq$filter_jit(optax$apply_updates)
     jit_get_update <- eq$filter_jit(optax_optimizer$update)
+    train_step_compiled <- switch_filter_jit(function(ModelList, 
+        batch_pkg, y_true, y_mask, iteration, state, PriorList, 
+        PolicyList, GetPredSaveAtInfo, seed, opt_state) {
+        loss_and_grads <- (eq$filter_value_and_grad(getLoss_train, 
+            has_aux = T))(ModelList, batch_pkg, y_true, y_mask, 
+            iteration, state, PriorList, PolicyList, GetPredSaveAtInfo, 
+            seed)
+        loss_and_state <- loss_and_grads[[1]]
+        grads <- loss_and_grads[[2]]
+        model_arrays <- eq$partition(ModelList, eq$is_array)
+        grad_arrays <- eq$partition(grads, eq$is_inexact_array)[[1]]
+        updates_and_state <- optax_optimizer$update(grad_arrays, 
+            opt_state, model_arrays[[1]])
+        updated_model <- eq$combine(optax$apply_updates(model_arrays[[1]], 
+            updates_and_state[[1]]), model_arrays[[2]])
+        list(loss = loss_and_state[[1]], state = loss_and_state[[2]], 
+            grad_norm = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)), 
+            model = updated_model, opt_state = updates_and_state[[2]])
+    })
 }, NA20 <- function(zer) {
     zer[is.na(zer)] <- 0
     zer[is.infinite(zer)] <- 0
@@ -5146,8 +5339,15 @@
         suppressWarnings(as.integer(as.numeric(SimEntry$BaseID)[[1L]]))
     }, capture_nonfinite_report <- function(batch_l, loss_value, 
         grad_norm_value, iteration, keys_mat) {
+        GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info", 
+            inherits = TRUE)) {
+            ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
+        }
+        else {
+            GetPredSaveAtInfo_default
+        }
         prediction <- try(GetPred_train_jit(ModelList, batch2package(batch_l), 
-            state, PriorList, PolicyList, GetPredSaveAtInfo_default, 
+            state, PriorList, PolicyList, GetPredSaveAtInfo_runtime, 
             keys_mat), silent = TRUE)
         tensor_summaries <- list(batch_YTrue_out = nonfinite_capture_summary(batch_l$YTrue_out), 
             batch_YTrue_out_mask = nonfinite_capture_summary(batch_l$YTrue_out_mask), 
@@ -5188,6 +5388,9 @@
             holder_folder = HolderFolder, outer_iteration = outer_iteration, 
             iteration = iteration)
         list(report = report, report_path = report_path)
+    }, if (exists("ndm_runtime_normalize_getpred_saveat_info", 
+        inherits = TRUE)) {
+        GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
     }, for (i in i_:nSGD_model) {
         if (Sys.info()["sysname"] != "Darwin" & i > 2) {
         }
@@ -5240,6 +5443,11 @@
                   opt_state <- ModelList_recovered[[3]]
                   state <- ModelList_recovered[[2]]
                   ModelList <- ModelList_recovered[[1]]
+                  if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+                    opt_state <- ndm_runtime_replicate_tree(opt_state)
+                    state <- ndm_runtime_replicate_tree(state)
+                    ModelList <- ndm_runtime_replicate_tree(ModelList)
+                  }
                   i_ <- np$array(opt_state[[4]][[2]]$count)
                   rm(ModelList_recovered)
                 }
@@ -5265,191 +5473,135 @@
                 if (i == 1) {
                   print2("At first gradLoss_jax()")
                 }
-                keys_mat <- jax$random$split(JaxKey(ai(i)), nBatch)
-                GetPredSaveAtInfo_default[[1]] <- as.integer(np$array(GetPredSaveAtInfo_default[[1]]))
-                GradientUpdatePackage <- gradLoss_jax(ModelList, 
-                  batch2package(dat_), dat_$YTrue_out, dat_$YTrue_out_mask, 
-                  jnp$array(as.numeric(i)), state, PriorList, 
-                  PolicyList, GetPredSaveAtInfo_default, keys_mat)
-                if (!"try-error" %in% class(GradientUpdatePackage)) {
-                  state_tmp <- GradientUpdatePackage[[1]][[2]]
-                  GradientUpdatePackage[[1]] <- GradientUpdatePackage[[1]][[1]]
-                  state <- state_tmp
-                  myLoss_fromGrad <- GradientUpdatePackage[[1]]$tolist()
-                  GradientUpdatePackage <- GradientUpdatePackage[[2]]
-                  GradientUpdatePackage <- eq$partition(GradientUpdatePackage, 
-                    eq$is_inexact_array)
-                  GradientUpdatePackage_aux <- GradientUpdatePackage[[2]]
-                  GradientUpdatePackage <- GradientUpdatePackage[[1]]
-                  if (i == 1 | i%%10 == 0) {
-                    grad_vec <- unlist(lapply(jax$tree_util$tree_leaves(GradientUpdatePackage), 
-                      function(ze) {
-                        return(np$array(jnp$abs(ze)$mean()))
-                      }))
-                    values3 <- rrapply::rrapply(GradientUpdatePackage, 
-                      condition = function(x) {
-                        TRUE
-                      }, function(x) {
-                        tmp_ <- unlist(lapply(jax$tree_util$tree_leaves(x), 
-                          function(ze) {
-                            return(np$array(jnp$abs(ze)$mean()))
-                          }))
-                        return(tmp_)
-                      }, how = "list")
-                    if (is.na(COMMAND_ARG_INPUT)) {
-                      grad_norm_mat <- rbind(grad_norm_mat, unlist(values3))
-                    }
-                    if (is.na(COMMAND_ARG_INPUT)) {
-                      print(tail(sort(unlist(values3), decreasing = F), 
-                        25))
-                      mean(duplicated(names(sort(unlist(values3)))))
-                      plot(sort(unlist(values3)))
-                      if (i > 1) {
-                        plot(unlist(values3), unlist(values3_past))
-                        abline(a = 0, b = 1)
-                      }
-                    }
-                    values3_past <- values3
-                    grad_list <- jax$tree_util$tree_map(function(ze) {
-                      leave_grad <- try(as.numeric(np$array(jnp$abs(jax$tree_util$tree_leaves(ze)[[1]])$mean())), 
-                        T)
-                      if ("try-error" %in% class(leave_grad)) {
-                        browser()
-                      }
-                      return(leave_grad)
-                    }, GradientUpdatePackage)
-                  }
-                  Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(myLoss_fromGrad)[[1L]])
-                  GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(optax$global_norm(jax$tree_util$tree_leaves(GradientUpdatePackage))))[[1L]])
-                  UpdateParametersCond <- is.finite(Loss_i) & 
-                    is.finite(GradNorm_i)
-                  if (!UpdateParametersCond) {
-                    nonfinite_capture <- capture_nonfinite_report(batch_l = dat_, 
-                      loss_value = Loss_i, grad_norm_value = GradNorm_i, 
-                      iteration = i, keys_mat = keys_mat)
-                    stop(sprintf(paste("Non-finite training state in %s", 
-                      "[outer=%s, BaseID=%s, ModelType=%s, iter=%s, loss=%s, grad_norm=%s].", 
-                      "Saved debug report to %s.", sep = " "), 
-                      get0("AnalysisName", ifnotfound = "Analysis2"), 
-                      get0("OUTER_ITERATION", ifnotfound = NA_integer_), 
-                      capture_nonfinite_base_id(), get0("ModelType", 
-                        ifnotfound = NA_character_), i, format(Loss_i, 
-                        scientific = TRUE), format(GradNorm_i, 
-                        scientific = TRUE), nonfinite_capture$report_path))
-                  }
-                  if (UpdateParametersCond) {
-                    ExecuteUpdateCounter <- ExecuteUpdateCounter + 
-                      1
-                    GradientUpdatePackage <- jit_get_update(updates = GradientUpdatePackage, 
-                      state = opt_state, params = eq$partition(ModelList, 
-                        eq$is_array)[[1]])
-                    opt_state <- GradientUpdatePackage[[2]]
-                    GradientUpdatePackage <- eq$combine(GradientUpdatePackage[[1]], 
-                      GradientUpdatePackage_aux)
-                    if (i == 1) {
-                      updatefxn_ <- eq$filter_jit(function(ml, 
-                        gup) {
-                        eq$combine(jit_apply_updates(params = GlobalPartition(eq$partition(ml, 
-                          eq$is_array)[[1]], PartFxn)[[1]], updates = GlobalPartition(gup, 
-                          PartFxn)[[1]]), eq$partition(ModelList, 
-                          eq$is_array)[[2]])
-                      })
-                    }
-                    ModelList <- updatefxn_(ModelList, GradientUpdatePackage)
-                    rm(GradientUpdatePackage, dat_)
-                  }
-                  {
-                    if ((i == 1 | i%%10 == 0) & is.na(COMMAND_ARG_INPUT)) {
-                      plottingSeq_counter <- plottingSeq_counter + 
-                        1
-                      if (plottingSeq_counter == 1) {
-                        print2("First plotting seq analysis")
-                      }
-                      par(mfrow = c(1, 2))
-                      for (reri in 1:2) {
-                        ({
-                          tmp555 <- np$array(GetPred_train_jit(ModelList, 
-                            batch2package(batch_l_cal), state, 
-                            PriorList, PolicyList, GetPredSaveAtInfo_default, 
-                            jax$random$split(JaxKey(ai(runif(1, 
-                              1, 1e+05))), nBatch))[[1]]$y_mu)[, 
-                            , 1]
-                        })
-                        if (reri == 1) {
-                          tmp_ <- tmp555
-                        }
-                        if (reri == 1) {
-                          try(plot(tmp555[1, ], ylim = c(0, max(tmp555)), 
-                            type = "l", main = "Y-hat"), T)
-                        }
-                        for (i3 in 2:nrow(tmp555)) {
-                          points(tmp555[i3, ], type = "l", col = ifelse(reri == 
-                            1, yes = "black", no = "gray"), lwd = ifelse(reri == 
-                            1, yes = 2, no = 2), lty = ifelse(reri == 
-                            1, yes = 1, no = 2))
-                        }
-                      }
-                      tmp_true <- np$array(batch_l_cal$YTrue_out)[, 
-                        , 1]
-                      try(plot(tmp_true[1, ], ylim = c(0, max(tmp_true)), 
-                        type = "l", main = "Y-true"), T)
-                      for (i3 in 2:nrow(tmp555)) {
-                        points(tmp_true[i3, ], type = "l", col = "black", 
-                          lwd = 2, lty = 1)
-                      }
-                      print(sprintf("Current cor with truth: %.3f", 
-                        cor(c(tmp555), c(tmp_true))))
-                      plot(c(tmp555), c(tmp_true), xlim = summary(c(tmp555, 
-                        tmp_true))[c(1, 6)], ylim = summary(c(tmp555, 
-                        tmp_true))[c(1, 6)])
-                      abline(a = 0, b = 1)
-                      plot(c(tmp555), c(tmp_true), xlim = summary(c(tmp555, 
-                        tmp_true))[c(1, 6)], ylim = summary(c(tmp555, 
-                        tmp_true))[c(1, 6)])
-                      abline(a = 0, b = 1)
-                      print2(sprintf("Within iteration mean correlation: %.10f", 
-                        mean(diag(cor(t(tmp_), t(tmp555))))))
-                      if (plottingSeq_counter == 1) {
-                        sharedXSamp <- sample(1:length(tmp555), 
-                          length(tmp555)/10)
-                      }
-                      if (plottingSeq_counter > 1) {
-                        crossIterCor_vec <- c(crossIterCor_vec, 
-                          cor(tmp555[sharedXSamp], tmpSamp_minus1))
-                        print2(sprintf("Across iteration correlation: %.10f", 
-                          crossIterCor_vec[length(crossIterCor_vec)]))
-                      }
-                      if (i == 1) {
-                        tmpSamp_t0 <- tmp555[sharedXSamp]
-                      }
-                      tmpSamp_minus1 <- tmp555[sharedXSamp]
-                      rm(tmp_, tmp_true)
-                    }
-                    if ((i > 10 & i%%10 == 5) & is.na(COMMAND_ARG_INPUT)) {
-                      par(mfrow = c(1, 2))
-                      try({
-                        plot(rank(na.omit(in_loss_vec)), main = "Loss")
-                        points(smooth.spline(rank(na.omit(in_loss_vec))), 
-                          type = "l", lwd = 3)
-                      }, T)
-                      try({
-                        plot(grad_norm_vec[1:i], log = "y", main = "Gradients")
-                      }, T)
-                    }
-                  }
-                  if (i == 1 || (is.na(COMMAND_ARG_INPUT) && 
-                    i%%4 == 0L) || (!is.na(COMMAND_ARG_INPUT) && 
-                    i%%20 == 0L)) {
-                    print2(sprintf("Iter: %s of %s -- Loss: %.4f (%.3f%%) -- Last OutCor %.2f: -- Last OutSkill: %.2f -- Total (s): %s -- Grad & updates (s): %.3f", 
-                      i, nSGD_model, myLoss_fromGrad, 100 * (1 - 
-                        rank(in_loss_vec[1:i])[i]/i), LastOutCor, 
-                      Skill8SanityCheck, te_total <- round(difftime(Sys.time(), 
-                        fulliter_timer, units = "secs"), 2L), 
-                      te_grads <- round(difftime(Sys.time(), 
-                        gd_timer, units = "secs"), 2L)))
-                  }
-                  write.csv(file = "./TrainDoStepTime.csv", as.matrix(te_total))
+                keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(ai(i)), 
+                  nBatch))
+                batch_pkg <- batch2package(dat_)
+                GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info", 
+                  inherits = TRUE)) {
+                  ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
                 }
+                else {
+                  GetPredSaveAtInfo_default
+                }
+                train_step_result <- train_step_compiled(ModelList, 
+                  batch_pkg, dat_$YTrue_out, dat_$YTrue_out_mask, 
+                  jnp$array(as.numeric(i)), state, PriorList, 
+                  PolicyList, GetPredSaveAtInfo_runtime, keys_mat, 
+                  opt_state)
+                Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
+                GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
+                UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i)
+                if (!UpdateParametersCond) {
+                  nonfinite_capture <- capture_nonfinite_report(batch_l = dat_, 
+                    loss_value = Loss_i, grad_norm_value = GradNorm_i, 
+                    iteration = i, keys_mat = keys_mat)
+                  stop(sprintf(paste("Non-finite training state in %s", 
+                    "[outer=%s, BaseID=%s, ModelType=%s, iter=%s, loss=%s, grad_norm=%s].", 
+                    "Saved debug report to %s.", sep = " "), 
+                    get0("AnalysisName", ifnotfound = "Analysis2"), 
+                    get0("OUTER_ITERATION", ifnotfound = NA_integer_), 
+                    capture_nonfinite_base_id(), get0("ModelType", 
+                      ifnotfound = NA_character_), i, format(Loss_i, 
+                      scientific = TRUE), format(GradNorm_i, 
+                      scientific = TRUE), nonfinite_capture$report_path))
+                }
+                if (UpdateParametersCond) {
+                  ExecuteUpdateCounter <- ExecuteUpdateCounter + 
+                    1
+                  ModelList <- train_step_result$model
+                  state <- train_step_result$state
+                  opt_state <- train_step_result$opt_state
+                  rm(batch_pkg, dat_)
+                }
+                {
+                  if ((i == 1 | i%%10 == 0) & is.na(COMMAND_ARG_INPUT)) {
+                    plottingSeq_counter <- plottingSeq_counter + 
+                      1
+                    if (plottingSeq_counter == 1) {
+                      print2("First plotting seq analysis")
+                    }
+                    par(mfrow = c(1, 2))
+                    for (reri in 1:2) {
+                      ({
+                        tmp555 <- np$array(GetPred_train_jit(ModelList, 
+                          batch2package(batch_l_cal), state, 
+                          PriorList, PolicyList, GetPredSaveAtInfo_runtime, 
+                          ndm_runtime_data_to_device(jax$random$split(JaxKey(ai(runif(1, 
+                            1, 1e+05))), nBatch)))[[1]]$y_mu)[, 
+                          , 1]
+                      })
+                      if (reri == 1) {
+                        tmp_ <- tmp555
+                      }
+                      if (reri == 1) {
+                        try(plot(tmp555[1, ], ylim = c(0, max(tmp555)), 
+                          type = "l", main = "Y-hat"), T)
+                      }
+                      for (i3 in 2:nrow(tmp555)) {
+                        points(tmp555[i3, ], type = "l", col = ifelse(reri == 
+                          1, yes = "black", no = "gray"), lwd = ifelse(reri == 
+                          1, yes = 2, no = 2), lty = ifelse(reri == 
+                          1, yes = 1, no = 2))
+                      }
+                    }
+                    tmp_true <- np$array(batch_l_cal$YTrue_out)[, 
+                      , 1]
+                    try(plot(tmp_true[1, ], ylim = c(0, max(tmp_true)), 
+                      type = "l", main = "Y-true"), T)
+                    for (i3 in 2:nrow(tmp555)) {
+                      points(tmp_true[i3, ], type = "l", col = "black", 
+                        lwd = 2, lty = 1)
+                    }
+                    print(sprintf("Current cor with truth: %.3f", 
+                      cor(c(tmp555), c(tmp_true))))
+                    plot(c(tmp555), c(tmp_true), xlim = summary(c(tmp555, 
+                      tmp_true))[c(1, 6)], ylim = summary(c(tmp555, 
+                      tmp_true))[c(1, 6)])
+                    abline(a = 0, b = 1)
+                    plot(c(tmp555), c(tmp_true), xlim = summary(c(tmp555, 
+                      tmp_true))[c(1, 6)], ylim = summary(c(tmp555, 
+                      tmp_true))[c(1, 6)])
+                    abline(a = 0, b = 1)
+                    print2(sprintf("Within iteration mean correlation: %.10f", 
+                      mean(diag(cor(t(tmp_), t(tmp555))))))
+                    if (plottingSeq_counter == 1) {
+                      sharedXSamp <- sample(1:length(tmp555), 
+                        length(tmp555)/10)
+                    }
+                    if (plottingSeq_counter > 1) {
+                      crossIterCor_vec <- c(crossIterCor_vec, 
+                        cor(tmp555[sharedXSamp], tmpSamp_minus1))
+                      print2(sprintf("Across iteration correlation: %.10f", 
+                        crossIterCor_vec[length(crossIterCor_vec)]))
+                    }
+                    if (i == 1) {
+                      tmpSamp_t0 <- tmp555[sharedXSamp]
+                    }
+                    tmpSamp_minus1 <- tmp555[sharedXSamp]
+                    rm(tmp_, tmp_true)
+                  }
+                  if ((i > 10 & i%%10 == 5) & is.na(COMMAND_ARG_INPUT)) {
+                    par(mfrow = c(1, 2))
+                    try({
+                      plot(rank(na.omit(in_loss_vec)), main = "Loss")
+                      points(smooth.spline(rank(na.omit(in_loss_vec))), 
+                        type = "l", lwd = 3)
+                    }, T)
+                    try({
+                      plot(grad_norm_vec[1:i], log = "y", main = "Gradients")
+                    }, T)
+                  }
+                }
+                if (i == 1 || (is.na(COMMAND_ARG_INPUT) && i%%4 == 
+                  0L) || (!is.na(COMMAND_ARG_INPUT) && i%%20 == 
+                  0L)) {
+                  print2(sprintf("Iter: %s of %s -- Loss: %.4f (%.3f%%) -- Last OutCor %.2f: -- Last OutSkill: %.2f -- Total (s): %s -- Grad & updates (s): %.3f", 
+                    i, nSGD_model, Loss_i, 100 * (1 - rank(in_loss_vec[1:i])[i]/i), 
+                    LastOutCor, Skill8SanityCheck, te_total <- round(difftime(Sys.time(), 
+                      fulliter_timer, units = "secs"), 2L), te_grads <- round(difftime(Sys.time(), 
+                      gd_timer, units = "secs"), 2L)))
+                }
+                write.csv(file = "./TrainDoStepTime.csv", as.matrix(te_total))
             }
         }
     }, print("Done with SuperLModel_TrainDo.R"))
@@ -5504,8 +5656,8 @@
                 {
                   add_pred_all <- replicate(5, list(try(GetPred_inference(ModelList, 
                     batch2package(batch_l), state, PriorList, 
-                    PolicyList, GetPredSaveAtInfo_default, jax$random$split(JaxKey(999L), 
-                      batch_l$XPred$shape[[1]]))[[1]], T)))
+                    PolicyList, GetPredSaveAtInfo_default, ndm_runtime_data_to_device(jax$random$split(JaxKey(999L), 
+                      batch_l$XPred$shape[[1]])))[[1]], T)))
                   add_pred_all <- add_pred_all[!(unlist(lapply(add_pred_all, 
                     class)) %in% "try-error")]
                   plot(np$array(add_pred_all[[1]]$y_mu)[, , 1], 
@@ -5740,8 +5892,8 @@
         }
         pred_l <- replicate(10, list(GetPred_inference(ModelList, 
             batch2package(batch_l), state, PriorList, PolicyList, 
-            GetPredSaveAtInfo_inference, jax$random$split(JaxKey(as.integer(3L + 
-                runif(1, 1, 10000))), nBatch))[[1]]))
+            GetPredSaveAtInfo_inference, ndm_runtime_data_to_device(jax$random$split(JaxKey(as.integer(3L + 
+                runif(1, 1, 10000))), nBatch)))[[1]]))
         pred_l_mean <- lapply(pred_l, function(zer) {
             np$asanyarray(zer$y_mu)
         })
@@ -5957,11 +6109,13 @@
                 hat_y_natural <- GetPred_inference(ModelList, 
                   batch2package(batch_l_natural), state, PriorList, 
                   PolicyList_Model_natural, GetPredSaveAtInfo_inference, 
-                  jax$random$split(JaxKey(9L + counterf_), nBatch))[[1]]
+                  ndm_runtime_data_to_device(jax$random$split(JaxKey(9L + 
+                    counterf_), nBatch)))[[1]]
                 hat_y_unnatural <- GetPred_inference(ModelList, 
                   batch2package(batch_l_unnatural), state, PriorList, 
                   PolicyList_Model_unnatural, GetPredSaveAtInfo_inference, 
-                  jax$random$split(JaxKey(9L), nBatch))[[1]]
+                  ndm_runtime_data_to_device(jax$random$split(JaxKey(9L), 
+                    nBatch)))[[1]]
                 NUM <- (0.001 + colMeans(abs(np$array(batch_l_unnatural$YTrue_out)[, 
                   , 1] - np$array(batch_l_natural$YTrue_out)[, 
                   , 1])))

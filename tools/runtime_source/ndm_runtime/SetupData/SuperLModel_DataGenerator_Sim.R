@@ -198,19 +198,15 @@
 
       # perform ODE analysis on CPU
       diff_eq_sol <- GetDataFromODE_sim_batch(
-                                      send2cpu(init_true),
-                                      send2cpu(invbeta_true_init),
-                                      send2cpu(inv_beta_noise),
-                                      send2cpu(PolicyScenarioSimBasis),
-                                      send2cpu(PolicyList$Scenario),
-                                      send2cpu(initial_shift),
-                                      send2cpu(TheSimEntry),
-                                      send2cpu(jnp$array(nTimes)),
-                                      send2cpu(jnp$arange(nTimes)))
-
-      # send to target device 
-      # diff_eq_sol$ys$e$devices() # analyze current device
-      diff_eq_sol <- send2gpu(diff_eq_sol)
+                                      ndm_runtime_data_to_device(init_true),
+                                      ndm_runtime_data_to_device(invbeta_true_init),
+                                      ndm_runtime_data_to_device(inv_beta_noise),
+                                      ndm_runtime_data_to_device(PolicyScenarioSimBasis),
+                                      ndm_runtime_replicate_tree(PolicyList$Scenario),
+                                      ndm_runtime_data_to_device(initial_shift),
+                                      ndm_runtime_replicate_tree(TheSimEntry),
+                                      ndm_runtime_replicate_tree(jnp$array(nTimes)),
+                                      ndm_runtime_replicate_tree(jnp$arange(nTimes)))
 
       # process output
       {

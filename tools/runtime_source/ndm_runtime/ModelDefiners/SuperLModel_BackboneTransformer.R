@@ -488,6 +488,82 @@ if(backbonePath == "initialize"){
       .__kv_helpers_defined <- TRUE
     }
   }
+
+  TransformerStep_NoCache <- function(xt, TransformerList_d, x_mask_attn) {
+    xt <- jnp$multiply(NormFxn(xtm1 <- xt), TransformerList_d$NormScalerInput)
+
+    if (UseLatentAttention) {
+      stop("Latent Attention not double checked -- do not use")
+    }
+
+    q_ <- jnp$dot(xt, TransformerList_d$Multihead$W_q)
+    k_ <- jnp$dot(xt, TransformerList_d$Multihead$W_k)
+    v_ <- jnp$dot(xt, TransformerList_d$Multihead$W_v)
+
+    q_ <- jnp$reshape(q_, list(q_$shape[[1]], num_heads, head_dim))
+    k_ <- jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, head_dim))
+    v_ <- jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, head_dim))
+
+    pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
+    apply_rope_one_row <- function(NH_row, p) {
+      jax$vmap(function(hvec) {
+        rope_apply_single(hvec, p, head_dim)
+      }, in_axes = 0L)(NH_row)
+    }
+    apply_rope_all <- jax$vmap(apply_rope_one_row, in_axes = list(0L, 0L))
+    q_ <- apply_rope_all(q_, pos_ids)
+    k_ <- apply_rope_all(k_, pos_ids)
+    k_ <- repeat_kv_heads(k_, kv_group_size)
+    v_ <- repeat_kv_heads(v_, kv_group_size)
+
+    mask_bool <- jnp$greater(x_mask_attn, 0)
+    mask_bool <- jnp$broadcast_to(
+      mask_bool,
+      list(num_heads, mask_bool$shape[[1]], mask_bool$shape[[2]])
+    )
+
+    xt_attn <- dot_product_attention_unified(
+      q = q_,
+      k = k_,
+      v = v_,
+      mask = mask_bool,
+      is_causal = (ModelType == "DecoderOnly"),
+      prefer = "auto"
+    )$astype(k_$dtype)
+
+    xt_attn <- jnp$reshape(xt_attn, list(xt_attn$shape[[1]], num_heads * head_dim))
+    xt <- jnp$dot(xt_attn, TransformerList_d$Multihead$W_o)
+    xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon1$WtSkipPath) +
+      xt * jax$nn$softplus(TransformerList_d$ResidCon1$WtResidPath)
+    xt <- NormFxn(xt) * TransformerList_d$NormScalerPostMultiHead
+    xt <- jax$nn$swish(ffmap(TransformerList_d$FFN$WideProj1, xt)) *
+      ffmap(TransformerList_d$FFN$WideProj2, xt)
+    xt <- ffmap(TransformerList_d$FFN$OutProj1, xt)
+    xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon2$WtSkipPath) +
+      xt * jax$nn$softplus(TransformerList_d$ResidCon2$WtResidPath)
+    xt
+  }
+
+  RunTransformerBackbone <- function(xt, x_mask, TransformerList) {
+    x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
+    layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
+    layer_branches <- lapply(layer_names, function(layer_name) {
+      layer_params <- TransformerList[[layer_name]]
+      function(xt_in) TransformerStep_NoCache(xt_in, layer_params, x_mask_attn)
+    })
+    if (length(layer_branches) == 0L) {
+      return(xt)
+    }
+    scan_body <- function(carry_xt, i) {
+      xt_next <- jax$lax$switch(index = i, branches = layer_branches, operand = carry_xt)
+      list(xt_next, jnp$array(0L, dtype = jnp$int32))
+    }
+    jax$lax$scan(
+      f = scan_body,
+      init = xt,
+      xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
+    )[[1]]
+  }
   
   print("Generating TransformerList objects...")
   for(l_ in 1L:length(TransformerList)){
@@ -580,128 +656,9 @@ if(backbonePath == "initialize"){
 }
 
 if(backbonePath == "run"){ # note: there is no caching here; caching is applied in *BuildML.R
-  # multihead attn part
-  num_heads <- TransformerHeads
-  num_kv_heads <- TransformerKVHeads
-  head_dim <- TransformerHeadDim
-  kv_group_size <- TransformerKVGroupSize
-  x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask)) #length (query_seq_length, kv_seq_length)
-  # x_mask_1oversums <- jnp$reciprocal( jnp$add(0.000001, jnp$sum(x_mask,0L,keepdims=T) ) )
-  # causalimages::image2(np$array(x_mask_attn$val)[1,,] )
-  
-  print2(sprintf("Starting Transformer block [depth: %s]...", ModelDepth))
-  TransformerStep_NoCache <- switch_filter_jit(function(xt, TransformerList_d, x_mask_attn){
-        
-        # standardize
-        xt <- jnp$multiply(NormFxn( xtm1 <- xt  ), TransformerList_d$NormScalerInput)
-        
-        # multihead attention block
-        if(UseLatentAttention){
-          stop("Latent Attention not double checked -- do not use")
-          xt <- LatentMultiheadAttention(
-            Multihead = TransformerList_d$LatentMultihead,
-            query = (xt_pos <- eq$nn$RotaryPositionalEmbedding(ModelDims)( xt )),
-            key_  = xt_pos,
-            value = xt, 
-            mask = x_mask_attn )
-        }
-        if(!UseLatentAttention){
-          {
-          # 1) Linear projections: [T, D] @ [D, D] -> [T, D]
-          q_ = jnp$dot(xt, TransformerList_d$Multihead$W_q)
-          k_ = jnp$dot(xt, TransformerList_d$Multihead$W_k)
-          v_ = jnp$dot(xt, TransformerList_d$Multihead$W_v)
-          
-          # 2) Reshape to query and KV heads.
-          q_ = jnp$reshape(q_, list(q_$shape[[1]], num_heads, head_dim))
-          k_ = jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, head_dim))
-          v_ = jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, head_dim))
-          
-          # 3) Apply RoPE after Q/K projections so cached and uncached paths match.
-          pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
-          apply_rope_one_row <- function(NH_row, p) {
-            jax$vmap(function(hvec){ rope_apply_single(hvec, p, head_dim) }, in_axes = 0L)(NH_row)
-          }
-          apply_rope_all <- jax$vmap(apply_rope_one_row, in_axes = list(0L, 0L))
-          q_ <- apply_rope_all(q_, pos_ids)
-          k_ <- apply_rope_all(k_, pos_ids)
-          k_ <- repeat_kv_heads(k_, kv_group_size)
-          v_ <- repeat_kv_heads(v_, kv_group_size)
-          
-          # 4) Mask: make boolean and broadcast to [N, T, S].
-          #     Your x_mask_attn is [T, S] with 1=keep, 0=mask. Convert to bool and add head axis.
-          #mask_bool <- jnp$greater(x_mask_attn, 0)
-          #mask_bool <- jnp$expand_dims(mask_bool, 0L)                            # [1, T, S]
-          #mask_bool <- jnp$broadcast_to(mask_bool, list(num_heads, q$shape[[1]], k$shape[[1]]))  # [N, T, S]
-          
-          mask_bool  <- jnp$greater(x_mask_attn, 0)                              # [T, S]
-          #mask_bool  <- jnp$expand_dims(jnp$expand_dims(mask_bool, 0L), 0L)      # [1, 1, T, S]
-          #mask_bool  <- jnp$expand_dims(mask_bool, 0L)      # [1, 1, T, S]
-          mask_bool <- jnp$broadcast_to(mask_bool,
-                                        list(num_heads, mask_bool$shape[[1]], mask_bool$shape[[2]])
-                                        )  # [N, T, S]
-
-          # attention 
-          xt_attn <- dot_product_attention_unified(
-              q = q_,
-              k = k_,
-              v = v_,
-              mask = mask_bool,
-              is_causal = (ModelType == "DecoderOnly"),
-              prefer = "auto"
-            )$astype(k_$dtype)
-          
-          # 6) Merge heads back: [T, N, H] -> [T, D]
-          xt_attn <- jnp$reshape(xt_attn, list(xt_attn$shape[[1]], num_heads*head_dim))
-          
-          # 7) Output projection: [T, D] @ [D, D] -> [T, D]
-          xt <- jnp$dot(xt_attn, TransformerList_d$Multihead$W_o)
-          }
-        }
-        
-        # residual + normalization, see https://arxiv.org/pdf/2302.00453.pdf Eq 2
-        #xt <- xtm1 <- xtm1 + xt * jax$nn$softplus( TransformerList_d[[5]][[1]] ) 
-        xt <- xtm1 <- xtm1 * jax$nn$softplus( TransformerList_d$ResidCon1$WtSkipPath ) + 
-                      xt   * jax$nn$softplus( TransformerList_d$ResidCon1$WtResidPath )
-        xt <- NormFxn( xt ) * TransformerList_d$NormScalerPostMultiHead
-        
-        # feed forward with swiglu FFN
-        xt <- jax$nn$swish(ffmap(TransformerList_d$FFN$WideProj1, xt)) * 
-                           ffmap(TransformerList_d$FFN$WideProj2, xt) # swiglu proj
-        xt <- ffmap(  TransformerList_d$FFN$OutProj1, xt  ) # final projection
-
-        # return with residual connection to previous state
-        xt <- xtm1 <- xtm1 * jax$nn$softplus( TransformerList_d$ResidCon2$WtSkipPath ) +
-                      xt   * jax$nn$softplus( TransformerList_d$ResidCon2$WtResidPath )
-        return( xt )
-      })
-  
-  # manual loop 
-  if(TRUE){
-    for(d_ in 1:ModelDepth){ print(d_); xt <- TransformerStep_NoCache( xt, eval(parse(text=sprintf("TSList$TSBackbone$d%s",d_))), x_mask_attn )  }
+  if (!exists("RunTransformerBackbone", inherits = TRUE)) {
+    stop("Transformer runtime helpers were not initialized before the run path.", call. = FALSE)
   }
-  
-  # loop with scan
-  if(FALSE){
-    layer_branches <- lapply(seq_len(ModelDepth), function(d_) {
-      L_d <- TSList$TSBackbone[[paste0("d", d_)]]
-      function(xt_in) TransformerStep_NoCache(xt_in, L_d, x_mask_attn)
-    })
-    
-    scan_body <- function(carry_xt, i) {
-      xt_next <- jax$lax$switch(index = i, branches = layer_branches, operand = carry_xt)
-      list(xt_next, jnp$array(0L)) # dummy per-step output
-    }
-    
-    xt <- jax$lax$scan(
-      f    = scan_body,
-      init = xt,
-      xs   = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
-    )[[1]]
-  }
-  
-  # plot(np$array(xt$val$val)[1,1,,d_<-sample(1:50,1)]) # sample a dimension
-  # plot(np$array(xt$val$val)[sample(1:20,1),1,,d_]) # look at its evolution across different matrix slices
-  print2(sprintf("Done with Transformer block [depth: %s]...", ModelDepth))
+  xt <- RunTransformerBackbone(xt = xt, x_mask = x_mask, TransformerList = TSList$TSBackbone)
 }
 print("Done sourcing SuperLModel_BackboneTransformer.R")

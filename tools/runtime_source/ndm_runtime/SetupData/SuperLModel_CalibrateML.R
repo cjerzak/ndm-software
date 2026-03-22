@@ -43,7 +43,7 @@ print2("Starting a round of SuperLModel_CalibrateML.R")
         ModelList, (jax_batchx <- batch2package(batch_l)),
         state, PriorList, PolicyList,
         GetPredSaveAtInfo_default,
-        jax$random$split(JaxKey(999L), nBatch))[[1]]
+        ndm_runtime_data_to_device(jax$random$split(JaxKey(999L), nBatch)))[[1]]
       # batch_l_cal$XPred[[1]][[1]]
       
       #plot(np$array(batch_l$XPred[[1]][[1]])[1,,1])
@@ -57,7 +57,7 @@ print2("Starting a round of SuperLModel_CalibrateML.R")
       print2("Getting trial loss...")
       loss <- getLoss_train(   ModelList, jax_batchx, jax_batchy, jax_batchymask, 
                                jnp$array(4), state, PriorList, PolicyList, 
-                               GetPredSaveAtInfo_default, jax$random$split(JaxKey(9L), nBatch) )
+                               GetPredSaveAtInfo_default, ndm_runtime_data_to_device(jax$random$split(JaxKey(9L), nBatch)) )
       if(is.na(loss[[1]]$tolist())){ stop("NA in loss in CalibrateML") }
       if(T == F){ # deeper performance checks
         plot(   c(np$array( hat_y$y_mu )[,,1])  )

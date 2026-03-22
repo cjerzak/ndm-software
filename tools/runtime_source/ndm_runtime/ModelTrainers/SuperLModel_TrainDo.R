@@ -111,6 +111,11 @@ capture_nonfinite_report <- function(batch_l,
                                      grad_norm_value,
                                      iteration,
                                      keys_mat){
+  GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info", inherits = TRUE)) {
+    ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
+  } else {
+    GetPredSaveAtInfo_default
+  }
   prediction <- try(
     GetPred_train_jit(
       ModelList,
@@ -118,7 +123,7 @@ capture_nonfinite_report <- function(batch_l,
       state,
       PriorList,
       PolicyList,
-      GetPredSaveAtInfo_default,
+      GetPredSaveAtInfo_runtime,
       keys_mat
     ),
     silent = TRUE
@@ -175,6 +180,9 @@ capture_nonfinite_report <- function(batch_l,
     iteration = iteration
   )
   list(report = report, report_path = report_path)
+}
+if (exists("ndm_runtime_normalize_getpred_saveat_info", inherits = TRUE)) {
+  GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
 }
 for(i in i_:nSGD_model){
   if(Sys.info()["sysname"] != "Darwin" & i > 2){  
@@ -237,6 +245,11 @@ for(i in i_:nSGD_model){
       opt_state <- ModelList_recovered[[3]];
       state <- ModelList_recovered[[2]];
       ModelList <- ModelList_recovered[[1]]
+      if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+        opt_state <- ndm_runtime_replicate_tree(opt_state)
+        state <- ndm_runtime_replicate_tree(state)
+        ModelList <- ndm_runtime_replicate_tree(ModelList)
+      }
       i_ <- np$array( opt_state[[4]][[2]]$count )
       rm( ModelList_recovered )
     }
@@ -260,132 +273,64 @@ for(i in i_:nSGD_model){
   {
     gd_timer <- Sys.time()
     if( i == 1 ){ print2( "At first gradLoss_jax()" ) }
-    keys_mat <- jax$random$split(JaxKey(ai(i)),nBatch)
-    GetPredSaveAtInfo_default[[1]] <- as.integer(np$array(GetPredSaveAtInfo_default[[1]]) )# prevents scan compilation issues
-    GradientUpdatePackage <- gradLoss_jax(ModelList,
-                                          batch2package(dat_),
-                                          dat_$YTrue_out,
-                                          dat_$YTrue_out_mask,
-                                          jnp$array(as.numeric(i)),
-                                          state,
-                                          PriorList,
-                                          PolicyList,
-                                          GetPredSaveAtInfo_default,
-                                          keys_mat)
+    keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(ai(i)),nBatch))
+    batch_pkg <- batch2package(dat_)
+    GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info", inherits = TRUE)) {
+      ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
+    } else {
+      GetPredSaveAtInfo_default
+    }
+    train_step_result <- train_step_compiled(
+      ModelList,
+      batch_pkg,
+      dat_$YTrue_out,
+      dat_$YTrue_out_mask,
+      jnp$array(as.numeric(i)),
+      state,
+      PriorList,
+      PolicyList,
+      GetPredSaveAtInfo_runtime,
+      keys_mat,
+      opt_state
+    )
+    Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
+    GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
 
-    #if("try-error" %in% class(GradientUpdatePackage)){ print(GradientUpdatePackage); stop( "Failure at GradientUpdatePackage" ) }
-    if(!"try-error" %in% class(GradientUpdatePackage)){
-      # update state
-      state_tmp <- GradientUpdatePackage[[1]][[2]]
-      GradientUpdatePackage[[1]] <- GradientUpdatePackage[[1]][[1]]
-      state <- state_tmp
-
-      # update loss
-      myLoss_fromGrad <- GradientUpdatePackage[[1]]$tolist()
-      GradientUpdatePackage <- GradientUpdatePackage[[2]];
-      GradientUpdatePackage <- eq$partition(GradientUpdatePackage, eq$is_inexact_array)
-      GradientUpdatePackage_aux <- GradientUpdatePackage[[2]]; GradientUpdatePackage <- GradientUpdatePackage[[1]]
-
-      # get information about gradient norms
-      #if(i == 1){
-      if(i == 1 | i %% 10 == 0){
-        grad_vec <- unlist(lapply(jax$tree_util$tree_leaves(GradientUpdatePackage), function(ze){ return( np$array(jnp$abs(ze)$mean()) ) }))
-        values3 <- rrapply::rrapply(GradientUpdatePackage, condition = function(x){TRUE},
-                                   function(x){
-                                     tmp_ <- unlist(lapply(jax$tree_util$tree_leaves(x),
-                                                   function(ze){ return( np$array(jnp$abs(ze)$mean()) ) }))
-                                     return(tmp_)
-                                   },how="list")
-        if(is.na(COMMAND_ARG_INPUT)){
-          grad_norm_mat <- rbind(grad_norm_mat, unlist(values3))
-          # PCNorms <- predict(prcomp(t(grad_norm_mat)))[,1:2]
-          #row.names(PCNorms) <- colnames(grad_norm_mat)
-          #sort(PCNorms[,1]);sort(PCNorms[,2])
-          # View(grad_norm_mat)
-          # grad_norm_mat <- as.data.frame(grad_norm_mat)
-          # sort(colMeans(grad_norm_mat))
-          # sort(apply(grad_norm_mat,2,sd))
-          # plot(sort(colMeans(grad_norm_mat)))
-          # plot(grad_norm_mat$InitProcessList.InitialEncodingTransform.Conv1d_long)
-        }
-        if(is.na(COMMAND_ARG_INPUT)){
-          print(tail(sort(unlist(values3),decreasing=F),25))
-          mean(duplicated(names(sort(unlist(values3)))))
-          plot(sort(unlist(values3)))
-          
-          if(i > 1){ 
-            plot(unlist(values3), unlist(values3_past)); abline(a=0,b=1)
-          }
-        }
-        values3_past <- values3
-      
-        grad_list <- jax$tree_util$tree_map(function(ze){
-          leave_grad <- try(as.numeric(np$array(jnp$abs( 
-            jax$tree_util$tree_leaves(ze)[[1]] )$mean()) ),T)
-          if("try-error" %in% class(leave_grad)){browser()}
-          return(leave_grad)}, GradientUpdatePackage)
-        #unlist(GradientUpdatePackage); unlist(grad_list)
-        #plot(unlist(grad_vec)+0.00001, main = sprintf("Grad mag: {%.3f%% are zero}...",100*mean(unlist(grad_vec)==0)), log = "y")
-      }
-      Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(myLoss_fromGrad)[[1L]])
-      GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(
-        optax$global_norm(jax$tree_util$tree_leaves(GradientUpdatePackage))
-      ))[[1L]])
-
-      # update parameters if passing thru all checks
-      UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i)
-      if(! UpdateParametersCond ){
-        nonfinite_capture <- capture_nonfinite_report(
-          batch_l = dat_,
-          loss_value = Loss_i,
-          grad_norm_value = GradNorm_i,
-          iteration = i,
-          keys_mat = keys_mat
+    UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i)
+    if(! UpdateParametersCond ){
+      nonfinite_capture <- capture_nonfinite_report(
+        batch_l = dat_,
+        loss_value = Loss_i,
+        grad_norm_value = GradNorm_i,
+        iteration = i,
+        keys_mat = keys_mat
+      )
+      stop(
+        sprintf(
+          paste(
+            "Non-finite training state in %s",
+            "[outer=%s, BaseID=%s, ModelType=%s, iter=%s, loss=%s, grad_norm=%s].",
+            "Saved debug report to %s.",
+            sep = " "
+          ),
+          get0("AnalysisName", ifnotfound = "Analysis2"),
+          get0("OUTER_ITERATION", ifnotfound = NA_integer_),
+          capture_nonfinite_base_id(),
+          get0("ModelType", ifnotfound = NA_character_),
+          i,
+          format(Loss_i, scientific = TRUE),
+          format(GradNorm_i, scientific = TRUE),
+          nonfinite_capture$report_path
         )
-        stop(
-          sprintf(
-            paste(
-              "Non-finite training state in %s",
-              "[outer=%s, BaseID=%s, ModelType=%s, iter=%s, loss=%s, grad_norm=%s].",
-              "Saved debug report to %s.",
-              sep = " "
-            ),
-            get0("AnalysisName", ifnotfound = "Analysis2"),
-            get0("OUTER_ITERATION", ifnotfound = NA_integer_),
-            capture_nonfinite_base_id(),
-            get0("ModelType", ifnotfound = NA_character_),
-            i,
-            format(Loss_i, scientific = TRUE),
-            format(GradNorm_i, scientific = TRUE),
-            nonfinite_capture$report_path
-          )
-        )
-      }
-      if( UpdateParametersCond){
-        ExecuteUpdateCounter <- ExecuteUpdateCounter + 1
-
-        # updates + setup for net iteration
-        GradientUpdatePackage <- jit_get_update(
-          updates = GradientUpdatePackage,
-          state = opt_state,
-          params = eq$partition(ModelList, eq$is_array)[[1]] )
-        
-        opt_state <- GradientUpdatePackage[[2]]
-        GradientUpdatePackage <- eq$combine(GradientUpdatePackage[[1]], GradientUpdatePackage_aux)
-
-        # perform update
-        if(i == 1){ 
-          updatefxn_ <- eq$filter_jit( function(ml,gup){ 
-               eq$combine( jit_apply_updates(
-                            params = GlobalPartition(eq$partition(ml, eq$is_array)[[1]],
-                                                     PartFxn)[[1]],
-                            updates = GlobalPartition(gup,PartFxn)[[1]]),
-                            eq$partition(ModelList, eq$is_array)[[2]] )
-              })
-        }
-        ModelList <- updatefxn_(ModelList, GradientUpdatePackage)
-        rm(GradientUpdatePackage, dat_)
-      }
+      )
+    }
+    if( UpdateParametersCond){
+      ExecuteUpdateCounter <- ExecuteUpdateCounter + 1
+      ModelList <- train_step_result$model
+      state <- train_step_result$state
+      opt_state <- train_step_result$opt_state
+      rm(batch_pkg, dat_)
+    }
 
       # plotting sequence (do this after all parameter + state updates complete)
       {
@@ -399,8 +344,8 @@ for(i in i_:nSGD_model){
             ( {tmp555 <- np$array(GetPred_train_jit(
               ModelList, batch2package(batch_l_cal),
               state, PriorList, PolicyList,
-              GetPredSaveAtInfo_default,
-              jax$random$split(JaxKey(ai(runif(1,1,100000))), nBatch))[[1]]$y_mu)[,,1] })
+              GetPredSaveAtInfo_runtime,
+              ndm_runtime_data_to_device(jax$random$split(JaxKey(ai(runif(1,1,100000))), nBatch)))[[1]]$y_mu)[,,1] })
             if(reri == 1){ tmp_ <- tmp555 }
             if(reri == 1){ try(plot(tmp555[1,],ylim = c(0,max(tmp555)),type = 'l',main="Y-hat"),T) }
             for(i3 in 2:nrow(tmp555)){ points(tmp555[i3,],type = 'l',col = ifelse(reri == 1, yes = "black", no = "gray"),
@@ -445,7 +390,7 @@ for(i in i_:nSGD_model){
             (!is.na(COMMAND_ARG_INPUT) && i %% 20 == 0L)) {
           print2( sprintf("Iter: %s of %s -- Loss: %.4f (%.3f%%) -- Last OutCor %.2f: -- Last OutSkill: %.2f -- Total (s): %s -- Grad & updates (s): %.3f",
                             i, nSGD_model, 
-                            myLoss_fromGrad,
+                            Loss_i,
                             100*(1-rank(in_loss_vec[1:i])[i]/i),
                             LastOutCor, Skill8SanityCheck,
                             te_total <- round(difftime(Sys.time(), fulliter_timer, units = "secs"),2L), 
@@ -453,7 +398,6 @@ for(i in i_:nSGD_model){
       }
       write.csv(file = './TrainDoStepTime.csv', as.matrix(te_total))
     }
-  }
   }
 }
 print("Done with SuperLModel_TrainDo.R")

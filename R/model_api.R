@@ -164,9 +164,35 @@ ndm_prepare_data <- function(runtime_env,
     return(lapply(x, .ndm_as_runtime_jax, env = env))
   }
   if ("python.builtin.object" %in% class(x)) {
+    if (exists("ndm_runtime_data_to_device", envir = env, inherits = FALSE)) {
+      return(get("ndm_runtime_data_to_device", envir = env, inherits = FALSE)(x))
+    }
     return(env$jnp$array(reticulate::py_to_r(x)))
   }
+  if (exists("jnp", envir = env, inherits = FALSE)) {
+    x <- get("jnp", envir = env, inherits = FALSE)$array(x)
+    if (exists("ndm_runtime_data_to_device", envir = env, inherits = FALSE)) {
+      return(get("ndm_runtime_data_to_device", envir = env, inherits = FALSE)(x))
+    }
+    return(x)
+  }
   x
+}
+
+.ndm_runtime_device_helper <- function(env, helper_name, value) {
+  if (!exists(helper_name, envir = env, inherits = FALSE)) {
+    return(value)
+  }
+  get(helper_name, envir = env, inherits = FALSE)(value)
+}
+
+.ndm_runtime_getpred_saveat_info <- function(env, value) {
+  value <- .ndm_runtime_device_helper(
+    env,
+    "ndm_runtime_normalize_getpred_saveat_info",
+    value
+  )
+  .ndm_runtime_device_helper(env, "ndm_runtime_replicate_tree", value)
 }
 
 .ndm_prepare_prediction_batch <- function(batch, env) {
@@ -179,11 +205,14 @@ ndm_prepare_data <- function(runtime_env,
 
   if (is.list(batch) && !is.null(names(batch)) && "XPred" %in% names(batch)) {
     batch <- .ndm_as_runtime_jax(batch, env = env)
-    return(list(raw = batch, packaged = ndm_batch_to_model_inputs(batch)))
+    packaged <- ndm_batch_to_model_inputs(batch)
+    packaged <- .ndm_runtime_device_helper(env, "ndm_runtime_data_to_device", packaged)
+    return(list(raw = batch, packaged = packaged))
   }
 
   if (.ndm_is_packaged_prediction_batch(batch)) {
-    return(list(raw = batch, packaged = batch))
+    packaged <- .ndm_runtime_device_helper(env, "ndm_runtime_data_to_device", batch)
+    return(list(raw = batch, packaged = packaged))
   }
 
   stop(
@@ -425,7 +454,19 @@ ndm_predict <- function(x,
                         update_state = TRUE) {
   runtime_env <- .ndm_runtime_env_from_object(x)
 
-  pred_fun_name <- if (isTRUE(inference)) "GetPred_inference" else "GetPred_train_jit"
+  pred_fun_name <- if (isTRUE(inference)) {
+    if (exists("predict_step_compiled", envir = runtime_env, inherits = FALSE)) {
+      "predict_step_compiled"
+    } else {
+      "GetPred_inference"
+    }
+  } else {
+    if (exists("predict_train_step_compiled", envir = runtime_env, inherits = FALSE)) {
+      "predict_train_step_compiled"
+    } else {
+      "GetPred_train_jit"
+    }
+  }
   .ndm_require_runtime_bindings(
     runtime_env,
     c(
@@ -444,15 +485,20 @@ ndm_predict <- function(x,
   prepared_batch <- .ndm_prepare_prediction_batch(batch, env = runtime_env)
   batch_size <- .ndm_batch_size_from_object(prepared_batch$raw)
   seed_matrix <- runtime_env$jax$random$split(runtime_env$JaxKey(as.integer(seed)), as.integer(batch_size))
+  seed_matrix <- .ndm_runtime_device_helper(runtime_env, "ndm_runtime_data_to_device", seed_matrix)
+  getpred_saveat_info <- .ndm_runtime_getpred_saveat_info(
+    runtime_env,
+    runtime_env$GetPredSaveAtInfo_default
+  )
 
   pred_fun <- get(pred_fun_name, envir = runtime_env, inherits = FALSE)
   result <- pred_fun(
-    runtime_env$ModelList,
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$ModelList),
     prepared_batch$packaged,
-    runtime_env$state,
-    runtime_env$PriorList,
-    runtime_env$PolicyList,
-    runtime_env$GetPredSaveAtInfo_default,
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$state),
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$PriorList),
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$PolicyList),
+    getpred_saveat_info,
     seed_matrix
   )
 
@@ -508,17 +554,27 @@ ndm_loss <- function(x,
   y_mask <- .ndm_as_runtime_jax(y_mask, env = runtime_env)
   batch_size <- .ndm_batch_size_from_object(raw_batch)
   seed_matrix <- runtime_env$jax$random$split(runtime_env$JaxKey(as.integer(seed)), as.integer(batch_size))
+  seed_matrix <- .ndm_runtime_device_helper(runtime_env, "ndm_runtime_data_to_device", seed_matrix)
+  getpred_saveat_info <- .ndm_runtime_getpred_saveat_info(
+    runtime_env,
+    runtime_env$GetPredSaveAtInfo_default
+  )
+  loss_fun <- if (exists("loss_step_compiled", envir = runtime_env, inherits = FALSE)) {
+    get("loss_step_compiled", envir = runtime_env, inherits = FALSE)
+  } else {
+    runtime_env$getLoss_train
+  }
 
-  result <- runtime_env$getLoss_train(
-    runtime_env$ModelList,
+  result <- loss_fun(
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$ModelList),
     prepared_batch$packaged,
     y,
     y_mask,
     runtime_env$jnp$array(as.numeric(iteration)),
-    runtime_env$state,
-    runtime_env$PriorList,
-    runtime_env$PolicyList,
-    runtime_env$GetPredSaveAtInfo_default,
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$state),
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$PriorList),
+    .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$PolicyList),
+    getpred_saveat_info,
     seed_matrix
   )
 

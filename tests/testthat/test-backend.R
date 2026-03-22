@@ -69,7 +69,7 @@ test_that("ndm_check_backend reports unavailable environments and modules", {
   )
 })
 
-test_that("ndm_build_backend selects Apple Silicon Metal wheels", {
+test_that("ndm_build_backend selects the current Apple Silicon default install path", {
   installs <- list()
   created <- list()
 
@@ -93,7 +93,8 @@ test_that("ndm_build_backend selects Apple Silicon Metal wheels", {
 
   flat_installs <- unlist(installs, use.names = FALSE)
   expect_equal(created$envname, "jax_cpu")
-  expect_true(all(c("numpy", "jax==0.5.0", "jaxlib==0.5.0", "jax-metal==0.1.1") %in% flat_installs))
+  expect_true(all(c("numpy", "jax") %in% flat_installs))
+  expect_false(any(grepl("jax-metal|jaxlib==", flat_installs)))
   expect_false("tensorflow" %in% flat_installs)
 })
 
@@ -117,9 +118,8 @@ test_that("ndm_build_backend falls back from CUDA 13 to CUDA 12", {
     .package = "ndm"
   )
 
-  expect_message(
-    ndm_build_backend(conda_env = "jax_cpu", include_tensorflow = FALSE),
-    "falling back to CUDA 12"
+  expect_invisible(
+    ndm_build_backend(conda_env = "jax_cpu", include_tensorflow = FALSE)
   )
 
   flat_installs <- unlist(installs, use.names = FALSE)

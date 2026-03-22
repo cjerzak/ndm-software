@@ -57,8 +57,55 @@
 
   # optimizer setup
   opt_state <- optax_optimizer$init(  eq$partition(ModelList, eq$is_array)[[1]]  )
+  if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+    opt_state <- ndm_runtime_replicate_tree(opt_state)
+  }
   jit_apply_updates <- eq$filter_jit(optax$apply_updates)
   jit_get_update <- eq$filter_jit(optax_optimizer$update)
+  train_step_compiled <- switch_filter_jit(function(ModelList,
+                                                    batch_pkg,
+                                                    y_true,
+                                                    y_mask,
+                                                    iteration,
+                                                    state,
+                                                    PriorList,
+                                                    PolicyList,
+                                                    GetPredSaveAtInfo,
+                                                    seed,
+                                                    opt_state) {
+    loss_and_grads <- eq$filter_value_and_grad(getLoss_train, has_aux = T)(
+      ModelList,
+      batch_pkg,
+      y_true,
+      y_mask,
+      iteration,
+      state,
+      PriorList,
+      PolicyList,
+      GetPredSaveAtInfo,
+      seed
+    )
+    loss_and_state <- loss_and_grads[[1]]
+    grads <- loss_and_grads[[2]]
+    model_arrays <- eq$partition(ModelList, eq$is_array)
+    grad_arrays <- eq$partition(grads, eq$is_inexact_array)[[1]]
+    updates_and_state <- optax_optimizer$update(
+      grad_arrays,
+      opt_state,
+      model_arrays[[1]]
+    )
+    updated_model <- eq$combine(
+      optax$apply_updates(model_arrays[[1]], updates_and_state[[1]]),
+      model_arrays[[2]]
+    )
+    list(
+      "loss" = loss_and_state[[1]],
+      "state" = loss_and_state[[2]],
+      "grad_norm" = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)),
+      "model" = updated_model,
+      "opt_state" = updates_and_state[[2]]
+    )
+  })
 }
 
 # perform main training sequence

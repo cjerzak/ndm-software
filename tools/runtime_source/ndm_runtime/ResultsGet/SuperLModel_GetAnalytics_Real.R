@@ -51,7 +51,7 @@ if( !SimMode ){
                                     #ModelList, batch2package(batch_l_train),
                                     state, PriorList, PolicyList,
                                     GetPredSaveAtInfo_default,
-                                    jax$random$split(JaxKey(999L), batch_l$XPred$shape[[1]]))[[1]],T)))
+                                    ndm_runtime_data_to_device(jax$random$split(JaxKey(999L), batch_l$XPred$shape[[1]])))[[1]],T)))
                                     #jax$random$split(JaxKey(999L), batch_l_train$XPred$shape[[1]]))[[1]],T)))
                  add_pred_all <- add_pred_all[!(unlist(lapply(add_pred_all,class)) %in% 'try-error')]
                  plot( np$array(add_pred_all[[1]]$y_mu)[,,1], 

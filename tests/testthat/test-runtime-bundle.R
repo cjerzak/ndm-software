@@ -5,11 +5,12 @@ test_that("the package no longer ships the legacy runtime snapshot from inst/ext
   expect_false(nzchar(installed_path) && dir.exists(installed_path))
 })
 
-test_that("sysdata keeps model specs but not the retired embedded runtime payload", {
+test_that("sysdata keeps model specs and package-owned runtime sources", {
   ns <- asNamespace("ndm")
 
   expect_true(exists(".ndm_embedded_model_spec_sources", envir = ns, inherits = FALSE))
-  expect_false(exists(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE))
+  expect_true(exists(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE))
+  expect_true(is.list(get(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE)))
 })
 
 test_that("ndm_prepare_runtime loads package-managed helpers without inst/extdata", {

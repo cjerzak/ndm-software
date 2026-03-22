@@ -76,7 +76,7 @@ if(SimMode == T){
                                                 PriorList,
                                                 PolicyList,
                                                 GetPredSaveAtInfo_inference,
-                                                jax$random$split(JaxKey(as.integer(3L+runif(1,1,10000))),nBatch) )[[1]]))
+                                                ndm_runtime_data_to_device(jax$random$split(JaxKey(as.integer(3L+runif(1,1,10000))),nBatch)) )[[1]]))
   pred_l_mean <- lapply(pred_l,function(zer){  np$asanyarray( zer$y_mu )  })
   pred_l_mean_full <- pred_l_mean <- 1/length(pred_l_mean) * Reduce("+",pred_l_mean)
   out_y_indices <- (1:ncol(pred_l_mean))[ !1:ncol(pred_l_mean) %in% 1:nTimesPast]
@@ -319,12 +319,12 @@ if(SimMode == T){
         ModelList, batch2package(batch_l_natural),
         state, PriorList, PolicyList_Model_natural,
         GetPredSaveAtInfo_inference,
-        jax$random$split(JaxKey(9L+counterf_), nBatch))[[1]]
+        ndm_runtime_data_to_device(jax$random$split(JaxKey(9L+counterf_), nBatch)))[[1]]
       hat_y_unnatural <- GetPred_inference(
         ModelList, batch2package(batch_l_unnatural),
         state, PriorList, PolicyList_Model_unnatural,
         GetPredSaveAtInfo_inference,
-        jax$random$split(JaxKey(9L), nBatch))[[1]]
+        ndm_runtime_data_to_device(jax$random$split(JaxKey(9L), nBatch)))[[1]]
 
       # skill baseline -predicting unnatural outcomes with natural outcomes
       NUM <- (0.001+colMeans(abs(np$array( batch_l_unnatural$YTrue_out )[,,1] -

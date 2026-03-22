@@ -592,8 +592,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     x_mask <- xt[[2]]; xt <- xt[[1]]
 
     if("transformer" %in% BackboneType){
-      backbonePath <- "run"; ndm_source_extracted("ModelDefiners/SuperLModel_BackboneTransformer.R")
-      print("Done sourcing SuperLModel_BackboneTransformer.R in run path")
+      xt <- RunTransformerBackbone(
+        xt = xt,
+        x_mask = x_mask,
+        TransformerList = TSList$TSBackbone
+      )
     }
     if("mamba" %in% BackboneType){
       stop("Mamba is not included in ndm.", call. = FALSE)
@@ -1316,9 +1319,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                            solver = VI_diff_eq_solver_optim,
                                            saveat = VI_SaveAt_ODE_GlobalNeural,
                                            # for structure of this, see definitions in transform_vec_final 
-                                           args = {eval(parse(text = sprintf('send2cpu(list("Neural2" = %s))',
-                                                      gsub(coreNeuralText,pattern="LocalNeural",replace="GlobalNeural") )))},
-                                           y0 =  {send2cpu(list("Neural2"=ModelList$GlobalNeural$NeuralInitialConditions ))},
+                                           args = {ndm_runtime_replicate_tree(eval(parse(text = sprintf('list("Neural2" = %s)',
+                                                      gsub(coreNeuralText,pattern="LocalNeural",replace="GlobalNeural") ))))},
+                                           y0 =  {ndm_runtime_replicate_tree(list("Neural2"=ModelList$GlobalNeural$NeuralInitialConditions ))},
                                            max_steps = MaxSteps,
                                            t0 = 0.,
                                            t1 = f2n(NTimeGlobalNeuralMax),
@@ -1431,7 +1434,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                          solver = VI_diff_eq_solver_optim,
                                          args = 
                                           { 
-                                          send2cpu(
+                                          ndm_runtime_replicate_tree(
                                          c(eval(parse(text = paste(
                                            # dynamic params
                                            neuralArgsText,
@@ -1453,7 +1456,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                         },
                                          y0 = 
                                           {  
-                                            send2cpu(
+                                            ndm_runtime_replicate_tree(
                                              eval(parse(text = paste("list(",paste(
                                            sapply(y0_names, function(ze){
                                            sprintf("'%s' = ODEParamsSampList_y0$%s_samp%s",
@@ -1473,9 +1476,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # does this speed up or slow down execution? TEST
       # diff_eq_sol$ys$e_l$devices() # analyze chip placement 
       
-      # send back to gpu 
-      diff_eq_sol <- send2gpu(diff_eq_sol)
-
       print2("Done with predictive ODE...")
       # plot( np$array(diff_eq_sol$ys$i_l$val)[j_<-sample(1:40,1),] );
       # plot( np$array(diff_eq_sol$ys$Neural1$val)[1,,j_<-sample(1:40,1)] );
@@ -1595,7 +1595,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         return( list(minThis, state)  )
       }
 
-    GetPredSaveAtInfo_default <- list(jnp$array(VI_TotalTimesInLikelihood), VI_SaveAt_ODE_optim)
+    GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(
+      list(as.integer(VI_TotalTimesInLikelihood), VI_SaveAt_ODE_optim)
+    )
     gradLoss_jax <- switch_filter_jit( eq$filter_value_and_grad( getLoss_train, has_aux = T) )
     if(prior_sampling){
       gradLoss_jax <- switch_filter_jit( jax$value_and_grad(getLoss_train, ai(PriorListLocInGetLoss)) )
@@ -1616,9 +1618,19 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         GetPredSaveAtInfo_default,
         jax$random$split(JaxKey(ai(6L*SEED_)),nBatch))
       plot( np$asanyarray( prior_grad_checks[[2]][[1]]), cex = 0)
-      text( np$asanyarray( prior_grad_checks[[2]][[1]]), labels = PriorDefinitions_jax[2,])
-      image2( np$asanyarray( prior_grad_checks[[2]][[2]]) )
+        text( np$asanyarray( prior_grad_checks[[2]][[1]]), labels = PriorDefinitions_jax[2,])
+        image2( np$asanyarray( prior_grad_checks[[2]][[2]]) )
     }
+  }
+  predict_step_compiled <- GetPred_inference
+  predict_train_step_compiled <- GetPred_train_jit
+  loss_step_compiled <- switch_filter_jit(getLoss_train)
+  if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+    ModelList <- ndm_runtime_replicate_tree(ModelList)
+    state <- ndm_runtime_replicate_tree(state)
+    PriorList <- ndm_runtime_replicate_tree(PriorList)
+    PolicyList <- ndm_runtime_replicate_tree(PolicyList)
+    GetPredSaveAtInfo_default <- ndm_runtime_replicate_tree(GetPredSaveAtInfo_default)
   }
   }
   print("Done with this round of SuperLModel_BuildML.R!")

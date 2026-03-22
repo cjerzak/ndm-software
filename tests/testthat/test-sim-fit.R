@@ -36,6 +36,7 @@ ndm_test_fit_sim_case <- function(model_type,
                                   attention_head_dim = 64L,
                                   attention_kv_heads = NULL,
                                   before_train = NULL,
+                                  after_train_define = NULL,
                                   expect_train_error = FALSE,
                                   return_details = FALSE) {
   if (is.null(n_sgd)) {
@@ -215,16 +216,43 @@ ndm_test_fit_sim_case <- function(model_type,
   if (is.function(before_train)) {
     before_train(runtime_env = runtime_env, model = model)
   }
-  trained <- suppressWarnings(
-    try(
-      ndm_train(
-        model,
-        run_define = TRUE,
-        run_loop = TRUE
-      ),
-      silent = TRUE
+  if (is.function(after_train_define)) {
+    train_define_result <- suppressWarnings(
+      try(
+        ndm_train(
+          model,
+          run_define = TRUE,
+          run_loop = FALSE
+        ),
+        silent = TRUE
+      )
     )
-  )
+    if (inherits(train_define_result, "try-error")) {
+      stop(attr(train_define_result, "condition"))
+    }
+    after_train_define(runtime_env = runtime_env, model = model)
+    trained <- suppressWarnings(
+      try(
+        ndm_train(
+          model,
+          run_define = FALSE,
+          run_loop = TRUE
+        ),
+        silent = TRUE
+      )
+    )
+  } else {
+    trained <- suppressWarnings(
+      try(
+        ndm_train(
+          model,
+          run_define = TRUE,
+          run_loop = TRUE
+        ),
+        silent = TRUE
+      )
+    )
+  }
   if (isTRUE(expect_train_error)) {
     if (!inherits(trained, "try-error")) {
       stop("Expected ndm_train() to fail for this simulation test case.")
@@ -491,15 +519,24 @@ test_that("non-finite sim training fails fast and writes a debug artifact", {
     model_type = "DecoderOnly",
     endogeneity = 0.0,
     n_sgd = 1L,
-    before_train = function(runtime_env, model) {
-      zero_grads <- runtime_env$jax$tree_util$tree_map(
-        function(x) runtime_env$jnp$zeros_like(x),
-        model$env$ModelList
-      )
-      runtime_env$gradLoss_jax <- function(...) {
+    after_train_define = function(runtime_env, model) {
+      runtime_env$train_step_compiled <- function(ModelList,
+                                                  batch_pkg,
+                                                  y_true,
+                                                  y_mask,
+                                                  iteration,
+                                                  state,
+                                                  PriorList,
+                                                  PolicyList,
+                                                  GetPredSaveAtInfo,
+                                                  seed,
+                                                  opt_state) {
         list(
-          list(runtime_env$jnp$array(Inf), runtime_env$state),
-          zero_grads
+          loss = runtime_env$jnp$array(Inf),
+          state = state,
+          grad_norm = runtime_env$jnp$array(Inf),
+          model = ModelList,
+          opt_state = opt_state
         )
       }
     },
@@ -525,4 +562,20 @@ test_that("non-finite sim training fails fast and writes a debug artifact", {
   expect_true(is.infinite(report$loss))
   expect_true("batch_YTrue_out" %in% names(report$tensor_summaries))
   expect_true("prediction_center_param" %in% names(report$tensor_summaries))
+})
+
+test_that("GetPred save-at horizon remains a static host integer in sim runtimes", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    return_details = TRUE
+  )
+
+  saveat_info <- details$runtime_env$GetPredSaveAtInfo_default
+  expect_true(is.list(saveat_info))
+  expect_false("python.builtin.object" %in% class(saveat_info[[1L]]))
+  expect_identical(as.integer(saveat_info[[1L]]), 4L)
 })
