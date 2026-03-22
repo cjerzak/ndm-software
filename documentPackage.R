@@ -1,11 +1,5 @@
 {
   options(error = NULL)
-  
-  # reinstall package 
-  install.packages("~/Documents/ndm-software", repos = NULL, type = "source", force = FALSE)
-  
-  # rebuild backend 
-  ndm::ndm_build_backend()
 
   resolve_script_path <- function() {
     source_frame <- tryCatch(sys.frame(1L)$ofile, error = function(...) NULL)
@@ -89,13 +83,23 @@
   r_bin <- file.path(R.home("bin"), "R")
   rscript_bin <- file.path(R.home("bin"), "Rscript")
   runtime_registry_generator <- file.path(package_path, "tools", "generate_runtime_registry.R")
+  runtime_sources_generator <- file.path(package_path, "tools", "generate_runtime_sources.R")
 
-  refresh_runtime_registry <- function() {
-    if (!file.exists(runtime_registry_generator)) {
-      stop(sprintf("Runtime registry generator not found: %s", runtime_registry_generator))
+  refresh_generated_runtime_artifact <- function(path, label) {
+    if (!file.exists(path)) {
+      stop(sprintf("%s generator not found: %s", label, path))
     }
-    run_rscript_step(runtime_registry_generator)
+    run_rscript_step(path)
   }
+
+  refresh_runtime_artifacts <- function() {
+    refresh_generated_runtime_artifact(runtime_registry_generator, "Runtime registry")
+    refresh_generated_runtime_artifact(runtime_sources_generator, "Runtime sources")
+  }
+
+  refresh_runtime_artifacts()
+  install.packages(package_path, repos = NULL, type = "source", force = FALSE)
+  ndm::ndm_build_backend()
 
   if (dir.exists(file.path(package_path, "data"))) {
     tools::add_datalist(package_path, force = TRUE, small.size = 1L)
@@ -105,7 +109,7 @@
     devtools::build_vignettes(package_path)
   }
 
-  refresh_runtime_registry()
+  refresh_runtime_artifacts()
   devtools::document(package_path)
 
   if (file.exists(pdf_path)) {
@@ -118,16 +122,16 @@
     finally = cleanup_rdpdf_dirs(package_path)
   )
 
-  refresh_runtime_registry()
+  refresh_runtime_artifacts()
   devtools::check(package_path)
 
-  refresh_runtime_registry()
+  refresh_runtime_artifacts()
   cleanup_build_artifacts()
   run_system_step(c("CMD", "build", "--resave-data", package_path))
 
   cleanup_build_artifacts()
   run_system_step(c("CMD", "check", "--as-cran", tarball_path))
 
-  refresh_runtime_registry()
+  refresh_runtime_artifacts()
   install.packages(package_path, repos = NULL, type = "source", force = FALSE)
 }

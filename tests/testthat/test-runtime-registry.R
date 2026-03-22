@@ -50,6 +50,16 @@ runtime_registry_source_root <- function() {
   testthat::skip("runtime source tree is not available in this installed-package context")
 }
 
+runtime_source_relative_files <- function(source_root) {
+  entries <- list.files(source_root, recursive = TRUE, full.names = FALSE)
+  entries <- entries[file.info(file.path(source_root, entries))$isdir %in% FALSE]
+  sort(entries)
+}
+
+runtime_source_text <- function(source_root, relative_path) {
+  paste(readLines(file.path(source_root, relative_path), warn = FALSE), collapse = "\n")
+}
+
 runtime_registry_escape_non_ascii <- function(lines) {
   vapply(
     enc2utf8(lines),
@@ -125,5 +135,22 @@ test_that("generated runtime special expressions stay in sync with runtime sourc
 
   for (expr_name in names(special_runtime_files)) {
     expect_runtime_expr_matches_source(expr_name, special_runtime_files[[expr_name]])
+  }
+})
+
+test_that("generated embedded runtime sources stay in sync with runtime source files", {
+  ns <- asNamespace("ndm")
+  source_root <- runtime_registry_source_root()
+  embedded_sources <- get(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE)
+  relative_paths <- runtime_source_relative_files(source_root)
+
+  expect_setequal(names(embedded_sources), relative_paths)
+
+  for (relative_path in relative_paths) {
+    expect_identical(
+      embedded_sources[[relative_path]],
+      runtime_source_text(source_root, relative_path),
+      info = relative_path
+    )
   }
 })

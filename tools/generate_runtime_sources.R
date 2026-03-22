@@ -18,7 +18,7 @@ resolve_script_path <- function() {
 escape_r_string <- function(x) {
   x <- gsub("\\\\", "\\\\\\\\", x)
   x <- gsub("\"", "\\\\\"", x)
-  x <- gsub("\n", "\\\\n", x, fixed = TRUE)
+  x <- gsub("\n", "\\n", x, fixed = TRUE)
   x
 }
 

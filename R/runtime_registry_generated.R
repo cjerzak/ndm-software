@@ -4029,6 +4029,39 @@
                   stop("repeat_kv_heads expects a [T, N, H] or [N, H] tensor.", 
                     call. = FALSE)
                 }
+                resolve_qk_norm_scale <- function(scale, num_local_heads, 
+                  dtype = jnp$float32) {
+                  if (is.null(scale)) {
+                    return(jnp$ones(list(as.integer(num_local_heads), 
+                      1L), dtype = dtype))
+                  }
+                  scale <- scale$astype(dtype)
+                  if (length(scale$shape) == 1L) {
+                    return(jnp$reshape(scale, list(as.integer(num_local_heads), 
+                      1L)))
+                  }
+                  scale
+                }
+                qk_normalize_heads <- function(x, scale = NULL, 
+                  eps = 1e-06) {
+                  rank <- length(x$shape)
+                  if (!(rank %in% c(2L, 3L, 4L))) {
+                    stop("qk_normalize_heads expects a [N, H], [T, N, H], or [B, T, N, H] tensor.", 
+                      call. = FALSE)
+                  }
+                  num_local_heads <- as.integer(x$shape[[rank - 
+                    1L]])
+                  scale_shape <- rep(1L, rank)
+                  scale_shape[[rank - 1L]] <- num_local_heads
+                  scale_shape[[rank]] <- 1L
+                  x_f32 <- x$astype(jnp$float32)
+                  scale_f32 <- resolve_qk_norm_scale(scale, num_local_heads, 
+                    dtype = jnp$float32)
+                  scale_f32 <- jnp$reshape(scale_f32, scale_shape)
+                  rms <- jnp$sqrt(jnp$mean(jnp$square(x_f32), 
+                    axis = -1L, keepdims = TRUE) + eps)
+                  jnp$multiply(jnp$divide(x_f32, rms), scale_f32)$astype(x$dtype)
+                }
                 kv_cache_allocate <- function(max_len, num_layers, 
                   num_kv_heads, head_dim, dtype) {
                   make_one <- function() {
@@ -4092,6 +4125,8 @@
                       in_axes = list(0L, 0L))
                     qh <- apply_rope_all(qh, pos_ids)
                     kh_kv <- apply_rope_all(kh_kv, pos_ids)
+                    qh <- qk_normalize_heads(qh, L$Multihead$QNormScale)
+                    kh_kv <- qk_normalize_heads(kh_kv, L$Multihead$KNormScale)
                     k_slice_idx <- jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
                     v_slice_idx <- jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
                     cache[[l_]]$k <- jax$lax$dynamic_update_slice(cache[[l_]]$k, 
@@ -4153,6 +4188,8 @@
                     }, in_axes = 0L)
                     q_NH <- apply_rope(q_NH)
                     k_KH <- apply_rope(k_KH)
+                    q_NH <- qk_normalize_heads(q_NH, L$Multihead$QNormScale)
+                    k_KH <- qk_normalize_heads(k_KH, L$Multihead$KNormScale)
                     max_len <- cache[[l_]]$k$shape[[1]]
                     pos_i32 <- jnp$astype(pos, jnp$int32)
                     pos_i32 <- jnp$clip(pos_i32, jnp$array(0L, 
@@ -4243,6 +4280,8 @@
                 0L))
             q_ <- apply_rope_all(q_, pos_ids)
             k_ <- apply_rope_all(k_, pos_ids)
+            q_ <- qk_normalize_heads(q_, TransformerList_d$Multihead$QNormScale)
+            k_ <- qk_normalize_heads(k_, TransformerList_d$Multihead$KNormScale)
             k_ <- repeat_kv_heads(k_, kv_group_size)
             v_ <- repeat_kv_heads(v_, kv_group_size)
             mask_bool <- jnp$greater(x_mask_attn, 0)
@@ -4314,7 +4353,9 @@
                     q_proj_dim), multihead_keys[1]), W_k = make_w(list(ModelDims, 
                     kv_proj_dim), multihead_keys[2]), W_v = make_w(list(ModelDims, 
                     kv_proj_dim), multihead_keys[3]), W_o = make_w(list(q_proj_dim, 
-                    ModelDims), multihead_keys[4]))
+                    ModelDims), multihead_keys[4]), QNormScale = jnp$ones(list(num_heads, 
+                    1L), dtype = jaxFloatType), KNormScale = jnp$ones(list(num_kv_heads, 
+                    1L), dtype = jaxFloatType))
                   key <- jax$random$split(key)[[1]]
                 }
             }
