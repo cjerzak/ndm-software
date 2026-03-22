@@ -41,6 +41,20 @@ ndm_test_py_numeric <- function(x) {
   as.numeric(reticulate::py_to_r(x))
 }
 
+ndm_test_max_abs_diff <- function(lhs, rhs) {
+  max(abs(lhs - rhs))
+}
+
+ndm_test_capture_metadata_snapshot <- function(init_process_list, runtime_env) {
+  list(
+    place_fixed = isTRUE(init_process_list$PlaceEmbedsFixed),
+    place_embeds = ndm_test_py_numeric(runtime_env$np$asanyarray(init_process_list$PlaceEmbeds)),
+    time_embeds = ndm_test_py_numeric(runtime_env$np$asanyarray(init_process_list$TimeEmbeds)),
+    place_proj = ndm_test_py_numeric(runtime_env$np$asanyarray(init_process_list$PlaceEmbeds_Proj$weight)),
+    time_proj = ndm_test_py_numeric(runtime_env$np$asanyarray(init_process_list$TimeEmbeds_Proj$weight))
+  )
+}
+
 test_that("transformer runtime preserves residual scaling and backbone output contracts in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
@@ -125,8 +139,144 @@ test_that("maintained transformer sources keep cache and rotary guardrails", {
   expect_match(buildml_source, "jnp\\$expand_dims\\(xt_last, 0L\\)")
   expect_match(buildml_source, "jnp\\$expand_dims\\(embed_out, 0L\\)")
   expect_match(buildml_source, "DecoderProj\\(embed_out\\)")
+  expect_match(buildml_source, "PlaceEmbeds_Proj\\(place_embed\\)")
+  expect_match(buildml_source, "TimeEmbeds_Proj\\(time_embed\\)")
+  expect_false(grepl("InitProcessList\\$PlaceEmbeds <- jax\\$lax\\$stop_gradient", buildml_source))
+  expect_false(grepl("InitProcessList\\$TimeEmbeds <- jax\\$lax\\$stop_gradient", buildml_source))
   expect_match(backbone_source, "qk_normalize_heads <- function")
   expect_match(backbone_source, "QNormScale")
   expect_match(backbone_source, "KNormScale")
   expect_false(grepl("RotaryPositionalEmbedding", paste(buildml_source, backbone_source), fixed = TRUE))
+})
+
+test_that("metadata tokens preserve append order while using projected embeddings in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    return_details = TRUE
+  )
+
+  env <- details$runtime_env
+  model_list <- details$trained$env$ModelList
+  init_process <- model_list$InitProcessList
+  batch <- details$batch
+  x_sample <- list(
+    env$jnp$take(batch$XPred, 0L, axis = 0L),
+    env$jnp$take(batch$XPred_mask, 0L, axis = 0L)
+  )
+  place_idx <- env$jnp$squeeze(env$jnp$take(batch$location_id_numeric, 0L, axis = 0L)$astype(env$jnp$int32))
+  time_idx <- env$jnp$squeeze(env$jnp$take(batch$time_id_numeric, 0L, axis = 0L)$astype(env$jnp$int32))
+
+  processed <- env$ProcessEncoderInput(
+    InitProcessList = init_process,
+    TSList = model_list$TSList,
+    xt = x_sample,
+    time = time_idx,
+    place = place_idx,
+    BNList = model_list$BNList,
+    state = env$jnp$array(1.),
+    inference = TRUE
+  )
+
+  content_len <- as.integer(x_sample[[1]]$shape[[1]])
+  expect_false(isTRUE(init_process$PlaceEmbedsFixed))
+  expect_equal(as.integer(processed[[1]]$shape[[1]]), content_len + 3L)
+  expect_equal(as.integer(processed[[2]]$shape[[1]]), content_len + 3L)
+
+  place_embed <- env$jnp$take(init_process$PlaceEmbeds, indices = place_idx, axis = 0L)
+  place_embed <- init_process$PlaceEmbeds_Proj(place_embed)
+  time_embed <- env$jax$lax$stop_gradient(env$jnp$take(init_process$TimeEmbeds, indices = time_idx, axis = 0L))
+  time_embed <- init_process$TimeEmbeds_Proj(time_embed)
+
+  appended_place <- env$jnp$take(processed[[1]], content_len, axis = 0L)
+  appended_time <- env$jnp$take(processed[[1]], content_len + 1L, axis = 0L)
+  appended_cls <- env$jnp$take(processed[[1]], content_len + 2L, axis = 0L)
+
+  expect_lt(
+    ndm_test_max_abs_diff(
+      ndm_test_py_numeric(env$np$asanyarray(appended_place)),
+      ndm_test_py_numeric(env$np$asanyarray(place_embed))
+    ),
+    1e-6
+  )
+  expect_lt(
+    ndm_test_max_abs_diff(
+      ndm_test_py_numeric(env$np$asanyarray(appended_time)),
+      ndm_test_py_numeric(env$np$asanyarray(time_embed))
+    ),
+    1e-6
+  )
+  expect_lt(
+    ndm_test_max_abs_diff(
+      ndm_test_py_numeric(env$np$asanyarray(appended_cls)),
+      ndm_test_py_numeric(env$np$asanyarray(env$jnp$squeeze(model_list$TSList$InitialCLS, 0L)))
+    ),
+    1e-6
+  )
+  expect_equal(ndm_test_py_numeric(env$np$asanyarray(env$jnp$take(processed[[2]], content_len, axis = 0L))), 1)
+  expect_equal(ndm_test_py_numeric(env$np$asanyarray(env$jnp$take(processed[[2]], content_len + 1L, axis = 0L))), 1)
+  expect_equal(ndm_test_py_numeric(env$np$asanyarray(env$jnp$take(processed[[2]], content_len + 2L, axis = 0L))), 1)
+})
+
+test_that("metadata projections learn while fixed metadata bases stay frozen in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  captured_default <- new.env(parent = emptyenv())
+  default_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    return_details = TRUE,
+    before_train = function(runtime_env, model) {
+      captured_default$init <- ndm_test_capture_metadata_snapshot(
+        model$env$ModelList$InitProcessList,
+        runtime_env
+      )
+    }
+  )
+  default_final <- ndm_test_capture_metadata_snapshot(
+    default_details$trained$env$ModelList$InitProcessList,
+    default_details$runtime_env
+  )
+
+  captured_fixed <- new.env(parent = emptyenv())
+  fixed_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    return_details = TRUE,
+    runtime_globals = list(
+      coordinates_mat = data.frame(
+        location_id_numeric = 0L,
+        lat = 47.6062,
+        long = -122.3321
+      )
+    ),
+    before_train = function(runtime_env, model) {
+      captured_fixed$init <- ndm_test_capture_metadata_snapshot(
+        model$env$ModelList$InitProcessList,
+        runtime_env
+      )
+    }
+  )
+  fixed_final <- ndm_test_capture_metadata_snapshot(
+    fixed_details$trained$env$ModelList$InitProcessList,
+    fixed_details$runtime_env
+  )
+
+  expect_false(captured_default$init$place_fixed)
+  expect_true(captured_fixed$init$place_fixed)
+
+  expect_gt(ndm_test_max_abs_diff(default_final$time_proj, captured_default$init$time_proj), 1e-8)
+  expect_lt(ndm_test_max_abs_diff(default_final$time_embeds, captured_default$init$time_embeds), 1e-12)
+  expect_gt(ndm_test_max_abs_diff(default_final$place_proj, captured_default$init$place_proj), 1e-8)
+  expect_gt(ndm_test_max_abs_diff(default_final$place_embeds, captured_default$init$place_embeds), 1e-8)
+
+  expect_gt(ndm_test_max_abs_diff(fixed_final$time_proj, captured_fixed$init$time_proj), 1e-8)
+  expect_lt(ndm_test_max_abs_diff(fixed_final$time_embeds, captured_fixed$init$time_embeds), 1e-12)
+  expect_gt(ndm_test_max_abs_diff(fixed_final$place_proj, captured_fixed$init$place_proj), 1e-8)
+  expect_lt(ndm_test_max_abs_diff(fixed_final$place_embeds, captured_fixed$init$place_embeds), 1e-12)
 })

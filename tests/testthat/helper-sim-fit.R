@@ -37,6 +37,7 @@ ndm_test_fit_sim_case <- function(model_type,
                                   model_dims = 32L,
                                   attention_head_dim = 64L,
                                   attention_kv_heads = NULL,
+                                  runtime_globals = NULL,
                                   before_train = NULL,
                                   after_train_define = NULL,
                                   expect_train_error = FALSE,
@@ -111,52 +112,57 @@ ndm_test_fit_sim_case <- function(model_type,
     resave_tfrecords = TRUE
   )
 
+  runtime_defaults <- list(
+    SimMode = TRUE,
+    GLOBAL_ODE_NPOP = 10000L,
+    nBatch = 4L,
+    covariateType = "sqrt",
+    simCovariates = c(
+      XPred_c_sqrt = "inc_case_per_capita_sqrt",
+      XPred_h_sqrt = "inc_hosp_per_capita_sqrt",
+      XPred_d_sqrt = "inc_death_per_capita_sqrt"
+    ),
+    rollCompute_window = 52L,
+    AnalysisName = sprintf("TestPandemicSim_%s", model_type),
+    AnalysisDate = Sys.Date(),
+    COMMAND_ARG_INPUT = "test",
+    TfRecordDir = file.path(work_dir, "tfrecords"),
+    nSamples_max = 4L,
+    nSamplesTrain = 4L,
+    SimEntry = sim_entry,
+    SimGrid = sim_grid,
+    SEED_ = 101L,
+    LEARNING_RATE_MAX = learning_rate_max,
+    nSGD_DefiningLRSeq = n_sgd,
+    nSGD_model = n_sgd,
+    nSGD_pretrain = 0L,
+    nSGD_posttrain = n_sgd,
+    nCheckpoints = n_checkpoints,
+    ModelDims = as.integer(model_dims),
+    ModelDepth = 1L,
+    nOutcomes = 1L,
+    nPlaces = 1L,
+    af = 1L,
+    HolderFolder = file.path(work_dir, "results"),
+    OUTER_ITERATION = 1L,
+    endAppend = TRUE,
+    EnableKVCaching = enable_kv_cache,
+    AttentionHeadDim = as.integer(attention_head_dim),
+    AttentionKVHeads = if (is.null(attention_kv_heads)) NULL else as.integer(attention_kv_heads),
+    paddingMethod = "left",
+    nBatch_SimGridGen = 8L,
+    nMonteEval = 1L,
+    SimScalingOuterLoops = 1L,
+    SimScalingInnerLoops = 2L
+  )
+  if (is.list(runtime_globals) && length(runtime_globals) > 0L) {
+    runtime_defaults <- utils::modifyList(runtime_defaults, runtime_globals)
+  }
+
   runtime_env <- ndm_prepare_runtime(
     config = config,
     runtime_env = ndm_new_runtime_env(parent = globalenv()),
-    runtime_globals = list(
-      SimMode = TRUE,
-      GLOBAL_ODE_NPOP = 10000L,
-      nBatch = 4L,
-      covariateType = "sqrt",
-      simCovariates = c(
-        XPred_c_sqrt = "inc_case_per_capita_sqrt",
-        XPred_h_sqrt = "inc_hosp_per_capita_sqrt",
-        XPred_d_sqrt = "inc_death_per_capita_sqrt"
-      ),
-      rollCompute_window = 52L,
-      AnalysisName = sprintf("TestPandemicSim_%s", model_type),
-      AnalysisDate = Sys.Date(),
-      COMMAND_ARG_INPUT = "test",
-      TfRecordDir = file.path(work_dir, "tfrecords"),
-      nSamples_max = 4L,
-      nSamplesTrain = 4L,
-      SimEntry = sim_entry,
-      SimGrid = sim_grid,
-      SEED_ = 101L,
-      LEARNING_RATE_MAX = learning_rate_max,
-      nSGD_DefiningLRSeq = n_sgd,
-      nSGD_model = n_sgd,
-      nSGD_pretrain = 0L,
-      nSGD_posttrain = n_sgd,
-      nCheckpoints = n_checkpoints,
-      ModelDims = as.integer(model_dims),
-      ModelDepth = 1L,
-      nOutcomes = 1L,
-      nPlaces = 1L,
-      af = 1L,
-      HolderFolder = file.path(work_dir, "results"),
-      OUTER_ITERATION = 1L,
-      endAppend = TRUE,
-      EnableKVCaching = enable_kv_cache,
-      AttentionHeadDim = as.integer(attention_head_dim),
-      AttentionKVHeads = if (is.null(attention_kv_heads)) NULL else as.integer(attention_kv_heads),
-      paddingMethod = "left",
-      nBatch_SimGridGen = 8L,
-      nMonteEval = 1L,
-      SimScalingOuterLoops = 1L,
-      SimScalingInnerLoops = 2L
-    )
+    runtime_globals = runtime_defaults
   )
 
   n_times_lookahead <- 4L

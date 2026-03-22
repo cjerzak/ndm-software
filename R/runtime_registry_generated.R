@@ -2755,6 +2755,7 @@
             }
             {
                 print2("Setting up place embeddings...")
+                InitProcessList$PlaceEmbedsFixed <- FALSE
                 InitProcessList$PlaceEmbeds <- jnp$array(matrix(rnorm(ModelDims * 
                   nPlaces, sd = InitTransform_EMBED(ModelDims)), 
                   ncol = ModelDims, nrow = nPlaces))
@@ -2778,6 +2779,7 @@
                   }
                   InitProcessList$PlaceEmbeds <- geo_positional_encoding(longitudes = coordinates_mat$long, 
                     latitudes = coordinates_mat$lat, ModelDims)
+                  InitProcessList$PlaceEmbedsFixed <- TRUE
                 }
             }
             print2("Setting up time embeddings...")
@@ -2964,20 +2966,27 @@
                   jnp$concatenate(list(xt_short, xt_mid, xt_long), 
                     1L))
             }
-            InitProcessList$PlaceEmbeds <- jax$lax$stop_gradient(InitProcessList$PlaceEmbeds)
-            InitProcessList$TimeEmbeds <- jax$lax$stop_gradient(InitProcessList$TimeEmbeds)
+            place_embed <- jnp$take(InitProcessList$PlaceEmbeds, 
+                indices = place, axis = 0L)
+            if (isTRUE(InitProcessList$PlaceEmbedsFixed)) {
+                place_embed <- jax$lax$stop_gradient(place_embed)
+            }
+            place_embed <- InitProcessList$PlaceEmbeds_Proj(place_embed)
+            time_embed <- jax$lax$stop_gradient(jnp$take(InitProcessList$TimeEmbeds, 
+                indices = time, axis = 0L))
+            time_embed <- InitProcessList$TimeEmbeds_Proj(time_embed)
             if (endAppend) {
                 if (AppendPlaceEmbeds) {
                   x_mask <- jnp$concatenate(list(x_mask, jnp$ones(list(1L, 
                     1L))), 0L)
-                  xt <- jnp$concatenate(list(xt, jnp$expand_dims(jnp$take(InitProcessList$PlaceEmbeds, 
-                    indices = place, axis = 0L), 0L)), axis = 0L)
+                  xt <- jnp$concatenate(list(xt, jnp$expand_dims(place_embed, 
+                    0L)), axis = 0L)
                 }
                 if (AppendTimeEmbeds) {
                   x_mask <- jnp$concatenate(list(x_mask, jnp$ones(list(1L, 
                     1L))), 0L)
-                  xt <- jnp$concatenate(list(xt, jnp$expand_dims(jnp$take(InitProcessList$TimeEmbeds, 
-                    indices = time, axis = 0L), 0L)), axis = 0L)
+                  xt <- jnp$concatenate(list(xt, jnp$expand_dims(time_embed, 
+                    0L)), axis = 0L)
                 }
                 x_mask <- jnp$concatenate(list(x_mask, jnp$ones(list(1L, 
                   1L))), 0L)
@@ -2988,14 +2997,14 @@
                 if (AppendPlaceEmbeds) {
                   x_mask <- jnp$concatenate(list(jnp$ones(list(1L, 
                     1L)), x_mask), 0L)
-                  xt <- jnp$concatenate(list(jnp$expand_dims(jnp$take(InitProcessList$PlaceEmbeds, 
-                    indices = place, axis = 0L), 0L), xt), axis = 0L)
+                  xt <- jnp$concatenate(list(jnp$expand_dims(place_embed, 
+                    0L), xt), axis = 0L)
                 }
                 if (AppendTimeEmbeds) {
                   x_mask <- jnp$concatenate(list(jnp$ones(list(1L, 
                     1L)), x_mask), 0L)
-                  xt <- jnp$concatenate(list(jnp$expand_dims(jnp$take(InitProcessList$TimeEmbeds, 
-                    indices = time, axis = 0L), 0L), xt), axis = 0L)
+                  xt <- jnp$concatenate(list(jnp$expand_dims(time_embed, 
+                    0L), xt), axis = 0L)
                 }
                 x_mask <- jnp$concatenate(list(jnp$ones(list(1L, 
                   1L)), x_mask), 0L)

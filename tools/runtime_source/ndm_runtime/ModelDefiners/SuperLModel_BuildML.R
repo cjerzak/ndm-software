@@ -248,6 +248,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # place embedding
       { 
         print2("Setting up place embeddings...")
+        InitProcessList$PlaceEmbedsFixed <- FALSE
         InitProcessList$PlaceEmbeds <- jnp$array(matrix(rnorm(ModelDims*nPlaces, 
                                                              sd = InitTransform_EMBED(ModelDims)), 
                                                        ncol = ModelDims, nrow = nPlaces)) # place embedding  
@@ -274,6 +275,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           InitProcessList$PlaceEmbeds <- geo_positional_encoding(longitudes = coordinates_mat$long, 
                                                                  latitudes = coordinates_mat$lat, 
                                                                  ModelDims)
+          InitProcessList$PlaceEmbedsFixed <- TRUE
         }
       }
       
@@ -489,24 +491,32 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     # jnp$mean(xt$val, 0L:1L); # confirm near 0 
     # jnp$std(xt$val, 0L:1L) # confirm near 1
     # jnp$abs(InitProcessList$PlaceEmbeds)$mean()
-    #InitProcessList$PlaceEmbeds <- ffmap(InitProcessList$PlaceEmbeds_Proj, jax$lax$stop_gradient( InitProcessList$PlaceEmbeds ))
-    #InitProcessList$TimeEmbeds <- ffmap(InitProcessList$TimeEmbeds_Proj, jax$lax$stop_gradient( InitProcessList$TimeEmbeds ))
-    InitProcessList$PlaceEmbeds <- jax$lax$stop_gradient( InitProcessList$PlaceEmbeds )
-    InitProcessList$TimeEmbeds <- jax$lax$stop_gradient( InitProcessList$TimeEmbeds )
     # jnp$abs(InitProcessList$PlaceEmbeds)$mean()
     # jnp$abs(InitProcessList$TimeEmbeds )$mean()
+    place_embed <- jnp$take(
+      InitProcessList$PlaceEmbeds,
+      indices = place,
+      axis = 0L
+    )
+    if (isTRUE(InitProcessList$PlaceEmbedsFixed)) {
+      place_embed <- jax$lax$stop_gradient(place_embed)
+    }
+    place_embed <- InitProcessList$PlaceEmbeds_Proj(place_embed)
+
+    time_embed <- jax$lax$stop_gradient(jnp$take(
+      InitProcessList$TimeEmbeds,
+      indices = time,
+      axis = 0L
+    ))
+    time_embed <- InitProcessList$TimeEmbeds_Proj(time_embed)
     if(endAppend){ 
       if(AppendPlaceEmbeds){
         x_mask <- jnp$concatenate(list(x_mask, jnp$ones(list(1L,1L))), 0L)
-        xt <- jnp$concatenate(list(xt, jnp$expand_dims(jnp$take(
-                                                    InitProcessList$PlaceEmbeds,
-                                                                indices = place, axis = 0L),0L) ), axis = 0L)
+        xt <- jnp$concatenate(list(xt, jnp$expand_dims(place_embed, 0L)), axis = 0L)
       }
       if(AppendTimeEmbeds){
         x_mask <- jnp$concatenate(list(x_mask, jnp$ones(list(1L,1L))), 0L)
-        xt <- jnp$concatenate(list(xt, jnp$expand_dims(jnp$take(
-                                                    InitProcessList$TimeEmbeds,
-                                                                indices = time, axis = 0L),0L) ), axis = 0L)
+        xt <- jnp$concatenate(list(xt, jnp$expand_dims(time_embed, 0L)), axis = 0L)
       }
       
       # append CLS representation to LAST position 
@@ -516,15 +526,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     if(!endAppend){ 
       if(AppendPlaceEmbeds){
         x_mask <- jnp$concatenate(list(jnp$ones(list(1L,1L)), x_mask), 0L)
-        xt <- jnp$concatenate(list(jnp$expand_dims(jnp$take(
-                                                            InitProcessList$PlaceEmbeds,
-                                                            indices = place, axis = 0L),0L), xt ), axis = 0L)
+        xt <- jnp$concatenate(list(jnp$expand_dims(place_embed, 0L), xt ), axis = 0L)
       }
       if(AppendTimeEmbeds){
         x_mask <- jnp$concatenate(list(jnp$ones(list(1L,1L)), x_mask), 0L)
-        xt <- jnp$concatenate(list(jnp$expand_dims(jnp$take(
-                                                            InitProcessList$TimeEmbeds,
-                                                            indices = time, axis = 0L),0L), xt ), axis = 0L)
+        xt <- jnp$concatenate(list(jnp$expand_dims(time_embed, 0L), xt ), axis = 0L)
       }
       
       # append CLS representation to FIRST position
