@@ -99,7 +99,7 @@
 
   refresh_runtime_artifacts()
   install.packages(package_path, repos = NULL, type = "source", force = FALSE)
-  ndm::ndm_build_backend()
+  #ndm::ndm_build_backend()
 
   if (dir.exists(file.path(package_path, "data"))) {
     tools::add_datalist(package_path, force = TRUE, small.size = 1L)
