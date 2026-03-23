@@ -91,7 +91,7 @@ Supported for real and simulation workflows. Multidisease workflows reject
 
 \item{outcome_metric}{Outcome metric name for real-data or multidisease runs.}
 
-\item{data_subset}{Optional real-data subset name.}
+\item{data_subset}{Optional real-data or multidisease subset name.}
 
 \item{disease_names}{Character vector of multidisease names.}
 
@@ -103,8 +103,13 @@ Supported for real and simulation workflows. Multidisease workflows reject
 }
 \value{
 The \code{ndm_create_*_run_config()} helpers return classed lists describing
-the requested workflow. The \code{ndm_run_*()} functions return the underlying
-workflow result, or a dry-run preview when \code{config$dry_run} is \code{TRUE}.
+the requested workflow. \code{ndm_run_real()} and \code{ndm_run_sim()} return
+a dry-run preview when \code{config$dry_run} is \code{TRUE}, a list containing
+\code{written_base_ids}, \code{tfrecord_dir}, and \code{write_plan} when
+\code{config$resave_tfrecords} is \code{TRUE}, and otherwise the underlying
+workflow result. \code{ndm_run_multidisease()} returns a dry-run preview when
+\code{config$dry_run} is \code{TRUE} and otherwise the underlying workflow
+result.
 }
 \description{
 Package-native configuration constructors and workflow runners for the
@@ -129,8 +134,9 @@ and then augmented with fields such as \code{paddingMethod},
 
 Non-dry runner workflows also require the full execution stack: the
 \code{ndmdatasets} package, the helper packages used by the runtime, and a
-backend environment aligned with \code{NDM_SOFTWARE_CONDA_ENV} (or the
-platform-specific fallback used by the runner layer).
+backend environment aligned with \code{NDM_SOFTWARE_CONDA_ENV},
+\code{NDM_CONDA_ENV}, or the platform-specific fallback used by the runner
+layer.
 }
 \examples{
 \dontrun{

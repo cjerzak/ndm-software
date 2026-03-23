@@ -21,8 +21,8 @@
 #'
 #' Non-dry runner workflows also require the full execution stack: the
 #' `ndmdatasets` package, the helper packages used by the runtime, and a backend
-#' environment aligned with `NDM_SOFTWARE_CONDA_ENV` (or the platform-specific
-#' fallback used by the runner layer).
+#' environment aligned with `NDM_SOFTWARE_CONDA_ENV`, `NDM_CONDA_ENV`, or the
+#' platform-specific fallback used by the runner layer.
 #'
 #' Distributed simulation TFRecord bootstrap is handled separately via
 #' [ndm_bootstrap_sim_tfrecords()]. Unlike `ndm_run_sim(..., outer = ...)`, the
@@ -47,17 +47,19 @@
 #' @param tfrecord_dir Optional TFRecord output directory.
 #' @param raw_data_dir Real-data input directory.
 #' @param outcome_metric Outcome metric name for real-data or multidisease runs.
-#' @param data_subset Optional real-data subset name.
+#' @param data_subset Optional real-data or multidisease subset name.
 #' @param disease_names Character vector of multidisease names.
 #' @param data_format Multidisease data format.
 #' @param dry_run Logical scalar indicating whether the run should stop after
 #'   resolving paths and grid rows.
 #'
 #' @returns `ndm_create_*_run_config()` returns a classed list describing the
-#'   requested workflow. `ndm_run_real()` and `ndm_run_sim()` return the
-#'   underlying workflow result; with `resave_tfrecords = TRUE` they return a
-#'   list containing the written `BaseID` values, TFRecord directory, and a
-#'   canonical write-plan summary.
+#'   requested workflow. `ndm_run_real()` and `ndm_run_sim()` return a dry-run
+#'   preview when `config$dry_run` is `TRUE`, a list containing
+#'   `written_base_ids`, `tfrecord_dir`, and `write_plan` when
+#'   `config$resave_tfrecords` is `TRUE`, and otherwise the underlying workflow
+#'   result. `ndm_run_multidisease()` returns a dry-run preview when
+#'   `config$dry_run` is `TRUE` and otherwise the underlying workflow result.
 #'
 #' @examples
 #' \dontrun{
@@ -600,8 +602,6 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
 #'   `ndm_create_*_run_config()` helper.
 #'
 #' @rdname ndm_create_real_run_config
-#' @returns The underlying workflow result, or a dry-run preview when
-#'   `config$dry_run` is `TRUE`.
 #' @export
 ndm_run_real <- function(config = ndm_create_real_run_config()) {
   if (!inherits(config, "ndm_real_run_config")) {

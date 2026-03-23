@@ -22,9 +22,10 @@ with the original epidemic specification workflow.
 For executable workflows rather than dry-run previews, install the helper
 packages listed under \code{Suggests}, initialize the backend with
 \code{\link{ndm_initialize_backend}}, and align that backend with
-\code{NDM_SOFTWARE_CONDA_ENV} when using the package-native runner helpers.
-When \code{NDM_SOFTWARE_CONDA_ENV} is unset, the runner layer currently falls
-back to \code{jax_cpu} on macOS and \code{ndm_software_env} elsewhere.
+\code{NDM_SOFTWARE_CONDA_ENV} or \code{NDM_CONDA_ENV} when using the
+package-native runner helpers. When both variables are unset, the runner layer
+currently falls back to \code{jax_cpu} on macOS and
+\code{ndm_software_env} elsewhere.
 }
 \section{Key functions}{
   \itemize{

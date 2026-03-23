@@ -48,7 +48,8 @@ ndm_initialize_backend(conda_env = conda_env, import_tensorflow = TRUE)
 ```
 
 When `NDM_SOFTWARE_CONDA_ENV` is unset, the Analysis2-backed runner helpers
-currently fall back to `jax_cpu` on macOS and `ndm_software_env` elsewhere.
+next consult `NDM_CONDA_ENV` and otherwise fall back to `jax_cpu` on macOS and
+`ndm_software_env` elsewhere.
 
 ## Quick Tutorial
 
