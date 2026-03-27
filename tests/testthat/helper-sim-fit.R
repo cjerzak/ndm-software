@@ -229,7 +229,10 @@ ndm_test_fit_sim_case <- function(model_type,
   if (is.function(before_train)) {
     before_train(runtime_env = runtime_env, model = model)
   }
+  train_elapsed_seconds <- NA_real_
   if (is.function(after_train_define)) {
+    train_elapsed_seconds <- 0
+    train_started <- proc.time()[["elapsed"]]
     train_define_result <- suppressWarnings(
       try(
         ndm_train(
@@ -240,10 +243,12 @@ ndm_test_fit_sim_case <- function(model_type,
         silent = TRUE
       )
     )
+    train_elapsed_seconds <- train_elapsed_seconds + (proc.time()[["elapsed"]] - train_started)
     if (inherits(train_define_result, "try-error")) {
       stop(attr(train_define_result, "condition"))
     }
     after_train_define(runtime_env = runtime_env, model = model)
+    train_started <- proc.time()[["elapsed"]]
     trained <- suppressWarnings(
       try(
         ndm_train(
@@ -254,7 +259,9 @@ ndm_test_fit_sim_case <- function(model_type,
         silent = TRUE
       )
     )
+    train_elapsed_seconds <- train_elapsed_seconds + (proc.time()[["elapsed"]] - train_started)
   } else {
+    train_started <- proc.time()[["elapsed"]]
     trained <- suppressWarnings(
       try(
         ndm_train(
@@ -265,6 +272,15 @@ ndm_test_fit_sim_case <- function(model_type,
         silent = TRUE
       )
     )
+    train_elapsed_seconds <- proc.time()[["elapsed"]] - train_started
+  }
+  iterations_per_second <- if (is.finite(train_elapsed_seconds) &&
+    train_elapsed_seconds > 0 &&
+    is.finite(n_sgd) &&
+    n_sgd > 0) {
+    as.numeric(n_sgd) / train_elapsed_seconds
+  } else {
+    NA_real_
   }
   if (isTRUE(expect_train_error)) {
     if (!inherits(trained, "try-error")) {
@@ -276,7 +292,9 @@ ndm_test_fit_sim_case <- function(model_type,
         model = model,
         runtime_env = runtime_env,
         work_dir = work_dir,
-        holder_folder = file.path(work_dir, "results")
+        holder_folder = file.path(work_dir, "results"),
+        train_elapsed_seconds = train_elapsed_seconds,
+        iterations_per_second = iterations_per_second
       ))
     }
     return(invisible(trained))
@@ -293,6 +311,8 @@ ndm_test_fit_sim_case <- function(model_type,
     first_loss = losses[[1]],
     last_loss = losses[[length(losses)]],
     loss_delta = losses[[1]] - losses[[length(losses)]],
+    train_elapsed_seconds = train_elapsed_seconds,
+    iterations_per_second = iterations_per_second,
     stringsAsFactors = FALSE
   )
   if (isTRUE(return_details)) {
@@ -313,7 +333,9 @@ ndm_test_fit_sim_case <- function(model_type,
       runtime_env = runtime_env,
       batch = batch,
       work_dir = work_dir,
-      holder_folder = file.path(work_dir, "results")
+      holder_folder = file.path(work_dir, "results"),
+      train_elapsed_seconds = train_elapsed_seconds,
+      iterations_per_second = iterations_per_second
     ))
   }
   summary
@@ -438,12 +460,20 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
     neuralode_relative_accuracy_10 = neuralode_week10$relative_accuracy,
     decoder_skill_10 = decoder_week10$skill,
     neuralode_skill_10 = neuralode_week10$skill,
+    decoder_train_elapsed_seconds = decoder_details$train_elapsed_seconds,
+    neuralode_train_elapsed_seconds = neuralode_details$train_elapsed_seconds,
+    decoder_iterations_per_second = decoder_details$iterations_per_second,
+    neuralode_iterations_per_second = neuralode_details$iterations_per_second,
     info = sprintf(
       paste(
         "week10 decoder rel_acc=%.6f",
         "week10 neuralode rel_acc=%.6f",
         "week10 decoder skill=%.6f",
         "week10 neuralode skill=%.6f",
+        "decoder train_s=%.6f",
+        "neuralode train_s=%.6f",
+        "decoder iter_per_sec=%.6f",
+        "neuralode iter_per_sec=%.6f",
         "shared_seed=%s",
         "lookahead=%s",
         "model_dims=%s",
@@ -454,6 +484,10 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
       neuralode_week10$relative_accuracy,
       decoder_week10$skill,
       neuralode_week10$skill,
+      decoder_details$train_elapsed_seconds,
+      neuralode_details$train_elapsed_seconds,
+      decoder_details$iterations_per_second,
+      neuralode_details$iterations_per_second,
       shared_seed,
       as.integer(n_times_lookahead),
       as.integer(model_dims),

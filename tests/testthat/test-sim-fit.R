@@ -282,7 +282,7 @@ test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on 
     endogeneity = 0.0,
     shared_seed = 4242L,
     n_times_lookahead = 10L,
-    n_sgd = 150L,
+    n_sgd = 250L,
     model_dims = 64L
   )
   ratio <- pair$decoder_relative_accuracy_10 / pair$neuralode_relative_accuracy_10
@@ -290,8 +290,12 @@ test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on 
 
   expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
   expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
+  expect_true(is.finite(pair$decoder_iterations_per_second), info = info)
+  expect_true(is.finite(pair$neuralode_iterations_per_second), info = info)
   expect_true(pair$decoder_relative_accuracy_10 > 0, info = info)
   expect_true(pair$neuralode_relative_accuracy_10 > 0, info = info)
+  expect_true(pair$decoder_iterations_per_second > 0, info = info)
+  expect_true(pair$neuralode_iterations_per_second > 0, info = info)
   expect_true(ratio >= 0.75, info = info)
   expect_true(ratio <= 1.25, info = info)
 })
@@ -303,7 +307,7 @@ test_that("NeuralODE week-10 relative accuracy remains within 25% of decoder on 
     endogeneity = 0.0,
     shared_seed = 4242L,
     n_times_lookahead = 10L,
-    n_sgd = 150L,
+    n_sgd = 250L,
     model_dims = 64L
   )
   ratio <- pair$neuralode_relative_accuracy_10 / pair$decoder_relative_accuracy_10
@@ -311,8 +315,12 @@ test_that("NeuralODE week-10 relative accuracy remains within 25% of decoder on 
 
   expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
   expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
+  expect_true(is.finite(pair$decoder_iterations_per_second), info = info)
+  expect_true(is.finite(pair$neuralode_iterations_per_second), info = info)
   expect_true(pair$decoder_relative_accuracy_10 > 0, info = info)
   expect_true(pair$neuralode_relative_accuracy_10 > 0, info = info)
+  expect_true(pair$decoder_iterations_per_second > 0, info = info)
+  expect_true(pair$neuralode_iterations_per_second > 0, info = info)
   expect_true(ratio >= 0.75, info = info)
   expect_true(ratio <= 1.25, info = info)
 })
