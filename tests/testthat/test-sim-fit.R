@@ -282,7 +282,8 @@ test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on 
     endogeneity = 0.0,
     shared_seed = 4242L,
     n_times_lookahead = 10L,
-    n_sgd = 50L
+    n_sgd = 150L,
+    model_dims = 64L
   )
   ratio <- pair$decoder_relative_accuracy_10 / pair$neuralode_relative_accuracy_10
   info <- paste(pair$info, sprintf("decoder/neuralode ratio=%.6f", ratio), sep = "; ")
@@ -302,7 +303,8 @@ test_that("NeuralODE week-10 relative accuracy remains within 25% of decoder on 
     endogeneity = 0.0,
     shared_seed = 4242L,
     n_times_lookahead = 10L,
-    n_sgd = 50L
+    n_sgd = 150L,
+    model_dims = 64L
   )
   ratio <- pair$neuralode_relative_accuracy_10 / pair$decoder_relative_accuracy_10
   info <- paste(pair$info, sprintf("neuralode/decoder ratio=%.6f", ratio), sep = "; ")

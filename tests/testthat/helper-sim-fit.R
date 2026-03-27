@@ -406,7 +406,8 @@ ndm_test_week10_relative_accuracy <- function(metrics, eps = 1e-3, target_week =
 ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
                                                            shared_seed = 1010L,
                                                            n_times_lookahead = 10L,
-                                                           n_sgd = 1L) {
+                                                           n_sgd = 1L,
+                                                           model_dims = 32L) {
   shared_seed <- as.integer(shared_seed)
   common_args <- list(
     endogeneity = endogeneity,
@@ -414,6 +415,7 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
     n_checkpoints = 1L,
     n_times_lookahead = n_times_lookahead,
     n_sgd = as.integer(n_sgd),
+    model_dims = as.integer(model_dims),
     runtime_globals = list(SEED_ = shared_seed),
     return_details = TRUE
   )
@@ -444,6 +446,7 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
         "week10 neuralode skill=%.6f",
         "shared_seed=%s",
         "lookahead=%s",
+        "model_dims=%s",
         "n_sgd=%s",
         sep = "; "
       ),
@@ -453,6 +456,7 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
       neuralode_week10$skill,
       shared_seed,
       as.integer(n_times_lookahead),
+      as.integer(model_dims),
       as.integer(n_sgd)
     )
   )
