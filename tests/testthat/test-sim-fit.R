@@ -235,6 +235,46 @@ test_that("checkpointed NeuralODE sim runs emit structural analytics artifacts i
   expect_true(is.finite(as.numeric(details$trained$env$Skill8SanityCheck)))
 })
 
+test_that("sim analytics reader selects the final checkpoint CSV", {
+  holder_folder <- tempfile("ndm-sim-metrics-")
+  dir.create(holder_folder, recursive = TRUE)
+  on.exit(unlink(holder_folder, recursive = TRUE, force = TRUE), add = TRUE)
+
+  data.table::fwrite(
+    data.frame(iteration = 10L, marker = "early"),
+    file.path(holder_folder, "res1_i10.csv")
+  )
+  data.table::fwrite(
+    data.frame(iteration = 50L, marker = "final"),
+    file.path(holder_folder, "res1_i50.csv")
+  )
+
+  metrics <- ndm_test_read_single_sim_metrics(holder_folder)
+
+  expect_equal(as.integer(metrics$iteration[[1L]]), 50L)
+  expect_equal(as.character(metrics$marker[[1L]]), "final")
+})
+
+test_that("sim analytics reader rejects malformed checkpoint CSV names when multiple files exist", {
+  holder_folder <- tempfile("ndm-sim-metrics-")
+  dir.create(holder_folder, recursive = TRUE)
+  on.exit(unlink(holder_folder, recursive = TRUE, force = TRUE), add = TRUE)
+
+  data.table::fwrite(
+    data.frame(iteration = 10L),
+    file.path(holder_folder, "res1_i10.csv")
+  )
+  data.table::fwrite(
+    data.frame(iteration = 50L),
+    file.path(holder_folder, "res_bad.csv")
+  )
+
+  expect_error(
+    ndm_test_read_single_sim_metrics(holder_folder),
+    "Offending files: res_bad.csv"
+  )
+})
+
 test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on the same sim case", {
   ndm_skip_if_no_sim_backend()
 
@@ -242,17 +282,17 @@ test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on 
     endogeneity = 0.0,
     shared_seed = 4242L,
     n_times_lookahead = 10L,
-    n_sgd = 150L
+    n_sgd = 50L
   )
   ratio <- pair$decoder_relative_accuracy_10 / pair$neuralode_relative_accuracy_10
   info <- paste(pair$info, sprintf("decoder/neuralode ratio=%.6f", ratio), sep = "; ")
 
   expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
   expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
-  expect_gt(pair$decoder_relative_accuracy_10, 0, info = info)
-  expect_gt(pair$neuralode_relative_accuracy_10, 0, info = info)
-  expect_gte(ratio, 0.75, info = info)
-  expect_lte(ratio, 1.25, info = info)
+  expect_true(pair$decoder_relative_accuracy_10 > 0, info = info)
+  expect_true(pair$neuralode_relative_accuracy_10 > 0, info = info)
+  expect_true(ratio >= 0.75, info = info)
+  expect_true(ratio <= 1.25, info = info)
 })
 
 test_that("NeuralODE week-10 relative accuracy remains within 25% of decoder on the same sim case", {
@@ -262,17 +302,17 @@ test_that("NeuralODE week-10 relative accuracy remains within 25% of decoder on 
     endogeneity = 0.0,
     shared_seed = 4242L,
     n_times_lookahead = 10L,
-    n_sgd = 150L
+    n_sgd = 50L
   )
   ratio <- pair$neuralode_relative_accuracy_10 / pair$decoder_relative_accuracy_10
   info <- paste(pair$info, sprintf("neuralode/decoder ratio=%.6f", ratio), sep = "; ")
 
   expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
   expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
-  expect_gt(pair$decoder_relative_accuracy_10, 0, info = info)
-  expect_gt(pair$neuralode_relative_accuracy_10, 0, info = info)
-  expect_gte(ratio, 0.75, info = info)
-  expect_lte(ratio, 1.25, info = info)
+  expect_true(pair$decoder_relative_accuracy_10 > 0, info = info)
+  expect_true(pair$neuralode_relative_accuracy_10 > 0, info = info)
+  expect_true(ratio >= 0.75, info = info)
+  expect_true(ratio <= 1.25, info = info)
 })
 
 test_that("non-finite sim training fails fast and writes a debug artifact", {

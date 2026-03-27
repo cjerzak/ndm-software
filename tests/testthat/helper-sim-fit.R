@@ -321,16 +321,55 @@ ndm_test_fit_sim_case <- function(model_type,
 
 ndm_test_read_single_sim_metrics <- function(holder_folder) {
   csv_files <- list.files(holder_folder, pattern = "^res.*\\.csv$", full.names = TRUE)
-  if (length(csv_files) != 1L) {
+  if (length(csv_files) == 0L) {
     stop(
       sprintf(
-        "Expected exactly one sim analytics CSV in `%s`, found %s.",
+        "Expected at least one sim analytics CSV in `%s`, found 0.",
         holder_folder,
         length(csv_files)
       )
     )
   }
-  as.data.frame(data.table::fread(csv_files[[1L]]))
+  if (length(csv_files) == 1L) {
+    return(as.data.frame(data.table::fread(csv_files[[1L]])))
+  }
+
+  csv_names <- basename(csv_files)
+  match_info <- regexec("^res.*_i([0-9]+)\\.csv$", csv_names)
+  match_parts <- regmatches(csv_names, match_info)
+  valid_match <- lengths(match_parts) == 2L
+  if (!all(valid_match)) {
+    stop(
+      sprintf(
+        paste(
+          "Expected sim analytics CSV names to match `res*_i<iter>.csv`",
+          "when multiple files are present in `%s`.",
+          "Offending files: %s"
+        ),
+        holder_folder,
+        paste(csv_names[!valid_match], collapse = ", ")
+      )
+    )
+  }
+
+  iterations <- as.integer(vapply(match_parts, `[[`, character(1), 2L))
+  target_idx <- which(iterations == max(iterations))
+  if (length(target_idx) != 1L) {
+    stop(
+      sprintf(
+        paste(
+          "Expected a unique final sim analytics CSV in `%s`,",
+          "but found %s files at iteration %s: %s"
+        ),
+        holder_folder,
+        length(target_idx),
+        max(iterations),
+        paste(csv_names[target_idx], collapse = ", ")
+      )
+    )
+  }
+
+  as.data.frame(data.table::fread(csv_files[[target_idx]]))
 }
 
 ndm_test_week10_relative_accuracy <- function(metrics, eps = 1e-3, target_week = 10L) {
