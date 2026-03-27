@@ -235,6 +235,46 @@ test_that("checkpointed NeuralODE sim runs emit structural analytics artifacts i
   expect_true(is.finite(as.numeric(details$trained$env$Skill8SanityCheck)))
 })
 
+test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on the same sim case", {
+  ndm_skip_if_no_sim_backend()
+
+  pair <- ndm_test_collect_week10_relative_accuracy_pair(
+    endogeneity = 0.0,
+    shared_seed = 4242L,
+    n_times_lookahead = 10L,
+    n_sgd = 150L
+  )
+  ratio <- pair$decoder_relative_accuracy_10 / pair$neuralode_relative_accuracy_10
+  info <- paste(pair$info, sprintf("decoder/neuralode ratio=%.6f", ratio), sep = "; ")
+
+  expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
+  expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
+  expect_gt(pair$decoder_relative_accuracy_10, 0, info = info)
+  expect_gt(pair$neuralode_relative_accuracy_10, 0, info = info)
+  expect_gte(ratio, 0.75, info = info)
+  expect_lte(ratio, 1.25, info = info)
+})
+
+test_that("NeuralODE week-10 relative accuracy remains within 25% of decoder on the same sim case", {
+  ndm_skip_if_no_sim_backend()
+
+  pair <- ndm_test_collect_week10_relative_accuracy_pair(
+    endogeneity = 0.0,
+    shared_seed = 4242L,
+    n_times_lookahead = 10L,
+    n_sgd = 150L
+  )
+  ratio <- pair$neuralode_relative_accuracy_10 / pair$decoder_relative_accuracy_10
+  info <- paste(pair$info, sprintf("neuralode/decoder ratio=%.6f", ratio), sep = "; ")
+
+  expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
+  expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
+  expect_gt(pair$decoder_relative_accuracy_10, 0, info = info)
+  expect_gt(pair$neuralode_relative_accuracy_10, 0, info = info)
+  expect_gte(ratio, 0.75, info = info)
+  expect_lte(ratio, 1.25, info = info)
+})
+
 test_that("non-finite sim training fails fast and writes a debug artifact", {
   ndm_skip_if_no_sim_backend()
 

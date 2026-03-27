@@ -32,7 +32,9 @@ ndm_test_restore_env <- function(snapshot, dest = globalenv()) {
 ndm_test_fit_sim_case <- function(model_type,
                                   endogeneity,
                                   n_sgd = NULL,
+                                  case_seed = NULL,
                                   n_checkpoints = 0L,
+                                  n_times_lookahead = 4L,
                                   enable_kv_cache = TRUE,
                                   model_dims = 32L,
                                   attention_head_dim = 64L,
@@ -42,13 +44,17 @@ ndm_test_fit_sim_case <- function(model_type,
                                   after_train_define = NULL,
                                   expect_train_error = FALSE,
                                   return_details = FALSE) {
+  n_times_lookahead <- as.integer(n_times_lookahead)
   if (is.null(n_sgd)) {
     n_sgd <- if (identical(model_type, "NeuralODE")) 3L else 2L
   }
   learning_rate_max <- if (identical(model_type, "NeuralODE")) 3e-3 else 2e-3
-  case_seed <- 1000L +
-    (match(model_type, c("DecoderOnly", "NeuralODE")) - 1L) * 100L +
-    as.integer(round(endogeneity * 100))
+  if (is.null(case_seed)) {
+    case_seed <- 1000L +
+      (match(model_type, c("DecoderOnly", "NeuralODE")) - 1L) * 100L +
+      as.integer(round(endogeneity * 100))
+  }
+  case_seed <- as.integer(case_seed)
   had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   old_seed <- if (had_seed) get(".Random.seed", envir = .GlobalEnv, inherits = FALSE) else NULL
   set.seed(case_seed)
@@ -165,7 +171,6 @@ ndm_test_fit_sim_case <- function(model_type,
     runtime_globals = runtime_defaults
   )
 
-  n_times_lookahead <- 4L
   n_times_past <- 8L
   n_times_total <- n_times_past + n_times_lookahead
   n_time_steps_sim <- (n_times_past + n_times_lookahead) * 2L
@@ -178,7 +183,7 @@ ndm_test_fit_sim_case <- function(model_type,
       VI_TotalTimesInLikelihood = n_times_lookahead,
       nTimesInLikelihood = n_times_lookahead,
       NTimeSteps_SIM = n_time_steps_sim,
-      nTimesLookValidationInference = 4L,
+      nTimesLookValidationInference = n_times_lookahead,
       MaxSteps = as.integer(1e4),
       VI_SaveAt_ODE_sim = runtime_env$diffrax$SaveAt(
         ts = runtime_env$jnp$array(0L:(n_time_steps_sim - 1L))
@@ -312,6 +317,106 @@ ndm_test_fit_sim_case <- function(model_type,
     ))
   }
   summary
+}
+
+ndm_test_read_single_sim_metrics <- function(holder_folder) {
+  csv_files <- list.files(holder_folder, pattern = "^res.*\\.csv$", full.names = TRUE)
+  if (length(csv_files) != 1L) {
+    stop(
+      sprintf(
+        "Expected exactly one sim analytics CSV in `%s`, found %s.",
+        holder_folder,
+        length(csv_files)
+      )
+    )
+  }
+  as.data.frame(data.table::fread(csv_files[[1L]]))
+}
+
+ndm_test_week10_relative_accuracy <- function(metrics, eps = 1e-3, target_week = 10L) {
+  pred_col <- paste0("RSSPredTime", target_week)
+  baseline_col <- paste0("RSSBaselineTime", target_week)
+  skill_col <- paste0("SkillTime", target_week)
+  required_cols <- c(pred_col, baseline_col)
+  missing_cols <- required_cols[!required_cols %in% names(metrics)]
+  if (length(missing_cols) > 0L) {
+    stop(
+      sprintf(
+        "Missing required week-%s analytics columns: %s",
+        target_week,
+        paste(missing_cols, collapse = ", ")
+      )
+    )
+  }
+
+  rss_pred <- as.numeric(metrics[[pred_col]][[1L]])
+  rss_baseline <- as.numeric(metrics[[baseline_col]][[1L]])
+  skill <- if (skill_col %in% names(metrics)) {
+    as.numeric(metrics[[skill_col]][[1L]])
+  } else {
+    NA_real_
+  }
+  list(
+    rss_pred = rss_pred,
+    rss_baseline = rss_baseline,
+    skill = skill,
+    relative_accuracy = (eps + sqrt(rss_baseline)) / (eps + sqrt(rss_pred))
+  )
+}
+
+ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
+                                                           shared_seed = 1010L,
+                                                           n_times_lookahead = 10L,
+                                                           n_sgd = 1L) {
+  shared_seed <- as.integer(shared_seed)
+  common_args <- list(
+    endogeneity = endogeneity,
+    case_seed = shared_seed,
+    n_checkpoints = 1L,
+    n_times_lookahead = n_times_lookahead,
+    n_sgd = as.integer(n_sgd),
+    runtime_globals = list(SEED_ = shared_seed),
+    return_details = TRUE
+  )
+
+  decoder_details <- do.call(
+    ndm_test_fit_sim_case,
+    c(list(model_type = "DecoderOnly"), common_args)
+  )
+  neuralode_details <- do.call(
+    ndm_test_fit_sim_case,
+    c(list(model_type = "NeuralODE"), common_args)
+  )
+
+  decoder_metrics <- ndm_test_read_single_sim_metrics(decoder_details$holder_folder)
+  neuralode_metrics <- ndm_test_read_single_sim_metrics(neuralode_details$holder_folder)
+  decoder_week10 <- ndm_test_week10_relative_accuracy(decoder_metrics)
+  neuralode_week10 <- ndm_test_week10_relative_accuracy(neuralode_metrics)
+  list(
+    decoder_relative_accuracy_10 = decoder_week10$relative_accuracy,
+    neuralode_relative_accuracy_10 = neuralode_week10$relative_accuracy,
+    decoder_skill_10 = decoder_week10$skill,
+    neuralode_skill_10 = neuralode_week10$skill,
+    info = sprintf(
+      paste(
+        "week10 decoder rel_acc=%.6f",
+        "week10 neuralode rel_acc=%.6f",
+        "week10 decoder skill=%.6f",
+        "week10 neuralode skill=%.6f",
+        "shared_seed=%s",
+        "lookahead=%s",
+        "n_sgd=%s",
+        sep = "; "
+      ),
+      decoder_week10$relative_accuracy,
+      neuralode_week10$relative_accuracy,
+      decoder_week10$skill,
+      neuralode_week10$skill,
+      shared_seed,
+      as.integer(n_times_lookahead),
+      as.integer(n_sgd)
+    )
+  )
 }
 
 ndm_skip_if_no_sim_backend <- function() {
