@@ -809,14 +809,33 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
    { # performs better in tests 
       print2("Using softmax...")
       init_m <- jnp$take(localze, jnp$array( which(lDepParamsVec_ %in% uq_initcond_vec)[1:4] - 1L ))
+      init_logit_offset <- get0("InitStateLogitOffset", inherits = TRUE, ifnotfound = c(10, -1, -1, -1))
+      init_logit_offset <- as.numeric(init_logit_offset)
+      if(length(init_logit_offset) == 1L){ init_logit_offset <- rep(init_logit_offset, 4L) }
+      if(length(init_logit_offset) != 4L){
+        stop("InitStateLogitOffset must have length 1 or 4.")
+      }
+      init_logit_offset <- jnp$array(init_logit_offset)$astype(init_m$dtype)
+      init_logit_scale_max <- suppressWarnings(as.numeric(get0("InitStateLogitScaleMax", inherits = TRUE, ifnotfound = Inf)))
+      if(length(init_logit_scale_max) == 0L){ init_logit_scale_max <- Inf }
+      if(length(init_logit_scale_max) != 1L){
+        stop("InitStateLogitScaleMax must be scalar.")
+      }
+      init_logit_scale_max <- init_logit_scale_max[[1L]]
+      init_scale <- SoftPlus( InvSoftPlus(1.) + 
+                      jnp$take(localze, jnp$array( which(lDepParamsVec_ %in% uq_initcond_vec)[5] - 1L ))*1  )
+      if(is.finite(init_logit_scale_max)){
+        init_scale <- jnp$minimum(
+          init_scale,
+          jnp$array(init_logit_scale_max)$astype(init_scale$dtype)
+        )
+      }
       # plot(np$array(init_m$val)[,1])
      
       #init_m <- jnp$take(localze, jnp$array( which(lDepParamsVec_ %in% uq_initcond_vec)[1:3] - 1L ))
       #init_m <- jnp$concatenate(list( init_m, jnp$zeros(1L)$astype(init_m$dtype) ), 0L)
       #init_m <-  ( init_m  + jnp$array(c(10,0,0,0)) ) *
-      init_m <-  ( ( init_m  + jnp$array(c(10,-1,-1,-1)) )) * 
-              SoftPlus(  InvSoftPlus(1.) + 
-                      jnp$take(localze, jnp$array( which(lDepParamsVec_ %in% uq_initcond_vec)[5] - 1L ))*1  ) # 0.1,1 before 
+      init_m <-  ( ( init_m  + init_logit_offset )) * init_scale # 0.1,1 before 
       init_samp <- jnp$exp(  jax$nn$log_softmax( init_m  ) + jnp$log(CONST_N)   )
       # plot(np$array(init_samp$val)[,1])
     }

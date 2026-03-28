@@ -29,6 +29,13 @@ ndm_test_restore_env <- function(snapshot, dest = globalenv()) {
   invisible(dest)
 }
 
+ndm_test_merge_runtime_lists <- function(base, override = NULL) {
+  if (!is.list(override) || length(override) == 0L) {
+    return(base)
+  }
+  utils::modifyList(base, override)
+}
+
 ndm_test_fit_sim_case <- function(model_type,
                                   endogeneity,
                                   n_sgd = NULL,
@@ -40,6 +47,7 @@ ndm_test_fit_sim_case <- function(model_type,
                                   attention_head_dim = 64L,
                                   attention_kv_heads = NULL,
                                   runtime_globals = NULL,
+                                  runtime_globals_after_setup = NULL,
                                   before_train = NULL,
                                   after_train_define = NULL,
                                   expect_train_error = FALSE,
@@ -203,6 +211,9 @@ ndm_test_fit_sim_case <- function(model_type,
       diffraxInterpolator = runtime_env$diffrax$LinearInterpolation
     )
   )
+  if (is.list(runtime_globals_after_setup) && length(runtime_globals_after_setup) > 0L) {
+    ndm_set_runtime_globals(runtime_env, runtime_globals_after_setup)
+  }
 
   suppressWarnings(
     ndm_prepare_data(
@@ -294,7 +305,12 @@ ndm_test_fit_sim_case <- function(model_type,
         work_dir = work_dir,
         holder_folder = file.path(work_dir, "results"),
         train_elapsed_seconds = train_elapsed_seconds,
-        iterations_per_second = iterations_per_second
+        iterations_per_second = iterations_per_second,
+        block_update_log = if (exists("block_update_log", envir = runtime_env, inherits = FALSE)) {
+          get("block_update_log", envir = runtime_env, inherits = FALSE)
+        } else {
+          NULL
+        }
       ))
     }
     return(invisible(trained))
@@ -335,7 +351,12 @@ ndm_test_fit_sim_case <- function(model_type,
       work_dir = work_dir,
       holder_folder = file.path(work_dir, "results"),
       train_elapsed_seconds = train_elapsed_seconds,
-      iterations_per_second = iterations_per_second
+      iterations_per_second = iterations_per_second,
+      block_update_log = if (exists("block_update_log", envir = trained$env, inherits = FALSE)) {
+        get("block_update_log", envir = trained$env, inherits = FALSE)
+      } else {
+        NULL
+      }
     ))
   }
   summary
@@ -425,11 +446,97 @@ ndm_test_week10_relative_accuracy <- function(metrics, eps = 1e-3, target_week =
   )
 }
 
+ndm_test_sim_parity_shared_runtime_globals <- function(shared_seed,
+                                                       n_samples_train = 256L,
+                                                       scaling_outer_loops = 2L,
+                                                       scaling_inner_loops = 12L) {
+  n_samples_train <- as.integer(n_samples_train)
+  list(
+    SEED_ = as.integer(shared_seed),
+    ReshuffleEachIteration = TRUE,
+    nSamplesTrain = n_samples_train,
+    nSamples_max = n_samples_train,
+    SimEntry = list(
+      nSamplesTrain = n_samples_train,
+      ResaveThisTFRecord = 1L
+    ),
+    SimScalingOuterLoops = as.integer(scaling_outer_loops),
+    SimScalingInnerLoops = as.integer(scaling_inner_loops)
+  )
+}
+
+ndm_test_sim_parity_neural_runtime_globals_after_setup <- function() {
+  list(
+    dt0_init_optim = 1e-2,
+    InitStateLogitOffset = c(2.5, 0, 0, 0),
+    InitStateLogitScaleMax = 1.0,
+    TrackBlockUpdateNorms = TRUE
+  )
+}
+
+ndm_test_capture_initial_state_metrics <- function(details, seed = 1L) {
+  if (is.null(details$batch)) {
+    stop("Expected `details$batch` to capture a simulation batch for state diagnostics.")
+  }
+
+  runtime_env <- details$trained$env
+  getpred_saveat_info <- if (exists("ndm_runtime_normalize_getpred_saveat_info", envir = runtime_env, inherits = TRUE)) {
+    runtime_env$ndm_runtime_normalize_getpred_saveat_info(runtime_env$GetPredSaveAtInfo_default)
+  } else {
+    runtime_env$GetPredSaveAtInfo_default
+  }
+  seed_matrix <- runtime_env$jax$random$split(
+    runtime_env$jax$random$PRNGKey(as.integer(seed)),
+    as.integer(runtime_env$nBatch)
+  )
+  if (exists("ndm_runtime_data_to_device", envir = runtime_env, inherits = TRUE)) {
+    seed_matrix <- runtime_env$ndm_runtime_data_to_device(seed_matrix)
+  }
+
+  pred <- runtime_env$GetPred_train_jit(
+    runtime_env$ModelList,
+    runtime_env$batch2package(details$batch),
+    runtime_env$state,
+    runtime_env$PriorList,
+    runtime_env$PolicyList,
+    getpred_saveat_info,
+    seed_matrix
+  )[[1L]]
+
+  state_components <- cbind(
+    s = as.numeric(reticulate::py_to_r(runtime_env$np$asanyarray(pred$ODEParamsSampList$s_l_samp))),
+    e = as.numeric(reticulate::py_to_r(runtime_env$np$asanyarray(pred$ODEParamsSampList$e_l_samp))),
+    i = as.numeric(reticulate::py_to_r(runtime_env$np$asanyarray(pred$ODEParamsSampList$i_l_samp))),
+    r = as.numeric(reticulate::py_to_r(runtime_env$np$asanyarray(pred$ODEParamsSampList$r_l_samp)))
+  )
+  state_components[!is.finite(state_components)] <- NA_real_
+  row_totals <- rowSums(state_components, na.rm = TRUE)
+  proportions <- sweep(state_components, 1L, pmax(row_totals, 1e-12), "/")
+  entropies <- -rowSums(proportions * log(pmax(proportions, 1e-12)), na.rm = TRUE)
+
+  list(
+    mean_entropy = mean(entropies, na.rm = TRUE),
+    max_component = max(proportions, na.rm = TRUE),
+    mean_max_component = mean(apply(proportions, 1L, max, na.rm = TRUE), na.rm = TRUE),
+    mean_components = colMeans(proportions, na.rm = TRUE),
+    proportions = proportions
+  )
+}
+
 ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
                                                            shared_seed = 1010L,
                                                            n_times_lookahead = 10L,
                                                            n_sgd = 1L,
-                                                           model_dims = 32L) {
+                                                           model_dims = 32L,
+                                                           shared_runtime_globals = NULL,
+                                                           shared_runtime_globals_after_setup = NULL,
+                                                           decoder_runtime_globals = NULL,
+                                                           decoder_runtime_globals_after_setup = NULL,
+                                                           neuralode_runtime_globals = NULL,
+                                                           neuralode_runtime_globals_after_setup = NULL,
+                                                           decoder_before_train = NULL,
+                                                           neuralode_before_train = NULL,
+                                                           return_details = FALSE) {
   shared_seed <- as.integer(shared_seed)
   common_args <- list(
     endogeneity = endogeneity,
@@ -438,24 +545,53 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
     n_times_lookahead = n_times_lookahead,
     n_sgd = as.integer(n_sgd),
     model_dims = as.integer(model_dims),
-    runtime_globals = list(SEED_ = shared_seed),
     return_details = TRUE
+  )
+  shared_runtime_globals <- ndm_test_merge_runtime_lists(
+    list(SEED_ = shared_seed),
+    shared_runtime_globals
+  )
+  shared_runtime_globals_after_setup <- ndm_test_merge_runtime_lists(
+    list(),
+    shared_runtime_globals_after_setup
   )
 
   decoder_details <- do.call(
     ndm_test_fit_sim_case,
-    c(list(model_type = "DecoderOnly"), common_args)
+    c(
+      list(
+        model_type = "DecoderOnly",
+        runtime_globals = ndm_test_merge_runtime_lists(shared_runtime_globals, decoder_runtime_globals),
+        runtime_globals_after_setup = ndm_test_merge_runtime_lists(
+          shared_runtime_globals_after_setup,
+          decoder_runtime_globals_after_setup
+        ),
+        before_train = decoder_before_train
+      ),
+      common_args
+    )
   )
   neuralode_details <- do.call(
     ndm_test_fit_sim_case,
-    c(list(model_type = "NeuralODE"), common_args)
+    c(
+      list(
+        model_type = "NeuralODE",
+        runtime_globals = ndm_test_merge_runtime_lists(shared_runtime_globals, neuralode_runtime_globals),
+        runtime_globals_after_setup = ndm_test_merge_runtime_lists(
+          shared_runtime_globals_after_setup,
+          neuralode_runtime_globals_after_setup
+        ),
+        before_train = neuralode_before_train
+      ),
+      common_args
+    )
   )
 
   decoder_metrics <- ndm_test_read_single_sim_metrics(decoder_details$holder_folder)
   neuralode_metrics <- ndm_test_read_single_sim_metrics(neuralode_details$holder_folder)
   decoder_week10 <- ndm_test_week10_relative_accuracy(decoder_metrics)
   neuralode_week10 <- ndm_test_week10_relative_accuracy(neuralode_metrics)
-  list(
+  result <- list(
     decoder_relative_accuracy_10 = decoder_week10$relative_accuracy,
     neuralode_relative_accuracy_10 = neuralode_week10$relative_accuracy,
     decoder_skill_10 = decoder_week10$skill,
@@ -494,6 +630,11 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
       as.integer(n_sgd)
     )
   )
+  if (isTRUE(return_details)) {
+    result$decoder_details <- decoder_details
+    result$neuralode_details <- neuralode_details
+  }
+  result
 }
 
 ndm_skip_if_no_sim_backend <- function() {

@@ -275,7 +275,7 @@ test_that("sim analytics reader rejects malformed checkpoint CSV names when mult
   )
 })
 
-test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on the same sim case", {
+test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder on the same sim case", {
   ndm_skip_if_no_sim_backend()
 
   pair <- ndm_test_collect_week10_relative_accuracy_pair(
@@ -283,46 +283,77 @@ test_that("decoder week-10 relative accuracy remains within 25% of NeuralODE on 
     shared_seed = 4242L,
     n_times_lookahead = 10L,
     n_sgd = 250L,
-    model_dims = 64L
+    model_dims = 64L,
+    shared_runtime_globals = ndm_test_sim_parity_shared_runtime_globals(4242L),
+    neuralode_runtime_globals_after_setup = ndm_test_sim_parity_neural_runtime_globals_after_setup(),
+    return_details = TRUE
   )
-  ratio <- pair$decoder_relative_accuracy_10 / pair$neuralode_relative_accuracy_10
-  info <- paste(pair$info, sprintf("decoder/neuralode ratio=%.6f", ratio), sep = "; ")
-
-  expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
-  expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
-  expect_true(is.finite(pair$decoder_iterations_per_second), info = info)
-  expect_true(is.finite(pair$neuralode_iterations_per_second), info = info)
-  expect_true(pair$decoder_relative_accuracy_10 > 0, info = info)
-  expect_true(pair$neuralode_relative_accuracy_10 > 0, info = info)
-  expect_true(pair$decoder_iterations_per_second > 0, info = info)
-  expect_true(pair$neuralode_iterations_per_second > 0, info = info)
-  expect_true(ratio >= 0.75, info = info)
-  expect_true(ratio <= 1.25, info = info)
-})
-
-test_that("NeuralODE week-10 relative accuracy remains within 25% of decoder on the same sim case", {
-  ndm_skip_if_no_sim_backend()
-
-  pair <- ndm_test_collect_week10_relative_accuracy_pair(
-    endogeneity = 0.0,
-    shared_seed = 4242L,
-    n_times_lookahead = 10L,
-    n_sgd = 250L,
-    model_dims = 64L
+  decoder_over_neural <- pair$decoder_relative_accuracy_10 / pair$neuralode_relative_accuracy_10
+  neural_over_decoder <- pair$neuralode_relative_accuracy_10 / pair$decoder_relative_accuracy_10
+  ratio_info <- paste(
+    pair$info,
+    sprintf("decoder/neuralode ratio=%.6f", decoder_over_neural),
+    sprintf("neuralode/decoder ratio=%.6f", neural_over_decoder),
+    sep = "; "
   )
-  ratio <- pair$neuralode_relative_accuracy_10 / pair$decoder_relative_accuracy_10
-  info <- paste(pair$info, sprintf("neuralode/decoder ratio=%.6f", ratio), sep = "; ")
 
-  expect_true(is.finite(pair$decoder_relative_accuracy_10), info = info)
-  expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = info)
-  expect_true(is.finite(pair$decoder_iterations_per_second), info = info)
-  expect_true(is.finite(pair$neuralode_iterations_per_second), info = info)
-  expect_true(pair$decoder_relative_accuracy_10 > 0, info = info)
-  expect_true(pair$neuralode_relative_accuracy_10 > 0, info = info)
-  expect_true(pair$decoder_iterations_per_second > 0, info = info)
-  expect_true(pair$neuralode_iterations_per_second > 0, info = info)
-  expect_true(ratio >= 0.75, info = info)
-  expect_true(ratio <= 1.25, info = info)
+  expect_true(is.finite(pair$decoder_relative_accuracy_10), info = ratio_info)
+  expect_true(is.finite(pair$neuralode_relative_accuracy_10), info = ratio_info)
+  expect_true(is.finite(pair$decoder_iterations_per_second), info = ratio_info)
+  expect_true(is.finite(pair$neuralode_iterations_per_second), info = ratio_info)
+  expect_true(pair$decoder_relative_accuracy_10 > 0, info = ratio_info)
+  expect_true(pair$neuralode_relative_accuracy_10 > 0, info = ratio_info)
+  expect_true(pair$decoder_iterations_per_second > 0, info = ratio_info)
+  expect_true(pair$neuralode_iterations_per_second > 0, info = ratio_info)
+  expect_true(decoder_over_neural >= 0.75, info = ratio_info)
+  expect_true(decoder_over_neural <= 1.25, info = ratio_info)
+  expect_true(neural_over_decoder >= 0.75, info = ratio_info)
+  expect_true(neural_over_decoder <= 1.25, info = ratio_info)
+
+  neural_summary <- pair$neuralode_details$summary
+  neural_info <- paste(
+    ratio_info,
+    sprintf("neural first_loss=%.6f", neural_summary$first_loss[[1L]]),
+    sprintf("neural last_loss=%.6f", neural_summary$last_loss[[1L]]),
+    sep = "; "
+  )
+  expect_lt(neural_summary$last_loss[[1L]], neural_summary$first_loss[[1L]], info = neural_info)
+
+  block_log <- pair$neuralode_details$block_update_log
+  expect_true(is.data.frame(block_log), info = neural_info)
+  expect_gt(nrow(block_log), 0L, info = neural_info)
+  expect_true(
+    all(c("iter", "block", "param_norm", "grad_norm", "update_norm", "rel_update") %in% names(block_log)),
+    info = neural_info
+  )
+  expect_true(all(is.finite(block_log$param_norm)), info = neural_info)
+  expect_true(all(is.finite(block_log$grad_norm)), info = neural_info)
+  expect_true(all(is.finite(block_log$update_norm)), info = neural_info)
+  expect_true(all(is.finite(block_log$rel_update)), info = neural_info)
+  expect_true(
+    all(c("InitProcessList", "LocalNeural", "GlobalNeural", "ScaleList", "TSList") %in% unique(block_log$block)),
+    info = neural_info
+  )
+  moved_blocks <- stats::aggregate(
+    update_norm ~ block,
+    data = block_log,
+    FUN = function(x) max(x, na.rm = TRUE)
+  )
+  expect_true(
+    any(moved_blocks$block %in% c("LocalNeural", "GlobalNeural", "TSList") &
+          moved_blocks$update_norm > 0),
+    info = neural_info
+  )
+
+  state_metrics <- ndm_test_capture_initial_state_metrics(pair$neuralode_details, seed = 99L)
+  state_info <- paste(
+    neural_info,
+    sprintf("mean_entropy=%.6f", state_metrics$mean_entropy),
+    sprintf("mean_max_component=%.6f", state_metrics$mean_max_component),
+    sep = "; "
+  )
+  expect_gt(state_metrics$mean_entropy, 0.1, info = state_info)
+  expect_lt(state_metrics$mean_max_component, 0.98, info = state_info)
 })
 
 test_that("non-finite sim training fails fast and writes a debug artifact", {

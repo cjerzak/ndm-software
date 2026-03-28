@@ -1507,7 +1507,8 @@
         }
         if (!skip_tfrecords) {
             tf <- reticulate::import("tensorflow")
-            RESHUFFLE_EACH_ITERATION <- FALSE
+            RESHUFFLE_EACH_ITERATION <- isTRUE(get0("ReshuffleEachIteration", 
+                inherits = TRUE, ifnotfound = FALSE))
             bytes_feature <- function(value) {
                 tf$train$Feature(bytes_list = tf$train$BytesList(value = list(value$numpy())))
             }
@@ -3267,10 +3268,34 @@
                 print2("Using softmax...")
                 init_m <- jnp$take(localze, jnp$array(which(lDepParamsVec_ %in% 
                   uq_initcond_vec)[1:4] - 1L))
-                init_m <- ((init_m + jnp$array(c(10, -1, -1, 
-                  -1)))) * SoftPlus(InvSoftPlus(1) + jnp$take(localze, 
+                init_logit_offset <- get0("InitStateLogitOffset", 
+                  inherits = TRUE, ifnotfound = c(10, -1, -1, 
+                    -1))
+                init_logit_offset <- as.numeric(init_logit_offset)
+                if (length(init_logit_offset) == 1L) {
+                  init_logit_offset <- rep(init_logit_offset, 
+                    4L)
+                }
+                if (length(init_logit_offset) != 4L) {
+                  stop("InitStateLogitOffset must have length 1 or 4.")
+                }
+                init_logit_offset <- jnp$array(init_logit_offset)$astype(init_m$dtype)
+                init_logit_scale_max <- suppressWarnings(as.numeric(get0("InitStateLogitScaleMax", 
+                  inherits = TRUE, ifnotfound = Inf)))
+                if (length(init_logit_scale_max) == 0L) {
+                  init_logit_scale_max <- Inf
+                }
+                if (length(init_logit_scale_max) != 1L) {
+                  stop("InitStateLogitScaleMax must be scalar.")
+                }
+                init_logit_scale_max <- init_logit_scale_max[[1L]]
+                init_scale <- SoftPlus(InvSoftPlus(1) + jnp$take(localze, 
                   jnp$array(which(lDepParamsVec_ %in% uq_initcond_vec)[5] - 
                     1L)) * 1)
+                if (is.finite(init_logit_scale_max)) {
+                  init_scale <- jnp$minimum(init_scale, jnp$array(init_logit_scale_max)$astype(init_scale$dtype))
+                }
+                init_m <- ((init_m + init_logit_offset)) * init_scale
                 init_samp <- jnp$exp(jax$nn$log_softmax(init_m) + 
                   jnp$log(CONST_N))
             }
@@ -5254,6 +5279,54 @@
     if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
         opt_state <- ndm_runtime_replicate_tree(opt_state)
     }
+    TrackBlockUpdateNorms <- isTRUE(get0("TrackBlockUpdateNorms", 
+        inherits = TRUE, ifnotfound = FALSE))
+    PersistBlockUpdateNorms <- isTRUE(get0("PersistBlockUpdateNorms", 
+        inherits = TRUE, ifnotfound = FALSE))
+    BlockUpdateTrackNames <- intersect(c("InitProcessList", "LocalNeural", 
+        "GlobalNeural", "ScaleList", "TSList", "BNList"), names(ModelList))
+    train_define_env <- environment()
+    block_metric_norm <- function(tree) {
+        leaves <- jax$tree_util$tree_leaves(tree)
+        if (length(leaves) == 0L) {
+            return(jnp$array(0))
+        }
+        optax$global_norm(leaves)
+    }
+    block_update_log <- data.frame(iter = integer(0L), block = character(0L), 
+        param_norm = numeric(0L), grad_norm = numeric(0L), update_norm = numeric(0L), 
+        rel_update = numeric(0L), stringsAsFactors = FALSE)
+    append_block_update_log <- function(iteration, block_metrics) {
+        if (!TrackBlockUpdateNorms || is.null(block_metrics) || 
+            length(block_metrics) == 0L) {
+            return(invisible(NULL))
+        }
+        py_scalar_num <- function(x) {
+            value <- suppressWarnings(as.numeric(np$array(x)))
+            if (length(value) == 0L) {
+                return(NA_real_)
+            }
+            value[[1L]]
+        }
+        rows <- do.call(rbind, lapply(names(block_metrics), function(block_name) {
+            metric <- block_metrics[[block_name]]
+            data.frame(iter = as.integer(iteration), block = block_name, 
+                param_norm = py_scalar_num(metric$param_norm), 
+                grad_norm = py_scalar_num(metric$grad_norm), 
+                update_norm = py_scalar_num(metric$update_norm), 
+                rel_update = py_scalar_num(metric$rel_update), 
+                stringsAsFactors = FALSE)
+        }))
+        current_log <- get("block_update_log", envir = train_define_env, 
+            inherits = FALSE)
+        updated_log <- rbind(current_log, rows)
+        assign("block_update_log", updated_log, envir = train_define_env)
+        if (PersistBlockUpdateNorms) {
+            data.table::fwrite(updated_log, file.path(HolderFolder, 
+                sprintf("block_updates_i%s.csv", as.integer(iteration))))
+        }
+        invisible(rows)
+    }
     jit_apply_updates <- eq$filter_jit(optax$apply_updates)
     jit_get_update <- eq$filter_jit(optax_optimizer$update)
     train_step_compiled <- switch_filter_jit(function(ModelList, 
@@ -5266,14 +5339,33 @@
         loss_and_state <- loss_and_grads[[1]]
         grads <- loss_and_grads[[2]]
         model_arrays <- eq$partition(ModelList, eq$is_array)
+        model_array_tree <- model_arrays[[1]]
         grad_arrays <- eq$partition(grads, eq$is_inexact_array)[[1]]
         updates_and_state <- optax_optimizer$update(grad_arrays, 
-            opt_state, model_arrays[[1]])
-        updated_model <- eq$combine(optax$apply_updates(model_arrays[[1]], 
+            opt_state, model_array_tree)
+        block_update_metrics <- if (TrackBlockUpdateNorms && 
+            length(BlockUpdateTrackNames) > 0L) {
+            metrics <- lapply(BlockUpdateTrackNames, function(block_name) {
+                param_norm <- block_metric_norm(model_array_tree[[block_name]])
+                grad_norm <- block_metric_norm(grad_arrays[[block_name]])
+                update_norm <- block_metric_norm(updates_and_state[[1]][[block_name]])
+                rel_update <- update_norm/jnp$maximum(param_norm, 
+                  jnp$array(1e-12)$astype(param_norm$dtype))
+                list(param_norm = param_norm, grad_norm = grad_norm, 
+                  update_norm = update_norm, rel_update = rel_update)
+            })
+            names(metrics) <- BlockUpdateTrackNames
+            metrics
+        }
+        else {
+            NULL
+        }
+        updated_model <- eq$combine(optax$apply_updates(model_array_tree, 
             updates_and_state[[1]]), model_arrays[[2]])
         list(loss = loss_and_state[[1]], state = loss_and_state[[2]], 
             grad_norm = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)), 
-            model = updated_model, opt_state = updates_and_state[[2]])
+            model = updated_model, opt_state = updates_and_state[[2]], 
+            block_update_metrics = block_update_metrics)
     })
 }, NA20 <- function(zer) {
     zer[is.na(zer)] <- 0
@@ -5558,6 +5650,9 @@
                 if (UpdateParametersCond) {
                   ExecuteUpdateCounter <- ExecuteUpdateCounter + 
                     1
+                  if (exists("append_block_update_log", inherits = TRUE)) {
+                    append_block_update_log(i, train_step_result$block_update_metrics)
+                  }
                   ModelList <- train_step_result$model
                   state <- train_step_result$state
                   opt_state <- train_step_result$opt_state

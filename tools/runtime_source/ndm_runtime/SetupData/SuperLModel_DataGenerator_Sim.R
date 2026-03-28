@@ -475,7 +475,7 @@
     if(!skip_tfrecords){
     # warning("Forcing small sample size in tfrecord for testing!"); nSamplesTrain <- sample(c(10,100,1000),1);Sys.sleep(10)
     tf <- reticulate::import("tensorflow")
-    RESHUFFLE_EACH_ITERATION <- FALSE
+    RESHUFFLE_EACH_ITERATION <- isTRUE(get0("ReshuffleEachIteration", inherits = TRUE, ifnotfound = FALSE))
     
     # helper fxn 
     bytes_feature <- function(value){

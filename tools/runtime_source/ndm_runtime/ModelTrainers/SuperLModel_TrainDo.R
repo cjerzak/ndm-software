@@ -326,6 +326,9 @@ for(i in i_:nSGD_model){
     }
     if( UpdateParametersCond){
       ExecuteUpdateCounter <- ExecuteUpdateCounter + 1
+      if (exists("append_block_update_log", inherits = TRUE)) {
+        append_block_update_log(i, train_step_result$block_update_metrics)
+      }
       ModelList <- train_step_result$model
       state <- train_step_result$state
       opt_state <- train_step_result$opt_state
