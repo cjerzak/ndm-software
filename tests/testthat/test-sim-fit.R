@@ -317,11 +317,14 @@ test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder
     sprintf("neural last_loss=%.6f", neural_summary$last_loss[[1L]]),
     sep = "; "
   )
-  expect_lt(neural_summary$last_loss[[1L]], neural_summary$first_loss[[1L]], info = neural_info)
+  expect_true(
+    neural_summary$last_loss[[1L]] < neural_summary$first_loss[[1L]],
+    info = neural_info
+  )
 
   block_log <- pair$neuralode_details$block_update_log
   expect_true(is.data.frame(block_log), info = neural_info)
-  expect_gt(nrow(block_log), 0L, info = neural_info)
+  expect_true(nrow(block_log) > 0L, info = neural_info)
   expect_true(
     all(c("iter", "block", "param_norm", "grad_norm", "update_norm", "rel_update") %in% names(block_log)),
     info = neural_info
@@ -352,8 +355,8 @@ test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder
     sprintf("mean_max_component=%.6f", state_metrics$mean_max_component),
     sep = "; "
   )
-  expect_gt(state_metrics$mean_entropy, 0.1, info = state_info)
-  expect_lt(state_metrics$mean_max_component, 0.98, info = state_info)
+  expect_true(state_metrics$mean_entropy > 0.1, info = state_info)
+  expect_true(state_metrics$mean_max_component < 0.98, info = state_info)
 })
 
 test_that("non-finite sim training fails fast and writes a debug artifact", {
