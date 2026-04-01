@@ -16,10 +16,37 @@ resolve_script_path <- function() {
 }
 
 escape_r_string <- function(x) {
-  x <- gsub("\\\\", "\\\\\\\\", x)
-  x <- gsub("\"", "\\\\\"", x)
-  x <- gsub("\n", "\\n", x, fixed = TRUE)
-  x
+  codepoints <- utf8ToInt(enc2utf8(x))
+  pieces <- vapply(
+    codepoints,
+    function(codepoint) {
+      if (codepoint == 0x5CL) {
+        return("\\\\")
+      }
+      if (codepoint == 0x22L) {
+        return("\\\"")
+      }
+      if (codepoint == 0x0AL) {
+        return("\\n")
+      }
+      if (codepoint == 0x0DL) {
+        return("\\r")
+      }
+      if (codepoint == 0x09L) {
+        return("\\t")
+      }
+      if (codepoint >= 0x20L && codepoint <= 0x7EL) {
+        return(intToUtf8(codepoint))
+      }
+      if (codepoint <= 0xFFFFL) {
+        return(sprintf("\\u%04X", codepoint))
+      }
+      sprintf("\\U%08X", codepoint)
+    },
+    character(1L),
+    USE.NAMES = FALSE
+  )
+  paste0(pieces, collapse = "")
 }
 
 repo_root <- normalizePath(file.path(dirname(resolve_script_path()), ".."), winslash = "/", mustWork = TRUE)
@@ -29,7 +56,10 @@ output_path <- file.path(repo_root, "R", "runtime_sources.R")
 runtime_files <- list.files(runtime_root, recursive = TRUE, full.names = FALSE)
 runtime_files <- sort(runtime_files[file.info(file.path(runtime_root, runtime_files))$isdir %in% FALSE])
 runtime_text <- lapply(runtime_files, function(path) {
-  paste(readLines(file.path(runtime_root, path), warn = FALSE), collapse = "\n")
+  paste(
+    readLines(file.path(runtime_root, path), warn = FALSE, encoding = "UTF-8"),
+    collapse = "\n"
+  )
 })
 names(runtime_text) <- runtime_files
 
