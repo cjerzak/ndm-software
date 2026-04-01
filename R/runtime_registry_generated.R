@@ -4100,6 +4100,37 @@
                     axis = -1L, keepdims = TRUE) + eps)
                   jnp$multiply(jnp$divide(x_f32, rms), scale_f32)$astype(x$dtype)
                 }
+                resolve_attnres_norm_scale <- function(scale, 
+                  width, dtype = jnp$float32) {
+                  if (is.null(scale)) {
+                    stop("Full attention residual layers require AttnRes NormScale.", 
+                      call. = FALSE)
+                  }
+                  scale <- scale$astype(dtype)
+                  if (length(scale$shape) != 1L) {
+                    scale <- jnp$reshape(scale, list(as.integer(width)))
+                  }
+                  scale
+                }
+                attnres_normalize_sources <- function(sources, 
+                  scale, eps = FullAttentionResidualEps) {
+                  rank <- length(sources$shape)
+                  if (!(rank %in% c(2L, 3L))) {
+                    stop("attnres_normalize_sources expects a [N, D] or [N, T, D] tensor.", 
+                      call. = FALSE)
+                  }
+                  width <- as.integer(sources$shape[[rank]])
+                  scale_shape <- rep(1L, rank)
+                  scale_shape[[rank]] <- width
+                  sources_f32 <- sources$astype(jnp$float32)
+                  scale_f32 <- resolve_attnres_norm_scale(scale, 
+                    width, dtype = jnp$float32)
+                  scale_f32 <- jnp$reshape(scale_f32, scale_shape)
+                  rms <- jnp$sqrt(jnp$mean(jnp$square(sources_f32), 
+                    axis = -1L, keepdims = TRUE) + eps)
+                  jnp$multiply(jnp$divide(sources_f32, rms), 
+                    scale_f32)
+                }
                 mask_sequence_rows_2d <- function(x, mask_rows_bool) {
                   jnp$where(jnp$expand_dims(mask_rows_bool, 1L), 
                     x, jnp$zeros_like(x))
@@ -4109,7 +4140,7 @@
                     1L), 2L), x, jnp$zeros_like(x))
                 }
                 full_attnres_reduce <- function(sources, pseudo_query, 
-                  eps = FullAttentionResidualEps) {
+                  norm_scale, eps = FullAttentionResidualEps) {
                   rank <- length(sources$shape)
                   if (!(rank %in% c(2L, 3L))) {
                     stop("full_attnres_reduce expects a [N, D] or [N, T, D] tensor.", 
@@ -4118,9 +4149,8 @@
                   eps_f32 <- jnp$array(as.numeric(eps), dtype = jnp$float32)
                   sources_f32 <- sources$astype(jnp$float32)
                   query_f32 <- pseudo_query$astype(jnp$float32)
-                  rms <- jnp$sqrt(jnp$mean(jnp$square(sources_f32), 
-                    axis = -1L, keepdims = TRUE) + eps_f32)
-                  keys_f32 <- jnp$divide(sources_f32, rms)
+                  keys_f32 <- attnres_normalize_sources(sources, 
+                    scale = norm_scale, eps = eps_f32)
                   if (rank == 2L) {
                     logits <- jnp$einsum("nd,d->n", keys_f32, 
                       query_f32)
@@ -4179,7 +4209,7 @@
                       l_)))
                     if (UseFullAttentionResiduals) {
                       attn_source <- full_attnres_reduce(jnp$stack(layer_outputs, 
-                        axis = 0L), L$AttnRes1$PseudoQuery)
+                        axis = 0L), L$AttnRes1$PseudoQuery, L$AttnRes1$NormScale)
                       xt <- jnp$multiply(NormFxn(attn_source), 
                         L$NormScalerInput)
                     }
@@ -4231,7 +4261,7 @@
                       layer_outputs[[length(layer_outputs) + 
                         1L]] <- xt
                       mlp_source <- full_attnres_reduce(jnp$stack(layer_outputs, 
-                        axis = 0L), L$AttnRes2$PseudoQuery)
+                        axis = 0L), L$AttnRes2$PseudoQuery, L$AttnRes2$NormScale)
                       xt <- NormFxn(mlp_source) * L$NormScalerPostMultiHead
                     }
                     else {
@@ -4275,7 +4305,7 @@
                       l_)))
                     if (UseFullAttentionResiduals) {
                       attn_source <- full_attnres_reduce(jnp$stack(layer_outputs, 
-                        axis = 0L), L$AttnRes1$PseudoQuery)
+                        axis = 0L), L$AttnRes1$PseudoQuery, L$AttnRes1$NormScale)
                       xt <- jnp$multiply(NormFxn(attn_source), 
                         jnp$squeeze(L$NormScalerInput, 0L))
                     }
@@ -4341,7 +4371,7 @@
                       layer_outputs[[length(layer_outputs) + 
                         1L]] <- mha_out
                       mlp_source <- full_attnres_reduce(jnp$stack(layer_outputs, 
-                        axis = 0L), L$AttnRes2$PseudoQuery)
+                        axis = 0L), L$AttnRes2$PseudoQuery, L$AttnRes2$NormScale)
                       xt <- NormFxn(mlp_source) * jnp$squeeze(L$NormScalerPostMultiHead, 
                         0L)
                     }
@@ -4445,7 +4475,7 @@
             for (l_ in 1L:ModelDepth) {
                 L <- TransformerList[[paste0("d", as.character(l_))]]
                 attn_source <- full_attnres_reduce(jnp$stack(layer_outputs, 
-                  axis = 0L), L$AttnRes1$PseudoQuery)
+                  axis = 0L), L$AttnRes1$PseudoQuery, L$AttnRes1$NormScale)
                 xt_norm <- jnp$multiply(NormFxn(attn_source), 
                   L$NormScalerInput)
                 q_ <- jnp$dot(xt_norm, L$Multihead$W_q)
@@ -4481,7 +4511,7 @@
                   row_mask_bool)
                 layer_outputs[[length(layer_outputs) + 1L]] <- attn_proj
                 mlp_source <- full_attnres_reduce(jnp$stack(layer_outputs, 
-                  axis = 0L), L$AttnRes2$PseudoQuery)
+                  axis = 0L), L$AttnRes2$PseudoQuery, L$AttnRes2$NormScale)
                 xt_norm <- NormFxn(mlp_source) * L$NormScalerPostMultiHead
                 xt <- jax$nn$swish(ffmap(L$FFN$WideProj1, xt_norm)) * 
                   ffmap(L$FFN$WideProj2, xt_norm)
@@ -4549,8 +4579,10 @@
                     1L), dtype = jaxFloatType))
                   if (isTRUE(UseFullAttentionResiduals)) {
                     TransformerList[[l_]]$AttnRes1 <- list(PseudoQuery = jnp$zeros(list(ModelDims), 
+                      dtype = jaxFloatType), NormScale = jnp$ones(list(ModelDims), 
                       dtype = jaxFloatType))
                     TransformerList[[l_]]$AttnRes2 <- list(PseudoQuery = jnp$zeros(list(ModelDims), 
+                      dtype = jaxFloatType), NormScale = jnp$ones(list(ModelDims), 
                       dtype = jaxFloatType))
                   }
                   key <- jax$random$split(key)[[1]]
