@@ -55,7 +55,7 @@ ndm_test_capture_metadata_snapshot <- function(init_process_list, runtime_env) {
   )
 }
 
-test_that("transformer runtime preserves residual scaling and backbone output contracts in jax_cpu", {
+test_that("transformer runtime defaults to full attention residuals and preserves backbone output contracts in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
   captured <- new.env(parent = emptyenv())
@@ -66,22 +66,11 @@ test_that("transformer runtime preserves residual scaling and backbone output co
     return_details = TRUE,
     before_train = function(runtime_env, model) {
       layer <- model$env$ModelList$TSList$TSBackbone$d1
-      capture_pair <- function(pair) {
-        list(
-          skip = ndm_test_py_numeric(
-            runtime_env$np$asanyarray(runtime_env$jax$nn$softplus(pair$WtSkipPath))
-          ),
-          resid = ndm_test_py_numeric(
-            runtime_env$np$asanyarray(runtime_env$jax$nn$softplus(pair$WtResidPath))
-          )
-        )
-      }
-
-      captured$model_depth <- as.integer(runtime_env$ModelDepth)
+      captured$use_full_attnres <- isTRUE(model$env$ModelList$TSList$TSBackbone$UseFullAttentionResiduals)
       captured$num_heads <- as.integer(runtime_env$TransformerHeads)
       captured$num_kv_heads <- as.integer(runtime_env$TransformerKVHeads)
-      captured$resid_con_1 <- capture_pair(layer$ResidCon1)
-      captured$resid_con_2 <- capture_pair(layer$ResidCon2)
+      captured$attn_query <- ndm_test_py_numeric(runtime_env$np$asanyarray(layer$AttnRes1$PseudoQuery))
+      captured$ffn_query <- ndm_test_py_numeric(runtime_env$np$asanyarray(layer$AttnRes2$PseudoQuery))
       captured$q_norm_shape <- as.integer(unlist(reticulate::py_to_r(layer$Multihead$QNormScale$shape)))
       captured$k_norm_shape <- as.integer(unlist(reticulate::py_to_r(layer$Multihead$KNormScale$shape)))
       captured$q_norm <- ndm_test_py_numeric(runtime_env$np$asanyarray(layer$Multihead$QNormScale))
@@ -89,17 +78,9 @@ test_that("transformer runtime preserves residual scaling and backbone output co
     }
   )
 
-  expected_resid <- sqrt(1 / (1 + 0.01^2 * captured$model_depth))
-  expected_skip <- sqrt(1 - expected_resid^2)
-
-  for (pair in list(captured$resid_con_1, captured$resid_con_2)) {
-    expect_true(all(is.finite(pair$skip)))
-    expect_true(all(is.finite(pair$resid)))
-    expect_gt(mean(pair$resid), mean(pair$skip))
-    expect_lt(max(abs(pair$skip - expected_skip)), 1e-4)
-    expect_lt(max(abs(pair$resid - expected_resid)), 1e-4)
-  }
-
+  expect_true(captured$use_full_attnres)
+  expect_equal(captured$attn_query, rep(0, as.integer(details$runtime_env$ModelDims)))
+  expect_equal(captured$ffn_query, rep(0, as.integer(details$runtime_env$ModelDims)))
   expect_equal(captured$q_norm_shape, c(captured$num_heads, 1L))
   expect_equal(captured$k_norm_shape, c(captured$num_kv_heads, 1L))
   expect_equal(captured$q_norm, rep(1, captured$num_heads))
@@ -116,6 +97,88 @@ test_that("transformer runtime preserves residual scaling and backbone output co
 
   expect_equal(bridge_shape, as.integer(details$runtime_env$ModelDims))
   expect_equal(proj_shape, as.integer(details$runtime_env$nOutcomes))
+})
+
+test_that("default full attention residual transformer builds and trains through the no-cache decoder path in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  captured <- new.env(parent = emptyenv())
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    enable_kv_cache = FALSE,
+    return_details = TRUE,
+    before_train = function(runtime_env, model) {
+      layer <- model$env$ModelList$TSList$TSBackbone$d1
+      captured$use_full_attnres <- isTRUE(model$env$ModelList$TSList$TSBackbone$UseFullAttentionResiduals)
+      captured$attn_query <- ndm_test_py_numeric(runtime_env$np$asanyarray(layer$AttnRes1$PseudoQuery))
+      captured$ffn_query <- ndm_test_py_numeric(runtime_env$np$asanyarray(layer$AttnRes2$PseudoQuery))
+    }
+  )
+
+  expect_true(captured$use_full_attnres)
+  expect_equal(captured$attn_query, rep(0, as.integer(details$runtime_env$ModelDims)))
+  expect_equal(captured$ffn_query, rep(0, as.integer(details$runtime_env$ModelDims)))
+  expect_true(is.finite(details$summary$first_loss[[1L]]))
+  expect_true(is.finite(details$summary$last_loss[[1L]]))
+  expect_true(is.finite(details$iterations_per_second))
+  expect_gt(details$iterations_per_second, 0)
+})
+
+test_that("legacy residual transformer remains available through UseFullAttentionResiduals = FALSE in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  captured <- new.env(parent = emptyenv())
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    return_details = TRUE,
+    runtime_globals = list(
+      UseFullAttentionResiduals = FALSE
+    ),
+    before_train = function(runtime_env, model) {
+      layer <- model$env$ModelList$TSList$TSBackbone$d1
+      capture_pair <- function(pair) {
+        list(
+          skip = ndm_test_py_numeric(
+            runtime_env$np$asanyarray(runtime_env$jax$nn$softplus(pair$WtSkipPath))
+          ),
+          resid = ndm_test_py_numeric(
+            runtime_env$np$asanyarray(runtime_env$jax$nn$softplus(pair$WtResidPath))
+          )
+        )
+      }
+
+      captured$model_depth <- as.integer(runtime_env$ModelDepth)
+      captured$use_full_attnres <- isTRUE(model$env$ModelList$TSList$TSBackbone$UseFullAttentionResiduals)
+      captured$has_attnres_1 <- !is.null(layer$AttnRes1)
+      captured$has_attnres_2 <- !is.null(layer$AttnRes2)
+      captured$resid_con_1 <- capture_pair(layer$ResidCon1)
+      captured$resid_con_2 <- capture_pair(layer$ResidCon2)
+    }
+  )
+
+  expected_resid <- sqrt(1 / (1 + 0.01^2 * captured$model_depth))
+  expected_skip <- sqrt(1 - expected_resid^2)
+
+  expect_false(captured$use_full_attnres)
+  expect_false(captured$has_attnres_1)
+  expect_false(captured$has_attnres_2)
+
+  for (pair in list(captured$resid_con_1, captured$resid_con_2)) {
+    expect_true(all(is.finite(pair$skip)))
+    expect_true(all(is.finite(pair$resid)))
+    expect_gt(mean(pair$resid), mean(pair$skip))
+    expect_lt(max(abs(pair$skip - expected_skip)), 1e-4)
+    expect_lt(max(abs(pair$resid - expected_resid)), 1e-4)
+  }
+
+  expect_true(is.finite(details$summary$first_loss[[1L]]))
+  expect_true(is.finite(details$summary$last_loss[[1L]]))
+  expect_true(is.finite(details$iterations_per_second))
+  expect_gt(details$iterations_per_second, 0)
 })
 
 test_that("maintained transformer sources keep cache and rotary guardrails", {

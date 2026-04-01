@@ -158,6 +158,10 @@ also require `progress` and `zoo`; training and artifact restore paths use
 `rrapply`, checkpointed training uses `zip`, and multidisease training also
 uses `zoo`.
 
+Transformer backbones now use Full Attention Residuals by default. Set the
+runtime global `UseFullAttentionResiduals = FALSE` if you need the legacy
+additive residual path for compatibility or comparison runs.
+
 Trained low-level models can also be persisted as versioned artifacts and
 restored later. These helpers assume that `ndm_initialize_backend()` has
 already run for the active conda environment and that `trained_model` came from

@@ -3,6 +3,11 @@ print("Done with SuperLModel_BackboneTransformer.R")
 if(backbonePath == "initialize"){
   TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), function(d) d$device_kind))), error = function(e) FALSE)
   EnableKVCaching <- TRUE & (ModelType == "DecoderOnly")
+  # Full attention residuals are now the default transformer residual path.
+  # Set UseFullAttentionResiduals = FALSE in runtime globals to opt back into
+  # the legacy additive residual implementation for compatibility testing.
+  UseFullAttentionResiduals <- isTRUE(get0("UseFullAttentionResiduals", ifnotfound = TRUE))
+  FullAttentionResidualEps <- as.numeric(get0("FullAttentionResidualEps", ifnotfound = 1e-6))
   num_heads <- TransformerHeads
   num_kv_heads <- TransformerKVHeads
   head_dim <- TransformerHeadDim
@@ -222,6 +227,45 @@ if(backbonePath == "initialize"){
 
         jnp$multiply(jnp$divide(x_f32, rms), scale_f32)$astype(x$dtype)
       }
+
+      mask_sequence_rows_2d <- function(x, mask_rows_bool) {
+        jnp$where(
+          jnp$expand_dims(mask_rows_bool, 1L),
+          x,
+          jnp$zeros_like(x)
+        )
+      }
+
+      mask_sequence_rows_3d <- function(x, mask_rows_bool) {
+        jnp$where(
+          jnp$expand_dims(jnp$expand_dims(mask_rows_bool, 1L), 2L),
+          x,
+          jnp$zeros_like(x)
+        )
+      }
+
+      full_attnres_reduce <- function(sources, pseudo_query, eps = FullAttentionResidualEps) {
+        rank <- length(sources$shape)
+        if (!(rank %in% c(2L, 3L))) {
+          stop("full_attnres_reduce expects a [N, D] or [N, T, D] tensor.", call. = FALSE)
+        }
+
+        eps_f32 <- jnp$array(as.numeric(eps), dtype = jnp$float32)
+        sources_f32 <- sources$astype(jnp$float32)
+        query_f32 <- pseudo_query$astype(jnp$float32)
+        rms <- jnp$sqrt(jnp$mean(jnp$square(sources_f32), axis = -1L, keepdims = TRUE) + eps_f32)
+        keys_f32 <- jnp$divide(sources_f32, rms)
+
+        if (rank == 2L) {
+          logits <- jnp$einsum("nd,d->n", keys_f32, query_f32)
+          weights <- jax$nn$softmax(logits, axis = 0L)
+          return(jnp$einsum("n,nd->d", weights, sources_f32)$astype(sources$dtype))
+        }
+
+        logits <- jnp$einsum("ntd,d->nt", keys_f32, query_f32)
+        weights <- jax$nn$softmax(logits, axis = 0L)
+        jnp$einsum("nt,ntd->td", weights, sources_f32)$astype(sources$dtype)
+      }
       
       # Allocate KV cache: per layer, K/V are [max_len, num_kv_heads, head_dim]
       kv_cache_allocate <- function(max_len, num_layers, num_kv_heads, head_dim, dtype) {
@@ -267,6 +311,7 @@ if(backbonePath == "initialize"){
         # Zero-out rows >= prefix_len for inputs and x_mask; keep static shapes
         x_mask_pref <- mask_prefix_rows(x_mask, pm$mask)  # [T_full, 1]
         xt    <- mask_prefix_rows(xt,     pm$mask)  # [T_full, D]
+        layer_outputs <- if (UseFullAttentionResiduals) list(xt) else NULL
         
         # Keys-only mask (avoid all-False query rows):
         # Start from [T_full] 1D keep-mask for keys, then make [1, N, 1, S] (B=1, broadcast over T)
@@ -297,7 +342,15 @@ if(backbonePath == "initialize"){
           L <- eval(parse(text = sprintf("TransformerList$d%s", l_)))
           
           # Pre-norm + scale
-          xt <- jnp$multiply(NormFxn( xtminu1 <- xt), L$NormScalerInput)  # [T_full, D]
+          if (UseFullAttentionResiduals) {
+            attn_source <- full_attnres_reduce(
+              jnp$stack(layer_outputs, axis = 0L),
+              L$AttnRes1$PseudoQuery
+            )
+            xt <- jnp$multiply(NormFxn(attn_source), L$NormScalerInput)  # [T_full, D]
+          } else {
+            xt <- jnp$multiply(NormFxn(xtminu1 <- xt), L$NormScalerInput)  # [T_full, D]
+          }
           
           # Q/K/V projections from *unrotated* activations
           q <- jnp$dot(xt,  L$Multihead$W_q)                          # [T_full, D]
@@ -350,12 +403,22 @@ if(backbonePath == "initialize"){
           # Merge heads back to [T_full, D] and output projection
           attn_TNH <- attn_out                                              # [T, N, H]
           attn_TD  <- jnp$reshape(attn_TNH, list(T_full, num_heads * head_dim))  # [T, D]
-          xt   <- jnp$dot(attn_TD, L$Multihead$W_o)                     # [T, D]
+          attn_proj <- jnp$dot(attn_TD, L$Multihead$W_o)                     # [T, D]
           
           # Residual + pre-FFN norm
-          xt <- (xtminu1 * jax$nn$softplus(L$ResidCon1$WtSkipPath)) +
-            (xt    * jax$nn$softplus(L$ResidCon1$WtResidPath))
-          xt <- NormFxn(xtminu1 <- xt) * L$NormScalerPostMultiHead
+          if (UseFullAttentionResiduals) {
+            xt <- mask_prefix_rows(attn_proj, pm$mask)
+            layer_outputs[[length(layer_outputs) + 1L]] <- xt
+            mlp_source <- full_attnres_reduce(
+              jnp$stack(layer_outputs, axis = 0L),
+              L$AttnRes2$PseudoQuery
+            )
+            xt <- NormFxn(mlp_source) * L$NormScalerPostMultiHead
+          } else {
+            xt <- (xtminu1 * jax$nn$softplus(L$ResidCon1$WtSkipPath)) +
+              (attn_proj * jax$nn$softplus(L$ResidCon1$WtResidPath))
+            xt <- NormFxn(xtminu1 <- xt) * L$NormScalerPostMultiHead
+          }
           
           # SwiGLU FFN
           xt <- jax$nn$swish( ffmap(L$FFN$WideProj1, xt) ) * 
@@ -363,11 +426,16 @@ if(backbonePath == "initialize"){
           xt <- ffmap(L$FFN$OutProj1, xt)
           
           # Final residual of this layer
-          xt <- (xtminu1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
-                        (xt    * jax$nn$softplus(L$ResidCon2$WtResidPath))
-           
-          # Safety: keep padded rows identically zero
-          xt <- mask_prefix_rows(xt, pm$mask)  # [T_full, D]
+          if (UseFullAttentionResiduals) {
+            xt <- mask_prefix_rows(xt, pm$mask)  # [T_full, D]
+            layer_outputs[[length(layer_outputs) + 1L]] <- xt
+          } else {
+            xt <- (xtminu1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
+                          (xt    * jax$nn$softplus(L$ResidCon2$WtResidPath))
+             
+            # Safety: keep padded rows identically zero
+            xt <- mask_prefix_rows(xt, pm$mask)  # [T_full, D]
+          }
         }
         
         # Last valid prefix hidden: index = max(prefix_len-1, 0)
@@ -391,14 +459,26 @@ if(backbonePath == "initialize"){
         kv_group_size <- kv_group_size
         
         xt <- token_in
+        layer_outputs <- if (UseFullAttentionResiduals) list(token_in) else NULL
         for (l_ in 1:ModelDepth) {
           L <- eval(parse(text = sprintf("TransformerList$d%s", l_)))
           
           # Pre-norm
-          xt <- jnp$multiply(
-            NormFxn(xtminus1 <- xt),
-            jnp$squeeze(L$NormScalerInput, 0L)
-          )  # [D]
+          if (UseFullAttentionResiduals) {
+            attn_source <- full_attnres_reduce(
+              jnp$stack(layer_outputs, axis = 0L),
+              L$AttnRes1$PseudoQuery
+            )
+            xt <- jnp$multiply(
+              NormFxn(attn_source),
+              jnp$squeeze(L$NormScalerInput, 0L)
+            )  # [D]
+          } else {
+            xt <- jnp$multiply(
+              NormFxn(xtminus1 <- xt),
+              jnp$squeeze(L$NormScalerInput, 0L)
+            )  # [D]
+          }
           
           # Project Q/K/V for this single token
           q_full <- jnp$dot(xt, L$Multihead$W_q)               # [D]
@@ -486,17 +566,30 @@ if(backbonePath == "initialize"){
           mha_out  <- jnp$dot(jnp$squeeze(attn_TD, 0L), L$Multihead$W_o)     # [D]
           
           # Residual + pre-FFN norm
-          xt <- (xtminus1 * jax$nn$softplus(L$ResidCon1$WtSkipPath)) +
-            (mha_out * jax$nn$softplus(L$ResidCon1$WtResidPath))
-          xt <- NormFxn(xtminus1 <- xt) * jnp$squeeze(L$NormScalerPostMultiHead, 0L)
+          if (UseFullAttentionResiduals) {
+            layer_outputs[[length(layer_outputs) + 1L]] <- mha_out
+            mlp_source <- full_attnres_reduce(
+              jnp$stack(layer_outputs, axis = 0L),
+              L$AttnRes2$PseudoQuery
+            )
+            xt <- NormFxn(mlp_source) * jnp$squeeze(L$NormScalerPostMultiHead, 0L)
+          } else {
+            xt <- (xtminus1 * jax$nn$softplus(L$ResidCon1$WtSkipPath)) +
+              (mha_out * jax$nn$softplus(L$ResidCon1$WtResidPath))
+            xt <- NormFxn(xtminus1 <- xt) * jnp$squeeze(L$NormScalerPostMultiHead, 0L)
+          }
           
           # SwiGLU FFN
           xt <- jax$nn$swish(L$FFN$WideProj1(xt)) * L$FFN$WideProj2(xt)
           xt <- L$FFN$OutProj1(xt)
           
           # Final residual
-          xt <- (xtminus1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
-                    (xt * jax$nn$softplus(L$ResidCon2$WtResidPath))
+          if (UseFullAttentionResiduals) {
+            layer_outputs[[length(layer_outputs) + 1L]] <- xt
+          } else {
+            xt <- (xtminus1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
+                      (xt * jax$nn$softplus(L$ResidCon2$WtResidPath))
+          }
         }
         
         list("token_out" = xt, "cache" = cache)
@@ -580,7 +673,89 @@ if(backbonePath == "initialize"){
     xt
   }
 
+  RunTransformerBackbone_FullAttnRes <- function(xt, x_mask, TransformerList) {
+    if (UseLatentAttention) {
+      stop("Latent Attention not double checked -- do not use")
+    }
+
+    row_mask_bool <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
+    x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
+    mask_bool <- jnp$greater(x_mask_attn, 0)
+    mask_bool <- jnp$broadcast_to(
+      mask_bool,
+      list(num_heads, mask_bool$shape[[1]], mask_bool$shape[[2]])
+    )
+    xt <- mask_sequence_rows_2d(xt, row_mask_bool)
+    layer_outputs <- list(xt)
+
+    for (l_ in 1L:ModelDepth) {
+      L <- TransformerList[[paste0("d", as.character(l_))]]
+      attn_source <- full_attnres_reduce(
+        jnp$stack(layer_outputs, axis = 0L),
+        L$AttnRes1$PseudoQuery
+      )
+      xt_norm <- jnp$multiply(NormFxn(attn_source), L$NormScalerInput)
+
+      q_ <- jnp$dot(xt_norm, L$Multihead$W_q)
+      k_ <- jnp$dot(xt_norm, L$Multihead$W_k)
+      v_ <- jnp$dot(xt_norm, L$Multihead$W_v)
+
+      q_ <- jnp$reshape(q_, list(q_$shape[[1]], num_heads, head_dim))
+      k_ <- jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, head_dim))
+      v_ <- jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, head_dim))
+
+      pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
+      apply_rope_one_row <- function(NH_row, p) {
+        jax$vmap(function(hvec) {
+          rope_apply_single(hvec, p, head_dim)
+        }, in_axes = 0L)(NH_row)
+      }
+      apply_rope_all <- jax$vmap(apply_rope_one_row, in_axes = list(0L, 0L))
+      q_ <- apply_rope_all(q_, pos_ids)
+      k_ <- apply_rope_all(k_, pos_ids)
+      q_ <- qk_normalize_heads(q_, L$Multihead$QNormScale)
+      k_ <- qk_normalize_heads(k_, L$Multihead$KNormScale)
+      k_ <- repeat_kv_heads(k_, kv_group_size)
+      v_ <- repeat_kv_heads(v_, kv_group_size)
+
+      xt_attn <- dot_product_attention_unified(
+        q = q_,
+        k = k_,
+        v = v_,
+        mask = mask_bool,
+        is_causal = (ModelType == "DecoderOnly"),
+        prefer = "auto"
+      )$astype(k_$dtype)
+
+      xt_attn <- jnp$reshape(xt_attn, list(xt_attn$shape[[1]], num_heads * head_dim))
+      attn_proj <- jnp$dot(xt_attn, L$Multihead$W_o)
+      attn_proj <- mask_sequence_rows_2d(attn_proj, row_mask_bool)
+      layer_outputs[[length(layer_outputs) + 1L]] <- attn_proj
+
+      mlp_source <- full_attnres_reduce(
+        jnp$stack(layer_outputs, axis = 0L),
+        L$AttnRes2$PseudoQuery
+      )
+      xt_norm <- NormFxn(mlp_source) * L$NormScalerPostMultiHead
+      xt <- jax$nn$swish(ffmap(L$FFN$WideProj1, xt_norm)) *
+        ffmap(L$FFN$WideProj2, xt_norm)
+      xt <- ffmap(L$FFN$OutProj1, xt)
+      xt <- mask_sequence_rows_2d(xt, row_mask_bool)
+      layer_outputs[[length(layer_outputs) + 1L]] <- xt
+    }
+
+    xt
+  }
+
   RunTransformerBackbone <- function(xt, x_mask, TransformerList) {
+    if (isTRUE(UseFullAttentionResiduals)) {
+      return(RunTransformerBackbone_FullAttnRes(
+        xt = xt,
+        x_mask = x_mask,
+        TransformerList = TransformerList
+      ))
+    }
+
     x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
     layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
     layer_branches <- lapply(layer_names, function(layer_name) {
@@ -641,6 +816,14 @@ if(backbonePath == "initialize"){
           "QNormScale" = jnp$ones(list(num_heads, 1L), dtype = jaxFloatType),
           "KNormScale" = jnp$ones(list(num_kv_heads, 1L), dtype = jaxFloatType)
         )
+        if (isTRUE(UseFullAttentionResiduals)) {
+          TransformerList[[l_]]$AttnRes1 <- list(
+            "PseudoQuery" = jnp$zeros(list(ModelDims), dtype = jaxFloatType)
+          )
+          TransformerList[[l_]]$AttnRes2 <- list(
+            "PseudoQuery" = jnp$zeros(list(ModelDims), dtype = jaxFloatType)
+          )
+        }
         key <- jax$random$split(key)[[1]]  # advance key for next use
       }
     }
@@ -690,6 +873,7 @@ if(backbonePath == "initialize"){
   TransformerList$DecoderProj <- eq$nn$Linear(in_features = ModelDims,
                                               out_features = ai(nOutcomes),
                                               use_bias = T, key = 993L+key*233L)
+  TransformerList$UseFullAttentionResiduals <- isTRUE(UseFullAttentionResiduals)
   print("Done with init path in SuperLModel_BackboneTransformer.R...")
 }
 
