@@ -35,13 +35,7 @@ escape_r_string <- function(x) {
       if (codepoint == 0x09L) {
         return("\\t")
       }
-      if (codepoint >= 0x20L && codepoint <= 0x7EL) {
-        return(intToUtf8(codepoint))
-      }
-      if (codepoint <= 0xFFFFL) {
-        return(sprintf("\\u%04X", codepoint))
-      }
-      sprintf("\\U%08X", codepoint)
+      intToUtf8(codepoint)
     },
     character(1L),
     USE.NAMES = FALSE
@@ -64,7 +58,7 @@ runtime_text <- lapply(runtime_files, function(path) {
 names(runtime_text) <- runtime_files
 
 con <- file(output_path, open = "w", encoding = "UTF-8")
-on.exit(close(con), add = TRUE)
+on.exit(if (isOpen(con)) close(con), add = TRUE)
 
 writeLines("# Generated package-owned runtime sources.", con = con)
 writeLines("# This file replaces the old installed inst/extdata runtime snapshot as the runtime source of truth.", con = con)
@@ -86,3 +80,7 @@ for (i in seq_along(runtime_files)) {
 }
 
 writeLines(")", con = con)
+close(con)
+
+# Fail at generation time if the serialized UTF-8 payload is not valid R code.
+invisible(parse(file = output_path))
