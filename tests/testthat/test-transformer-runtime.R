@@ -45,6 +45,36 @@ ndm_test_max_abs_diff <- function(lhs, rhs) {
   max(abs(lhs - rhs))
 }
 
+ndm_test_capture_decoder_prediction <- function(runtime_env, batch, seed = 1L) {
+  getpred_saveat_info <- if (exists("ndm_runtime_normalize_getpred_saveat_info", envir = runtime_env, inherits = TRUE)) {
+    runtime_env$ndm_runtime_normalize_getpred_saveat_info(runtime_env$GetPredSaveAtInfo_default)
+  } else {
+    runtime_env$GetPredSaveAtInfo_default
+  }
+  seed_matrix <- runtime_env$jax$random$split(
+    runtime_env$jax$random$PRNGKey(as.integer(seed)),
+    as.integer(runtime_env$nBatch)
+  )
+  if (exists("ndm_runtime_data_to_device", envir = runtime_env, inherits = TRUE)) {
+    seed_matrix <- runtime_env$ndm_runtime_data_to_device(seed_matrix)
+  }
+
+  pred <- runtime_env$GetPred_train_jit(
+    runtime_env$ModelList,
+    runtime_env$batch2package(batch),
+    runtime_env$state,
+    runtime_env$PriorList,
+    runtime_env$PolicyList,
+    getpred_saveat_info,
+    seed_matrix
+  )[[1L]]
+
+  list(
+    y_mu = ndm_test_py_numeric(runtime_env$np$asanyarray(pred$y_mu)),
+    center_param = ndm_test_py_numeric(runtime_env$np$asanyarray(pred$ODEParamsSampList$center_param))
+  )
+}
+
 ndm_test_capture_metadata_snapshot <- function(init_process_list, runtime_env) {
   list(
     place_fixed = isTRUE(init_process_list$PlaceEmbedsFixed),
@@ -124,6 +154,58 @@ test_that("default full attention residual transformer builds and trains through
   expect_true(is.finite(details$summary$last_loss[[1L]]))
   expect_true(is.finite(details$iterations_per_second))
   expect_gt(details$iterations_per_second, 0)
+})
+
+test_that("cached and uncached full attention residual decoder predictions stay aligned in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  cached_capture <- new.env(parent = emptyenv())
+  uncached_capture <- new.env(parent = emptyenv())
+
+  ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    case_seed = 314L,
+    n_sgd = 1L,
+    enable_kv_cache = TRUE,
+    after_train_define = function(runtime_env, model) {
+      batch <- if (exists("batch_l_cal", envir = runtime_env, inherits = FALSE)) {
+        get("batch_l_cal", envir = runtime_env, inherits = FALSE)
+      } else {
+        runtime_env$TFConst2JAXArray(
+          reticulate::iter_next(reticulate::as_iterator(get("TFDataset_train", envir = runtime_env, inherits = FALSE)))
+        )
+      }
+      cached_capture$pred <- ndm_test_capture_decoder_prediction(runtime_env, batch, seed = 17L)
+    }
+  )
+
+  ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    case_seed = 314L,
+    n_sgd = 1L,
+    enable_kv_cache = FALSE,
+    after_train_define = function(runtime_env, model) {
+      batch <- if (exists("batch_l_cal", envir = runtime_env, inherits = FALSE)) {
+        get("batch_l_cal", envir = runtime_env, inherits = FALSE)
+      } else {
+        runtime_env$TFConst2JAXArray(
+          reticulate::iter_next(reticulate::as_iterator(get("TFDataset_train", envir = runtime_env, inherits = FALSE)))
+        )
+      }
+      uncached_capture$pred <- ndm_test_capture_decoder_prediction(runtime_env, batch, seed = 17L)
+    }
+  )
+
+  expect_lt(
+    ndm_test_max_abs_diff(cached_capture$pred$y_mu, uncached_capture$pred$y_mu),
+    1e-4
+  )
+  expect_lt(
+    ndm_test_max_abs_diff(cached_capture$pred$center_param, uncached_capture$pred$center_param),
+    1e-4
+  )
 })
 
 test_that("legacy residual transformer remains available through UseFullAttentionResiduals = FALSE in jax_cpu", {
@@ -207,9 +289,115 @@ test_that("maintained transformer sources keep cache and rotary guardrails", {
   expect_false(grepl("InitProcessList\\$PlaceEmbeds <- jax\\$lax\\$stop_gradient", buildml_source))
   expect_false(grepl("InitProcessList\\$TimeEmbeds <- jax\\$lax\\$stop_gradient", buildml_source))
   expect_match(backbone_source, "qk_normalize_heads <- function")
+  expect_match(backbone_source, "full_attnres_reduce_buffer <- function")
+  expect_match(backbone_source, "attnres_append <- function")
   expect_match(backbone_source, "QNormScale")
   expect_match(backbone_source, "KNormScale")
+  expect_false(grepl("jnp\\$stack\\(layer_outputs", backbone_source))
   expect_false(grepl("RotaryPositionalEmbedding", paste(buildml_source, backbone_source), fixed = TRUE))
+})
+
+test_that("optional residual attention benchmark warms up and syncs before timing", {
+  if (!identical(tolower(Sys.getenv("NDM_RUN_BENCHMARKS", unset = "false")), "true")) {
+    skip("Set NDM_RUN_BENCHMARKS=true to run optional transformer microbenchmarks")
+  }
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    return_details = TRUE
+  )
+
+  env <- details$trained$env
+  model_list <- env$ModelList
+  batch <- details$batch
+  x_sample <- list(
+    env$jnp$take(batch$XPred, 0L, axis = 0L),
+    env$jnp$take(batch$XPred_mask, 0L, axis = 0L)
+  )
+  place_idx <- env$jnp$squeeze(env$jnp$take(batch$location_id_numeric, 0L, axis = 0L)$astype(env$jnp$int32))
+  time_idx <- env$jnp$squeeze(env$jnp$take(batch$time_id_numeric, 0L, axis = 0L)$astype(env$jnp$int32))
+  processed <- env$ProcessEncoderInput(
+    InitProcessList = model_list$InitProcessList,
+    TSList = model_list$TSList,
+    xt = x_sample,
+    time = time_idx,
+    place = place_idx,
+    BNList = model_list$BNList,
+    state = env$jnp$array(1.),
+    inference = TRUE
+  )
+  gen_cap <- as.integer(env$nTimesLookahead)
+  xt_running <- list(
+    env$jnp$concatenate(list(processed[[1]], env$jnp$zeros(list(gen_cap, processed[[1]]$shape[[2]]))), 0L),
+    env$jnp$concatenate(list(processed[[2]], env$jnp$zeros(list(gen_cap, 1L))), 0L)
+  )
+  prefix_len <- env$jnp$sum(xt_running[[2]])$astype(env$jnp$int32)
+
+  backbone_bench <- env$ndm_benchmark_helpers$benchmark(
+    function() {
+      env$RunTransformerBackbone(
+        xt = processed[[1]],
+        x_mask = processed[[2]],
+        TransformerList = model_list$TSList$TSBackbone
+      )
+    },
+    warmup = 1L,
+    runs = 2L
+  )
+  prefill_bench <- env$ndm_benchmark_helpers$benchmark(
+    function() {
+      env$transformer_prefill_kv(
+        xt = xt_running[[1]],
+        x_mask = xt_running[[2]],
+        TransformerList = model_list$TSList$TSBackbone,
+        prefix_len = prefix_len
+      )
+    },
+    warmup = 1L,
+    runs = 2L
+  )
+  prefill_ret <- env$transformer_prefill_kv(
+    xt = xt_running[[1]],
+    x_mask = xt_running[[2]],
+    TransformerList = model_list$TSList$TSBackbone,
+    prefix_len = prefix_len
+  )
+  xt_last <- env$DecoderBackboneToOutput(
+    TSList = model_list$TSList,
+    hidden_state = prefill_ret$xt_last
+  )
+  xt_running[[1]] <- env$jax$lax$dynamic_update_slice(
+    xt_running[[1]],
+    env$jnp$expand_dims(xt_last, 0L),
+    env$jnp$array(c(prefix_len, 0L), dtype = env$jnp$int32)
+  )
+  xt_running[[2]] <- env$jax$lax$dynamic_update_slice(
+    xt_running[[2]],
+    env$jnp$ones(list(1L, 1L), dtype = xt_running[[2]]$dtype),
+    env$jnp$array(c(prefix_len, 0L), dtype = env$jnp$int32)
+  )
+  decode_bench <- env$ndm_benchmark_helpers$benchmark(
+    function() {
+      env$transformer_decode_step_kv(
+        token_in = env$jnp$take(xt_running[[1]], prefix_len, axis = 0L),
+        pos = prefix_len,
+        TransformerList = model_list$TSList$TSBackbone,
+        cache = prefill_ret$cache
+      )
+    },
+    warmup = 1L,
+    runs = 2L
+  )
+
+  for (bench in list(backbone_bench, prefill_bench, decode_bench)) {
+    expect_equal(bench$warmup, 1L)
+    expect_equal(bench$runs, 2L)
+    expect_true(is.finite(bench$mean_seconds))
+    expect_gt(bench$mean_seconds, 0)
+  }
 })
 
 test_that("metadata tokens preserve append order while using projected embeddings in jax_cpu", {

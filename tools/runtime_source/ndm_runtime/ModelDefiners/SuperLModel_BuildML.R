@@ -561,7 +561,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     hidden_state <- jnp$squeeze(
       LayerNorm(jnp$expand_dims(hidden_state, 0L)) * TSList$FinalNormScaler
     )
-    print2("Warning: Normalizing pre-outputs")
     hidden_state <- TSList$OutputProcess$Proj1(hidden_state)
     if(ModelType != "DecoderOnly"){
       hidden_state <- hidden_state + TSList$OutputProcess$ManualBias
@@ -611,7 +610,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
 
     xt <- SelectBackboneOutputToken(xt = xt, x_mask = x_mask)
     xt <- DecoderBackboneToOutput(TSList = TSList, hidden_state = xt)
-    print2("Returning xt output in Encoder2Output()")
     return( xt ) 
   }
 
@@ -807,7 +805,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     uq_initcond_vec <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
    
    { # performs better in tests 
-      print2("Using softmax...")
       init_m <- jnp$take(localze, jnp$array( which(lDepParamsVec_ %in% uq_initcond_vec)[1:4] - 1L ))
       init_logit_offset <- get0("InitStateLogitOffset", inherits = TRUE, ifnotfound = c(10, -1, -1, -1))
       init_logit_offset <- as.numeric(init_logit_offset)
@@ -853,7 +850,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     tmp <- paste0(uq_initcond_vec, "_samp")
     tmp <- paste("c(args_samp_vec,", paste(paste("'",tmp,"'=",tmp,sep = ""),collapse=","), ")",collapse="")
     
-    print2("Returning contents of Samp2Params in BuildML.R")
     return(   eval(parse(text = tmp)) )
   } )
 
@@ -1153,8 +1149,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                             BNList = ModelList$BNList, 
                             state = state,
                             inference = inference)
-      print2(sprintf("Dimension of encoded xt: %i", x$shape[[1]]))  
-      
       # set initial null parameter vectors (replaced if needed)
       globalLMat <- globalx_mu_params_ODE <- globalx_sigma_params_ODE <- jnp$array(0.)
       localx_mu_neural_params_ODE <- localx_Diag_params_ODE <- jnp$array(0.)
@@ -1421,15 +1415,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                 #  ySigma_init_nODE_untransformed # sigma terms
                                 #) )
         # Store the original before concatenating sigma
-        print(ODEParamsSampList_y0$Neural1_samp$shape) 
-        print(ySigma_init_nODE_untransformed)
         Neural1_samp_before_sigma <- ODEParamsSampList_y0$Neural1_samp
         ODEParamsSampList_y0$Neural1_samp <- jnp$concatenate(
           lapply( list(ODEParamsSampList_y0$Neural1_samp, ySigma_init_nODE_untransformed),
                    function(x){ jnp$ravel(jnp$asarray(x, dtype = jnp$float32)) }
                  ), axis = 0L)
-        print("printing ODEParamsSampList_y0$Neural1_samp$shape")
-        print(ODEParamsSampList_y0$Neural1_samp$shape) 
         # plot(np$array(NormFxn( ODEParamsSampList_y0$Neural1_samp$val$val ))[,sample(1:30,2)])
       }
       
@@ -1452,7 +1442,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                     ifelse(length(uq_globalneural_vec)>0, no = list(NULL), yes = list("Neural2"))[[1]] )
       y0_names <- c(y0_names[!y0_names %in%  uq_encneural_vec], "Neural1")
       
-      print2("Starting predictive ODE...")
       # plot( colMeans( np$array( tmp$Neural1$val$val )[,1,] )  ) 
       # plot( apply( np$array( tmp$Neural1$val$val )[,1,], 2, sd )  ) 
       diff_eq_sol <- diffrax$diffeqsolve(terms = VI_ODE_term,
@@ -1501,7 +1490,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # does this speed up or slow down execution? TEST
       # diff_eq_sol$ys$e_l$devices() # analyze chip placement 
       
-      print2("Done with predictive ODE...")
       # plot( np$array(diff_eq_sol$ys$i_l$val)[j_<-sample(1:40,1),] );
       # plot( np$array(diff_eq_sol$ys$Neural1$val)[1,,j_<-sample(1:40,1)] );
       # plot( np$array(diff_eq_sol$ys$Neural2$val)[1,,j_<-sample(1:40,1)] );
@@ -1519,14 +1507,12 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       #y_mean <- jnp$expand_dims(jnp$take(x, jnp$array(0L:(y_mean$shape[[1]]-1L))),1L) * jnp$ones_like(y_mean)
       #y_mean <- jnp$mean(ModelList[[8]][[6]],0L) * jnp$ones_like(y_mean)
   
-      print2("Extract observed data sd...")
       y_sigma <- 0.001+SoftPlus( jnp$take(diff_eq_sol$ys$Neural1,
                               jnp$array((diff_eq_sol$ys$Neural1$aval$shape[[2]]-nOutcomes):
                                   (diff_eq_sol$ys$Neural1$aval$shape[[2]]-1L)), axis = 1L) )
       if( nOutcomes == 1 ){ y_sigma <- jnp$expand_dims(y_sigma,1L) }
       }
   
-      print2("Returning list of results...")
       return_v <- list(list("y_mu" = y_mean,
                             "y_sigma" = y_sigma,
                             "KL_TERM" = KL_TERM,
