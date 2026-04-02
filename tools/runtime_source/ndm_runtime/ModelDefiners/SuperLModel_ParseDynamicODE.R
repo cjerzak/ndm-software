@@ -618,31 +618,40 @@
     PriorDefinitions_jax <- cbind(ADDON, PriorDefinitions_jax)
   }
 
-  # add the SEIR power weights
-  # initial conditions mixture
-  for(add_k in 1L:(nSoftMaxMix <- 1)){ # one of these is defined implicitly in the above!
-    if(add_k < nSoftMaxMix){
-      #PowerTypeInvTransform <- "SoftPlus"; PowerWtInvTransform <- InvSoftPlus_r;
-      PowerTypeInvTransform <- "Identity"; PowerWtInvTransform <- function(x){x};
-      EIRM <- SM <- 0; Width <- 0.001
-      PowerWeightAdds <- cbind(c(PowerTypeInvTransform, "s_{l0}",
-                  as.character(PowerWtInvTransform(   rnorm(1, SM, 0.1*SM )   )), "1",
-                            "s_l", "FALSE","FALSE","TRUE","FALSE","FALSE"),
-                          c(PowerTypeInvTransform, "e_{l0}",as.character(PowerWtInvTransform( rnorm(1,EIRM,1*Width) )), "1",
-                            "e_l", "FALSE","FALSE","TRUE","FALSE","FALSE"),
-                          c(PowerTypeInvTransform, "i_{l0}",as.character(PowerWtInvTransform( rnorm(1,EIRM,1*Width) )), "1",
-                            "i_l", "FALSE","FALSE","TRUE","FALSE","FALSE"),
-                          c(PowerTypeInvTransform, "r_{l0}",as.character(PowerWtInvTransform( rnorm(1,EIRM,1*Width) )), "1",
-                            "r_l", "FALSE","FALSE","TRUE","FALSE","FALSE") )
-    }
-    if(add_k == nSoftMaxMix){ # temperature or master mixture controller parameters
-      PowerTypeInvTransform <- "Identity"; PowerWtInvTransform <- function(x){x};
-      PowerWeightAdds <- replicate(max(c(4,nSoftMaxMix)), # max 4 so has at least as many as SEIR for wts transforms 
-                                  c(PowerTypeInvTransform, "s_{l0}",as.character(PowerWtInvTransform(  0  )), "1",
-                                        "s_l", "FALSE","FALSE","TRUE","FALSE","FALSE"))
-    }
-    PriorDefinitions_jax <- cbind(PriorDefinitions_jax, PowerWeightAdds)
-  }
+  InitStateTerms <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
+  InitStateLogitParamNames <- paste0("InitStateLogit_", InitStateTerms)
+  InitStateScaleParamName <- "InitStateLogitScale"
+  PowerTypeInvTransform <- "Identity"
+  PowerWtInvTransform <- function(x){x}
+  PowerWeightAdds <- cbind(
+    sapply(InitStateLogitParamNames, function(param_name){
+      c(
+        PowerTypeInvTransform,
+        sprintf("%s_0", param_name),
+        as.character(PowerWtInvTransform(0)),
+        "1",
+        param_name,
+        "FALSE",
+        "FALSE",
+        "TRUE",
+        "FALSE",
+        "FALSE"
+      )
+    }),
+    c(
+      PowerTypeInvTransform,
+      sprintf("%s_0", InitStateScaleParamName),
+      as.character(PowerWtInvTransform(0)),
+      "1",
+      InitStateScaleParamName,
+      "FALSE",
+      "FALSE",
+      "TRUE",
+      "FALSE",
+      "FALSE"
+    )
+  )
+  PriorDefinitions_jax <- cbind(PriorDefinitions_jax, PowerWeightAdds)
 
   # setup entries
   PriorDefinitions_jax_CONTEXT <- PriorDefinitions_jax[,is.na(PriorDefinitions_jax[3,])]

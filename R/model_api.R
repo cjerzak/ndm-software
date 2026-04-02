@@ -334,6 +334,7 @@ ndm_build_model <- function(runtime_env,
       ndm_backbone = backbone
     )
   )
+  .ndm_materialize_neuralode_runtime_config(runtime_env)
 
   cleanup <- FALSE
   if (!is.null(model_spec)) {

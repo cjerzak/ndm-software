@@ -285,6 +285,7 @@ test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder
     n_sgd = 300L,
     model_dims = 64L,
     shared_runtime_globals = ndm_test_sim_parity_shared_runtime_globals(4242L),
+    neuralode_config_overrides = ndm_test_sim_parity_neural_config_overrides(),
     neuralode_runtime_globals_after_setup = ndm_test_sim_parity_neural_runtime_globals_after_setup(),
     return_details = TRUE
   )
@@ -357,6 +358,94 @@ test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder
   )
   expect_true(state_metrics$mean_entropy > 0.1, info = state_info)
   expect_true(state_metrics$mean_max_component < 0.98, info = state_info)
+})
+
+test_that("NeuralODE latent dims follow ModelDims by default and honor explicit overrides in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  default_details <- ndm_test_fit_sim_case(
+    model_type = "NeuralODE",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    model_dims = 64L,
+    return_details = TRUE
+  )
+  expect_equal(as.integer(default_details$runtime_env$LocalNeuralEmbedDim), 64L)
+  expect_equal(as.integer(default_details$runtime_env$GlobalNeuralEmbedDim), 64L)
+
+  override_details <- ndm_test_fit_sim_case(
+    model_type = "NeuralODE",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    model_dims = 64L,
+    config_overrides = list(
+      neuralode_local_latent_dim = 48L,
+      neuralode_global_latent_dim = 40L
+    ),
+    return_details = TRUE
+  )
+  expect_equal(as.integer(override_details$runtime_env$LocalNeuralEmbedDim), 48L)
+  expect_equal(as.integer(override_details$runtime_env$GlobalNeuralEmbedDim), 40L)
+})
+
+test_that("NeuralODE init-state mapping survives interleaved dynamic-state order in custom tex specs", {
+  ndm_skip_if_no_sim_backend()
+
+  base_spec <- ndm_model_spec(preset = "seirs_dynamic_beta", model_type = "NeuralODE")
+  lines <- strsplit(ndm_model_spec_to_tex(base_spec), "\n", fixed = TRUE)[[1L]]
+  idx_s <- grep("Evolve{s_l}", lines, fixed = TRUE)[[1L]]
+  idx_e <- grep("Evolve{e_l}", lines, fixed = TRUE)[[1L]]
+  idx_i <- grep("Evolve{i_l}", lines, fixed = TRUE)[[1L]]
+  idx_r <- grep("Evolve{r_l}", lines, fixed = TRUE)[[1L]]
+  idx_beta <- grep("Evolve{\\beta_l}", lines, fixed = TRUE)[[1L]]
+  idx_p <- grep("Evolve{p_l}", lines, fixed = TRUE)[[1L]]
+  block_idx <- c(idx_s, idx_e, idx_i, idx_r, idx_beta, idx_p)
+  lines[block_idx] <- lines[c(idx_s, idx_beta, idx_e, idx_i, idx_r, idx_p)]
+
+  interleaved_path <- tempfile(fileext = ".tex")
+  writeLines(lines, interleaved_path, useBytes = TRUE)
+  interleaved_spec <- ndm_model_spec_from_tex(interleaved_path, model_type = "NeuralODE")
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "NeuralODE",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    config_overrides = list(
+      neuralode_init_state_logit_offset = c(s_l = 20, e_l = -20, i_l = -20, r_l = -20),
+      neuralode_init_state_logit_scale_max = 1.0
+    ),
+    model_spec = interleaved_spec,
+    return_details = TRUE
+  )
+
+  expect_identical(as.character(details$runtime_env$InitStateTerms), c("s_l", "e_l", "i_l", "r_l"))
+  state_metrics <- ndm_test_capture_initial_state_metrics(details, seed = 11L)
+  expect_gt(unname(state_metrics$mean_components[["s"]]), 0.8)
+  expect_lt(unname(state_metrics$mean_components[["e"]]), 0.1)
+  expect_lt(unname(state_metrics$mean_components[["i"]]), 0.1)
+  expect_lt(unname(state_metrics$mean_components[["r"]]), 0.1)
+})
+
+test_that("unsupported custom NeuralODE init-state layouts fail fast in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  base_spec <- ndm_model_spec(preset = "seirs_dynamic_beta", model_type = "NeuralODE")
+  lines <- strsplit(ndm_model_spec_to_tex(base_spec), "\n", fixed = TRUE)[[1L]]
+  idx_r <- grep("Evolve{r_l}", lines, fixed = TRUE)[[1L]]
+  lines <- append(lines, "\\item $\\Evolve{q_l} = 0$", after = idx_r)
+  invalid_path <- tempfile(fileext = ".tex")
+  writeLines(lines, invalid_path, useBytes = TRUE)
+  invalid_spec <- ndm_model_spec_from_tex(invalid_path, model_type = "NeuralODE")
+
+  expect_error(
+    ndm_test_fit_sim_case(
+      model_type = "NeuralODE",
+      endogeneity = 0.0,
+      n_sgd = 1L,
+      model_spec = invalid_spec
+    ),
+    "NeuralODE init-state softmax currently supports"
+  )
 })
 
 test_that("non-finite sim training fails fast and writes a debug artifact", {

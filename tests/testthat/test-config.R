@@ -15,9 +15,27 @@ test_that("configuration objects preserve requested modeling defaults", {
       "float_type",
       "force_to_gpu",
       "resave_tfrecords",
-      "gpu_mem_frac"
+      "gpu_mem_frac",
+      "neuralode_local_latent_dim",
+      "neuralode_global_latent_dim",
+      "neuralode_init_state_logit_offset",
+      "neuralode_init_state_logit_scale_max",
+      "neuralode_optim_solver",
+      "neuralode_optim_dt0",
+      "neuralode_optim_controller",
+      "neuralode_optim_rtol",
+      "neuralode_optim_atol"
     )
   )
+  expect_null(cfg$neuralode_local_latent_dim)
+  expect_null(cfg$neuralode_global_latent_dim)
+  expect_null(cfg$neuralode_init_state_logit_offset)
+  expect_equal(cfg$neuralode_init_state_logit_scale_max, Inf)
+  expect_equal(cfg$neuralode_optim_solver, "tsit5")
+  expect_equal(cfg$neuralode_optim_dt0, 1e-3)
+  expect_equal(cfg$neuralode_optim_controller, "pid")
+  expect_equal(cfg$neuralode_optim_rtol, 1e-5)
+  expect_equal(cfg$neuralode_optim_atol, 1e-7)
 })
 
 test_that("NeuralODE remains a supported model type", {

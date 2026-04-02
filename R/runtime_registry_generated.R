@@ -2571,11 +2571,29 @@
         useBias_odeLN <- F
         finalBias_ODE <- F
         nExperts <- 1L
+        resolve_neuralode_latent_dim <- function(config_name, 
+            legacy_name, fallback_value) {
+            dim_value <- get0(config_name, inherits = TRUE, ifnotfound = get0(legacy_name, 
+                inherits = TRUE, ifnotfound = fallback_value))
+            if (is.null(dim_value)) {
+                dim_value <- get0(legacy_name, inherits = TRUE, 
+                  ifnotfound = fallback_value)
+            }
+            dim_value <- suppressWarnings(as.integer(dim_value))
+            if (length(dim_value) != 1L || is.na(dim_value) || 
+                dim_value < 1L) {
+                stop(sprintf("`%s` must resolve to a positive integer.", 
+                  config_name), call. = FALSE)
+            }
+            ai(dim_value)
+        }
         encneuralType <- "g"
-        LocalNeuralEmbedDim <- 128L
+        LocalNeuralEmbedDim <- resolve_neuralode_latent_dim("neuralode_local_latent_dim", 
+            "LocalNeuralEmbedDim", ModelDims)
         nWidthODEHidden_ts_local <- ai(LocalNeuralEmbedDim * 
             WideMultiplicationFactor)
-        GlobalNeuralEmbedDim <- 128L
+        GlobalNeuralEmbedDim <- resolve_neuralode_latent_dim("neuralode_global_latent_dim", 
+            "GlobalNeuralEmbedDim", ModelDims)
         nWidthODEHidden_ts_global <- ai(GlobalNeuralEmbedDim * 
             WideMultiplicationFactor)
         nDepth_nODE <- 1L
@@ -3261,22 +3279,66 @@
             args_samp_vec <- c(args_samp_vec, args_context_vec)
             names(args_samp_vec) <- paste(names(args_samp_vec), 
                 "_samp", sep = "")
-            uq_initcond_vec <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
+            uq_initcond_vec <- get0("InitStateTerms", inherits = TRUE, 
+                ifnotfound = uq_y_vec[!uq_y_vec %in% uq_allneural_vec])
+            uq_initcond_vec <- as.character(uq_initcond_vec)
+            init_state_supported_terms <- c("s_l", "e_l", "i_l", 
+                "r_l")
+            if (length(uq_initcond_vec) != length(init_state_supported_terms) || 
+                !setequal(uq_initcond_vec, init_state_supported_terms)) {
+                stop(sprintf("NeuralODE init-state softmax currently supports the SEIR/SEIRS state set {%s}; got {%s}.", 
+                  paste(init_state_supported_terms, collapse = ", "), 
+                  paste(uq_initcond_vec, collapse = ", ")), call. = FALSE)
+            }
+            init_logit_param_names <- get0("InitStateLogitParamNames", 
+                inherits = TRUE, ifnotfound = paste0("InitStateLogit_", 
+                  uq_initcond_vec))
+            init_logit_param_names <- as.character(init_logit_param_names)
+            init_scale_param_name <- as.character(get0("InitStateScaleParamName", 
+                inherits = TRUE, ifnotfound = "InitStateLogitScale"))
+            init_param_indices <- match(init_logit_param_names, 
+                lDepParamsVec_)
+            if (anyNA(init_param_indices)) {
+                stop(sprintf("Missing NeuralODE init-state logit parameters: %s", 
+                  paste(init_logit_param_names[is.na(init_param_indices)], 
+                    collapse = ", ")), call. = FALSE)
+            }
+            init_scale_index <- match(init_scale_param_name, 
+                lDepParamsVec_)
+            if (is.na(init_scale_index)) {
+                stop(sprintf("Missing NeuralODE init-state scale parameter: %s", 
+                  init_scale_param_name), call. = FALSE)
+            }
             {
-                init_m <- jnp$take(localze, jnp$array(which(lDepParamsVec_ %in% 
-                  uq_initcond_vec)[1:4] - 1L))
-                init_logit_offset <- get0("InitStateLogitOffset", 
+                init_m <- jnp$take(localze, jnp$array(init_param_indices - 
+                  1L))
+                init_logit_offset_raw <- get0("InitStateLogitOffset", 
                   inherits = TRUE, ifnotfound = c(10, -1, -1, 
                     -1))
-                init_logit_offset <- as.numeric(init_logit_offset)
+                init_logit_offset_names <- names(init_logit_offset_raw)
+                init_logit_offset <- as.numeric(init_logit_offset_raw)
                 if (length(init_logit_offset) == 1L) {
                   init_logit_offset <- rep(init_logit_offset, 
-                    4L)
+                    length(uq_initcond_vec))
                 }
-                if (length(init_logit_offset) != 4L) {
-                  stop("InitStateLogitOffset must have length 1 or 4.")
+                else if (!is.null(init_logit_offset_names) && 
+                  any(nzchar(init_logit_offset_names))) {
+                  names(init_logit_offset) <- init_logit_offset_names
+                  if (!all(uq_initcond_vec %in% init_logit_offset_names)) {
+                    stop(sprintf("InitStateLogitOffset names must cover {%s}.", 
+                      paste(uq_initcond_vec, collapse = ", ")), 
+                      call. = FALSE)
+                  }
+                  init_logit_offset <- init_logit_offset[uq_initcond_vec]
                 }
-                init_logit_offset <- jnp$array(init_logit_offset)$astype(init_m$dtype)
+                else {
+                  if (length(init_logit_offset) != length(init_state_supported_terms)) {
+                    stop("InitStateLogitOffset must have length 1 or 4, or be named by init-state terms.")
+                  }
+                  names(init_logit_offset) <- init_state_supported_terms
+                  init_logit_offset <- init_logit_offset[uq_initcond_vec]
+                }
+                init_logit_offset <- jnp$array(as.numeric(init_logit_offset))$astype(init_m$dtype)
                 init_logit_scale_max <- suppressWarnings(as.numeric(get0("InitStateLogitScaleMax", 
                   inherits = TRUE, ifnotfound = Inf)))
                 if (length(init_logit_scale_max) == 0L) {
@@ -3287,8 +3349,7 @@
                 }
                 init_logit_scale_max <- init_logit_scale_max[[1L]]
                 init_scale <- SoftPlus(InvSoftPlus(1) + jnp$take(localze, 
-                  jnp$array(which(lDepParamsVec_ %in% uq_initcond_vec)[5] - 
-                    1L)) * 1)
+                  jnp$array(init_scale_index - 1L)) * 1)
                 if (is.finite(init_logit_scale_max)) {
                   init_scale <- jnp$minimum(init_scale, jnp$array(init_logit_scale_max)$astype(init_scale$dtype))
                 }
@@ -3301,7 +3362,7 @@
             }
             for (j_ in 1L:length(uq_initcond_vec)) {
                 eval(parse(text = sprintf("%s_samp = jnp$take(init_samp, j_ - 1L)", 
-                  uq_y_vec[j_])))
+                  uq_initcond_vec[j_])))
             }
             tmp <- paste0(uq_initcond_vec, "_samp")
             tmp <- paste("c(args_samp_vec,", paste(paste("'", 
@@ -5389,41 +5450,24 @@
             }
             PriorDefinitions_jax <- cbind(ADDON, PriorDefinitions_jax)
         }
-        for (add_k in 1L:(nSoftMaxMix <- 1)) {
-            if (add_k < nSoftMaxMix) {
-                PowerTypeInvTransform <- "Identity"
-                PowerWtInvTransform <- function(x) {
-                  x
-                }
-                EIRM <- SM <- 0
-                Width <- 0.001
-                PowerWeightAdds <- cbind(c(PowerTypeInvTransform, 
-                  "s_{l0}", as.character(PowerWtInvTransform(rnorm(1, 
-                    SM, 0.1 * SM))), "1", "s_l", "FALSE", "FALSE", 
-                  "TRUE", "FALSE", "FALSE"), c(PowerTypeInvTransform, 
-                  "e_{l0}", as.character(PowerWtInvTransform(rnorm(1, 
-                    EIRM, 1 * Width))), "1", "e_l", "FALSE", 
-                  "FALSE", "TRUE", "FALSE", "FALSE"), c(PowerTypeInvTransform, 
-                  "i_{l0}", as.character(PowerWtInvTransform(rnorm(1, 
-                    EIRM, 1 * Width))), "1", "i_l", "FALSE", 
-                  "FALSE", "TRUE", "FALSE", "FALSE"), c(PowerTypeInvTransform, 
-                  "r_{l0}", as.character(PowerWtInvTransform(rnorm(1, 
-                    EIRM, 1 * Width))), "1", "r_l", "FALSE", 
-                  "FALSE", "TRUE", "FALSE", "FALSE"))
-            }
-            if (add_k == nSoftMaxMix) {
-                PowerTypeInvTransform <- "Identity"
-                PowerWtInvTransform <- function(x) {
-                  x
-                }
-                PowerWeightAdds <- replicate(max(c(4, nSoftMaxMix)), 
-                  c(PowerTypeInvTransform, "s_{l0}", as.character(PowerWtInvTransform(0)), 
-                    "1", "s_l", "FALSE", "FALSE", "TRUE", "FALSE", 
-                    "FALSE"))
-            }
-            PriorDefinitions_jax <- cbind(PriorDefinitions_jax, 
-                PowerWeightAdds)
+        InitStateTerms <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
+        InitStateLogitParamNames <- paste0("InitStateLogit_", 
+            InitStateTerms)
+        InitStateScaleParamName <- "InitStateLogitScale"
+        PowerTypeInvTransform <- "Identity"
+        PowerWtInvTransform <- function(x) {
+            x
         }
+        PowerWeightAdds <- cbind(sapply(InitStateLogitParamNames, 
+            function(param_name) {
+                c(PowerTypeInvTransform, sprintf("%s_0", param_name), 
+                  as.character(PowerWtInvTransform(0)), "1", 
+                  param_name, "FALSE", "FALSE", "TRUE", "FALSE", 
+                  "FALSE")
+            }), c(PowerTypeInvTransform, sprintf("%s_0", InitStateScaleParamName), 
+            as.character(PowerWtInvTransform(0)), "1", InitStateScaleParamName, 
+            "FALSE", "FALSE", "TRUE", "FALSE", "FALSE"))
+        PriorDefinitions_jax <- cbind(PriorDefinitions_jax, PowerWeightAdds)
         PriorDefinitions_jax_CONTEXT <- PriorDefinitions_jax[, 
             is.na(PriorDefinitions_jax[3, ])]
         if ("character" %in% class(PriorDefinitions_jax_CONTEXT)) {

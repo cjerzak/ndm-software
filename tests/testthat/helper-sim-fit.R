@@ -46,12 +46,14 @@ ndm_test_fit_sim_case <- function(model_type,
                                   model_dims = 32L,
                                   attention_head_dim = 64L,
                                   attention_kv_heads = NULL,
+                                  config_overrides = NULL,
                                   runtime_globals = NULL,
                                   runtime_globals_after_setup = NULL,
                                   before_train = NULL,
                                   after_train_define = NULL,
                                   expect_train_error = FALSE,
-                                  return_details = FALSE) {
+                                  return_details = FALSE,
+                                  model_spec = NULL) {
   n_times_lookahead <- as.integer(n_times_lookahead)
   if (is.null(n_sgd)) {
     n_sgd <- if (identical(model_type, "NeuralODE")) 3L else 2L
@@ -118,13 +120,19 @@ ndm_test_fit_sim_case <- function(model_type,
     )
   )
 
-  config <- ndm_create_config(
+  config_defaults <- list(
     model_type = model_type,
     backbone = "transformer",
     float_type = "32",
     force_to_gpu = FALSE,
-    resave_tfrecords = TRUE
+    resave_tfrecords = TRUE,
+    neuralode_optim_dt0 = 1e0,
+    neuralode_optim_controller = "constant"
   )
+  if (is.list(config_overrides) && length(config_overrides) > 0L) {
+    config_defaults <- utils::modifyList(config_defaults, config_overrides)
+  }
+  config <- do.call(ndm_create_config, config_defaults)
 
   runtime_defaults <- list(
     SimMode = TRUE,
@@ -199,15 +207,12 @@ ndm_test_fit_sim_case <- function(model_type,
       VI_SaveAt_ODE_optim = runtime_env$diffrax$SaveAt(
         ts = runtime_env$jnp$array(0L:(n_times_lookahead - 1L))
       ),
-      VI_diff_eq_solver_optim = runtime_env$diffrax$Tsit5(),
       VI_diff_eq_solver_dgp = runtime_env$diffrax$Tsit5(),
       dt0_init_dgp = 1e-3,
       stepsize_controller_dgp = runtime_env$diffrax$PIDController(
         rtol = 1e-5,
         atol = 1e-6
       ),
-      dt0_init_optim = 1e0,
-      stepsize_controller_optim = runtime_env$diffrax$ConstantStepSize(),
       diffraxInterpolator = runtime_env$diffrax$LinearInterpolation
     )
   )
@@ -225,10 +230,12 @@ ndm_test_fit_sim_case <- function(model_type,
   snapshot <- ndm_test_copy_env(runtime_env)
   on.exit(ndm_test_restore_env(snapshot), add = TRUE)
 
-  model_spec <- ndm_model_spec(
-    preset = "seirs_dynamic_beta",
-    model_type = model_type
-  )
+  if (is.null(model_spec)) {
+    model_spec <- ndm_model_spec(
+      preset = "seirs_dynamic_beta",
+      model_type = model_type
+    )
+  }
   model <- suppressWarnings(
     ndm_build_model(
       runtime_env = runtime_env,
@@ -465,11 +472,16 @@ ndm_test_sim_parity_shared_runtime_globals <- function(shared_seed,
   )
 }
 
+ndm_test_sim_parity_neural_config_overrides <- function() {
+  list(
+    neuralode_optim_dt0 = 1e-2,
+    neuralode_init_state_logit_offset = c(2.5, 0, 0, 0),
+    neuralode_init_state_logit_scale_max = 1.0
+  )
+}
+
 ndm_test_sim_parity_neural_runtime_globals_after_setup <- function() {
   list(
-    dt0_init_optim = 1e-2,
-    InitStateLogitOffset = c(2.5, 0, 0, 0),
-    InitStateLogitScaleMax = 1.0,
     TrackBlockUpdateNorms = TRUE
   )
 }
@@ -528,10 +540,13 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
                                                            n_times_lookahead = 10L,
                                                            n_sgd = 1L,
                                                            model_dims = 32L,
+                                                           shared_config_overrides = NULL,
                                                            shared_runtime_globals = NULL,
                                                            shared_runtime_globals_after_setup = NULL,
+                                                           decoder_config_overrides = NULL,
                                                            decoder_runtime_globals = NULL,
                                                            decoder_runtime_globals_after_setup = NULL,
+                                                           neuralode_config_overrides = NULL,
                                                            neuralode_runtime_globals = NULL,
                                                            neuralode_runtime_globals_after_setup = NULL,
                                                            decoder_before_train = NULL,
@@ -555,12 +570,20 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
     list(),
     shared_runtime_globals_after_setup
   )
+  shared_config_overrides <- ndm_test_merge_runtime_lists(
+    list(),
+    shared_config_overrides
+  )
 
   decoder_details <- do.call(
     ndm_test_fit_sim_case,
     c(
       list(
         model_type = "DecoderOnly",
+        config_overrides = ndm_test_merge_runtime_lists(
+          shared_config_overrides,
+          decoder_config_overrides
+        ),
         runtime_globals = ndm_test_merge_runtime_lists(shared_runtime_globals, decoder_runtime_globals),
         runtime_globals_after_setup = ndm_test_merge_runtime_lists(
           shared_runtime_globals_after_setup,
@@ -576,6 +599,10 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
     c(
       list(
         model_type = "NeuralODE",
+        config_overrides = ndm_test_merge_runtime_lists(
+          shared_config_overrides,
+          neuralode_config_overrides
+        ),
         runtime_globals = ndm_test_merge_runtime_lists(shared_runtime_globals, neuralode_runtime_globals),
         runtime_globals_after_setup = ndm_test_merge_runtime_lists(
           shared_runtime_globals_after_setup,

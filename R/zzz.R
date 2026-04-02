@@ -84,6 +84,85 @@ ndm_print <- function(text, quiet = FALSE) {
   structure(x, class = c(class_name, "list"))
 }
 
+.ndm_materialize_neuralode_runtime_config <- function(runtime_env) {
+  stopifnot(is.environment(runtime_env))
+  if (!exists("diffrax", envir = runtime_env, inherits = FALSE)) {
+    return(invisible(runtime_env))
+  }
+
+  runtime_get0 <- function(name, ifnotfound = NULL) {
+    get0(name, envir = runtime_env, inherits = FALSE, ifnotfound = ifnotfound)
+  }
+
+  if (!exists("VI_diff_eq_solver_optim", envir = runtime_env, inherits = FALSE)) {
+    solver_name <- tolower(as.character(runtime_get0("neuralode_optim_solver", ifnotfound = "tsit5")))
+    solver <- switch(
+      solver_name,
+      tsit5 = runtime_env$diffrax$Tsit5(),
+      dopri8 = runtime_env$diffrax$Dopri8(),
+      stop(
+        "`neuralode_optim_solver` must be one of 'tsit5' or 'dopri8'.",
+        call. = FALSE
+      )
+    )
+    assign("VI_diff_eq_solver_optim", solver, envir = runtime_env)
+  }
+
+  if (!exists("dt0_init_optim", envir = runtime_env, inherits = FALSE)) {
+    dt0_init_optim <- suppressWarnings(as.numeric(runtime_get0("neuralode_optim_dt0", ifnotfound = 1e-3)))
+    if (length(dt0_init_optim) != 1L || !is.finite(dt0_init_optim)) {
+      stop("`neuralode_optim_dt0` must be a finite numeric scalar.", call. = FALSE)
+    }
+    assign("dt0_init_optim", dt0_init_optim[[1L]], envir = runtime_env)
+  }
+
+  if (!exists("stepsize_controller_optim", envir = runtime_env, inherits = FALSE)) {
+    controller_name <- tolower(
+      as.character(
+        runtime_get0(
+          "neuralode_optim_controller",
+          ifnotfound = "pid"
+        )
+      )
+    )
+    if (length(controller_name) != 1L || !nzchar(controller_name)) {
+      stop("`neuralode_optim_controller` must be a non-empty scalar.", call. = FALSE)
+    }
+
+    controller <- switch(
+      controller_name,
+      pid = {
+        rtol <- suppressWarnings(as.numeric(runtime_get0("neuralode_optim_rtol", ifnotfound = 1e-5)))
+        atol <- suppressWarnings(as.numeric(runtime_get0("neuralode_optim_atol", ifnotfound = 1e-7)))
+        if (length(rtol) != 1L || !is.finite(rtol) || length(atol) != 1L || !is.finite(atol)) {
+          stop("`neuralode_optim_rtol` and `neuralode_optim_atol` must be finite numeric scalars.", call. = FALSE)
+        }
+        runtime_env$diffrax$PIDController(rtol = rtol[[1L]], atol = atol[[1L]])
+      },
+      constant = runtime_env$diffrax$ConstantStepSize(),
+      stop(
+        "`neuralode_optim_controller` must be one of 'pid' or 'constant'.",
+        call. = FALSE
+      )
+    )
+    assign("stepsize_controller_optim", controller, envir = runtime_env)
+  }
+
+  if (!exists("InitStateLogitOffset", envir = runtime_env, inherits = FALSE)) {
+    init_state_logit_offset <- runtime_get0("neuralode_init_state_logit_offset", ifnotfound = NULL)
+    if (!is.null(init_state_logit_offset)) {
+      assign("InitStateLogitOffset", init_state_logit_offset, envir = runtime_env)
+    }
+  }
+
+  if (!exists("InitStateLogitScaleMax", envir = runtime_env, inherits = FALSE)) {
+    init_state_logit_scale_max <- runtime_get0("neuralode_init_state_logit_scale_max", ifnotfound = Inf)
+    assign("InitStateLogitScaleMax", init_state_logit_scale_max, envir = runtime_env)
+  }
+
+  invisible(runtime_env)
+}
+
 #' Create runtime configuration objects
 #'
 #' Configuration objects collect the runtime options that are threaded through
@@ -102,6 +181,24 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   legacy TFRecord-regeneration path has been retired.
 #' @param gpu_mem_frac Optional GPU memory fraction forwarded into the runtime
 #'   bootstrap code.
+#' @param neuralode_local_latent_dim Optional local NeuralODE latent width. When
+#'   `NULL`, runtime code resolves this to `ModelDims`.
+#' @param neuralode_global_latent_dim Optional global NeuralODE latent width.
+#'   When `NULL`, runtime code resolves this to `ModelDims`.
+#' @param neuralode_init_state_logit_offset Optional init-state logit offset
+#'   vector for the NeuralODE state simplex initializer.
+#' @param neuralode_init_state_logit_scale_max Scalar cap applied to the
+#'   NeuralODE init-state logit scale.
+#' @param neuralode_optim_solver NeuralODE optimization solver name. Use
+#'   `"tsit5"` or `"dopri8"`.
+#' @param neuralode_optim_dt0 Initial step size used by the NeuralODE
+#'   optimization solve.
+#' @param neuralode_optim_controller NeuralODE optimization stepsize controller.
+#'   Use `"pid"` or `"constant"`.
+#' @param neuralode_optim_rtol Relative tolerance used when
+#'   `neuralode_optim_controller = "pid"`.
+#' @param neuralode_optim_atol Absolute tolerance used when
+#'   `neuralode_optim_controller = "pid"`.
 #' @param ... Additional named values appended to the configuration object.
 #'
 #' @returns `ndm_create_config()` returns an object of class `ndm_config`.
@@ -117,9 +214,20 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               force_to_gpu = TRUE,
                               resave_tfrecords = FALSE,
                               gpu_mem_frac = NULL,
+                              neuralode_local_latent_dim = NULL,
+                              neuralode_global_latent_dim = NULL,
+                              neuralode_init_state_logit_offset = NULL,
+                              neuralode_init_state_logit_scale_max = Inf,
+                              neuralode_optim_solver = c("tsit5", "dopri8"),
+                              neuralode_optim_dt0 = 1e-3,
+                              neuralode_optim_controller = c("pid", "constant"),
+                              neuralode_optim_rtol = 1e-5,
+                              neuralode_optim_atol = 1e-7,
                               ...) {
   model_type <- match.arg(model_type)
   float_type <- match.arg(float_type)
+  neuralode_optim_solver <- match.arg(neuralode_optim_solver)
+  neuralode_optim_controller <- match.arg(neuralode_optim_controller)
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
@@ -131,7 +239,16 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     float_type = float_type,
     force_to_gpu = isTRUE(force_to_gpu),
     resave_tfrecords = isTRUE(resave_tfrecords),
-    gpu_mem_frac = gpu_mem_frac
+    gpu_mem_frac = gpu_mem_frac,
+    neuralode_local_latent_dim = neuralode_local_latent_dim,
+    neuralode_global_latent_dim = neuralode_global_latent_dim,
+    neuralode_init_state_logit_offset = neuralode_init_state_logit_offset,
+    neuralode_init_state_logit_scale_max = neuralode_init_state_logit_scale_max,
+    neuralode_optim_solver = neuralode_optim_solver,
+    neuralode_optim_dt0 = neuralode_optim_dt0,
+    neuralode_optim_controller = neuralode_optim_controller,
+    neuralode_optim_rtol = neuralode_optim_rtol,
+    neuralode_optim_atol = neuralode_optim_atol
   )
 
   config <- c(config, extras)

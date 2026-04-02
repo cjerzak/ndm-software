@@ -646,17 +646,10 @@
       diffraxInterpolator = diffrax$LinearInterpolation,
       VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = runtime_array(0L:(n_time_steps_sim - 1L))),
       VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = runtime_array(0L:(n_times_lookahead - 1L))),
-      VI_diff_eq_solver_optim = diffrax$Tsit5(),
       VI_diff_eq_solver_dgp = diffrax$Tsit5(),
       dt0_init = 1e-1,
       dt0_init_dgp = 1e-3,
-      dt0_init_optim = 1e-3,
       stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-6, atol = 1e-7),
-      stepsize_controller_optim = if (decoder_in_neural_ode) {
-        diffrax$ConstantStepSize()
-      } else {
-        diffrax$PIDController(rtol = 1e-5, atol = 1e-7)
-      },
       evaluation_seq = as.integer(.ndm_runtime_get0(runtime_env, "evaluation_seq", ifnotfound = c(1L, 2L, 3L, 4L))),
       all_true_value_names = bundle$all_true_value_names,
       true_value_names = bundle$true_value_names,
@@ -676,6 +669,11 @@
       )
     )
   )
+  if (!exists("neuralode_optim_controller", envir = runtime_env, inherits = FALSE) &&
+      decoder_in_neural_ode) {
+    assign("neuralode_optim_controller", "constant", envir = runtime_env)
+  }
+  .ndm_materialize_neuralode_runtime_config(runtime_env)
 
   invisible(runtime_env)
 }
