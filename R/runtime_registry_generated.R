@@ -3899,7 +3899,10 @@
     if (backbonePath == "initialize") {
         TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), 
             function(d) d$device_kind))), error = function(e) FALSE)
-        EnableKVCaching <- TRUE & (ModelType == "DecoderOnly")
+        EnableKVCaching <- get0("EnableKVCaching", ifnotfound = (ModelType == 
+            "DecoderOnly"))
+        EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType == 
+            "DecoderOnly")
         UseFullAttentionResiduals <- isTRUE(get0("UseFullAttentionResiduals", 
             ifnotfound = TRUE))
         FullAttentionResidualEps <- as.numeric(get0("FullAttentionResidualEps", 

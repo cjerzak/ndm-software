@@ -2,7 +2,8 @@
 print("Done with SuperLModel_BackboneTransformer.R")
 if(backbonePath == "initialize"){
   TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), function(d) d$device_kind))), error = function(e) FALSE)
-  EnableKVCaching <- TRUE & (ModelType == "DecoderOnly")
+  EnableKVCaching <- get0("EnableKVCaching", ifnotfound = (ModelType == "DecoderOnly"))
+  EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType == "DecoderOnly")
   
   # --- Unified dot-product attention helper (flash or XLA) ----------------------
   if (!exists(".__unified_attn_defined", inherits = TRUE)) {

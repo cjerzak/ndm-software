@@ -45,29 +45,15 @@ ndm_test_max_abs_diff <- function(lhs, rhs) {
   max(abs(lhs - rhs))
 }
 
-ndm_test_capture_decoder_prediction <- function(runtime_env, batch, seed = 1L) {
-  getpred_saveat_info <- if (exists("ndm_runtime_normalize_getpred_saveat_info", envir = runtime_env, inherits = TRUE)) {
-    runtime_env$ndm_runtime_normalize_getpred_saveat_info(runtime_env$GetPredSaveAtInfo_default)
-  } else {
-    runtime_env$GetPredSaveAtInfo_default
-  }
-  seed_matrix <- runtime_env$jax$random$split(
-    runtime_env$jax$random$PRNGKey(as.integer(seed)),
-    as.integer(runtime_env$nBatch)
+ndm_test_capture_model_prediction <- function(x, batch, seed = 1L, inference = FALSE) {
+  runtime_env <- x$env
+  pred <- ndm_predict(
+    x,
+    batch = batch,
+    inference = inference,
+    seed = seed,
+    update_state = FALSE
   )
-  if (exists("ndm_runtime_data_to_device", envir = runtime_env, inherits = TRUE)) {
-    seed_matrix <- runtime_env$ndm_runtime_data_to_device(seed_matrix)
-  }
-
-  pred <- runtime_env$GetPred_train_jit(
-    runtime_env$ModelList,
-    runtime_env$batch2package(batch),
-    runtime_env$state,
-    runtime_env$PriorList,
-    runtime_env$PolicyList,
-    getpred_saveat_info,
-    seed_matrix
-  )[[1L]]
 
   list(
     y_mu = ndm_test_py_numeric(runtime_env$np$asanyarray(pred$y_mu)),
@@ -156,7 +142,7 @@ test_that("default full attention residual transformer builds and trains through
   expect_gt(details$iterations_per_second, 0)
 })
 
-test_that("cached and uncached full attention residual decoder predictions stay aligned in jax_cpu", {
+test_that("decoder-only transformer preserves requested kv cache setting in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
   cached_capture <- new.env(parent = emptyenv())
@@ -165,45 +151,62 @@ test_that("cached and uncached full attention residual decoder predictions stay 
   ndm_test_fit_sim_case(
     model_type = "DecoderOnly",
     endogeneity = 0.0,
-    case_seed = 314L,
     n_sgd = 1L,
     enable_kv_cache = TRUE,
-    after_train_define = function(runtime_env, model) {
-      batch <- if (exists("batch_l_cal", envir = runtime_env, inherits = FALSE)) {
-        get("batch_l_cal", envir = runtime_env, inherits = FALSE)
-      } else {
-        runtime_env$TFConst2JAXArray(
-          reticulate::iter_next(reticulate::as_iterator(get("TFDataset_train", envir = runtime_env, inherits = FALSE)))
-        )
-      }
-      cached_capture$pred <- ndm_test_capture_decoder_prediction(runtime_env, batch, seed = 17L)
+    before_train = function(runtime_env, model) {
+      cached_capture$enable_kv_caching <- get("EnableKVCaching", envir = runtime_env, inherits = FALSE)
     }
   )
 
   ndm_test_fit_sim_case(
     model_type = "DecoderOnly",
     endogeneity = 0.0,
-    case_seed = 314L,
     n_sgd = 1L,
     enable_kv_cache = FALSE,
-    after_train_define = function(runtime_env, model) {
-      batch <- if (exists("batch_l_cal", envir = runtime_env, inherits = FALSE)) {
-        get("batch_l_cal", envir = runtime_env, inherits = FALSE)
-      } else {
-        runtime_env$TFConst2JAXArray(
-          reticulate::iter_next(reticulate::as_iterator(get("TFDataset_train", envir = runtime_env, inherits = FALSE)))
-        )
-      }
-      uncached_capture$pred <- ndm_test_capture_decoder_prediction(runtime_env, batch, seed = 17L)
+    before_train = function(runtime_env, model) {
+      uncached_capture$enable_kv_caching <- get("EnableKVCaching", envir = runtime_env, inherits = FALSE)
     }
   )
 
+  expect_true(isTRUE(cached_capture$enable_kv_caching))
+  expect_false(isTRUE(uncached_capture$enable_kv_caching))
+})
+
+test_that("cached and uncached full attention residual decoder predictions stay aligned in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    case_seed = 314L,
+    enable_kv_cache = TRUE,
+    return_details = TRUE
+  )
+
+  expect_true(isTRUE(details$runtime_env$EnableKVCaching))
+
+  cached_capture <- ndm_test_capture_model_prediction(
+    details$trained,
+    batch = details$batch,
+    seed = 17L,
+    inference = FALSE
+  )
+
+  details$runtime_env$EnableKVCaching <- FALSE
+  uncached_capture <- ndm_test_capture_model_prediction(
+    details$trained,
+    batch = details$batch,
+    seed = 17L,
+    inference = FALSE
+  )
+
   expect_lt(
-    ndm_test_max_abs_diff(cached_capture$pred$y_mu, uncached_capture$pred$y_mu),
+    ndm_test_max_abs_diff(cached_capture$y_mu, uncached_capture$y_mu),
     1e-4
   )
   expect_lt(
-    ndm_test_max_abs_diff(cached_capture$pred$center_param, uncached_capture$pred$center_param),
+    ndm_test_max_abs_diff(cached_capture$center_param, uncached_capture$center_param),
     1e-4
   )
 })
