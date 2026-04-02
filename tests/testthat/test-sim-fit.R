@@ -282,7 +282,7 @@ test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder
     endogeneity = 0.0,
     shared_seed = 4242L,
     n_times_lookahead = 10L,
-    n_sgd = 250L,
+    n_sgd = 300L,
     model_dims = 64L,
     shared_runtime_globals = ndm_test_sim_parity_shared_runtime_globals(4242L),
     neuralode_runtime_globals_after_setup = ndm_test_sim_parity_neural_runtime_globals_after_setup(),
