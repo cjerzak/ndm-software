@@ -12,6 +12,15 @@ ndm_create_config(
   force_to_gpu = TRUE,
   resave_tfrecords = FALSE,
   gpu_mem_frac = NULL,
+  neuralode_local_latent_dim = NULL,
+  neuralode_global_latent_dim = NULL,
+  neuralode_init_state_logit_offset = NULL,
+  neuralode_init_state_logit_scale_max = Inf,
+  neuralode_optim_solver = c("tsit5", "dopri8"),
+  neuralode_optim_dt0 = 0.001,
+  neuralode_optim_controller = c("pid", "constant"),
+  neuralode_optim_rtol = 1e-05,
+  neuralode_optim_atol = 1e-07,
   ...
 )
 
@@ -35,6 +44,33 @@ legacy TFRecord-regeneration path has been retired.}
 
 \item{gpu_mem_frac}{Optional GPU memory fraction forwarded into the runtime
 bootstrap code.}
+
+\item{neuralode_local_latent_dim}{Optional local NeuralODE latent width. When
+`NULL`, runtime code resolves this to `ModelDims`.}
+
+\item{neuralode_global_latent_dim}{Optional global NeuralODE latent width.
+When `NULL`, runtime code resolves this to `ModelDims`.}
+
+\item{neuralode_init_state_logit_offset}{Optional init-state logit offset
+vector for the NeuralODE state simplex initializer.}
+
+\item{neuralode_init_state_logit_scale_max}{Scalar cap applied to the
+NeuralODE init-state logit scale.}
+
+\item{neuralode_optim_solver}{NeuralODE optimization solver name. Use
+`"tsit5"` or `"dopri8"`.}
+
+\item{neuralode_optim_dt0}{Initial step size used by the NeuralODE
+optimization solve.}
+
+\item{neuralode_optim_controller}{NeuralODE optimization stepsize controller.
+Use `"pid"` or `"constant"`.}
+
+\item{neuralode_optim_rtol}{Relative tolerance used when
+`neuralode_optim_controller = "pid"`.}
+
+\item{neuralode_optim_atol}{Absolute tolerance used when
+`neuralode_optim_controller = "pid"`.}
 
 \item{...}{Unused; included for S3 method compatibility.}
 

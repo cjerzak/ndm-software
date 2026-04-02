@@ -2573,11 +2573,12 @@
         nExperts <- 1L
         resolve_neuralode_latent_dim <- function(config_name, 
             legacy_name, fallback_value) {
-            dim_value <- get0(config_name, inherits = TRUE, ifnotfound = get0(legacy_name, 
-                inherits = TRUE, ifnotfound = fallback_value))
+            lookup_env <- parent.env(environment())
+            dim_value <- get0(config_name, envir = lookup_env, 
+                inherits = FALSE, ifnotfound = NULL)
             if (is.null(dim_value)) {
-                dim_value <- get0(legacy_name, inherits = TRUE, 
-                  ifnotfound = fallback_value)
+                dim_value <- get0(legacy_name, envir = lookup_env, 
+                  inherits = FALSE, ifnotfound = fallback_value)
             }
             dim_value <- suppressWarnings(as.integer(dim_value))
             if (length(dim_value) != 1L || is.na(dim_value) || 

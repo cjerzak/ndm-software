@@ -363,6 +363,34 @@ test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder
 test_that("NeuralODE latent dims follow ModelDims by default and honor explicit overrides in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
+  had_local_dim <- exists("LocalNeuralEmbedDim", envir = .GlobalEnv, inherits = FALSE)
+  old_local_dim <- if (had_local_dim) {
+    get("LocalNeuralEmbedDim", envir = .GlobalEnv, inherits = FALSE)
+  } else {
+    NULL
+  }
+  had_global_dim <- exists("GlobalNeuralEmbedDim", envir = .GlobalEnv, inherits = FALSE)
+  old_global_dim <- if (had_global_dim) {
+    get("GlobalNeuralEmbedDim", envir = .GlobalEnv, inherits = FALSE)
+  } else {
+    NULL
+  }
+  on.exit({
+    if (had_local_dim) {
+      assign("LocalNeuralEmbedDim", old_local_dim, envir = .GlobalEnv)
+    } else if (exists("LocalNeuralEmbedDim", envir = .GlobalEnv, inherits = FALSE)) {
+      rm("LocalNeuralEmbedDim", envir = .GlobalEnv)
+    }
+    if (had_global_dim) {
+      assign("GlobalNeuralEmbedDim", old_global_dim, envir = .GlobalEnv)
+    } else if (exists("GlobalNeuralEmbedDim", envir = .GlobalEnv, inherits = FALSE)) {
+      rm("GlobalNeuralEmbedDim", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+
+  assign("LocalNeuralEmbedDim", 32L, envir = .GlobalEnv)
+  assign("GlobalNeuralEmbedDim", 32L, envir = .GlobalEnv)
+
   default_details <- ndm_test_fit_sim_case(
     model_type = "NeuralODE",
     endogeneity = 0.0,
