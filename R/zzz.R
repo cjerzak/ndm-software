@@ -285,10 +285,17 @@ print.ndm_model_spec <- function(x, ...) {
   cat("<ndm_model_spec>\n")
   cat(sprintf("  preset: %s\n", x$preset %||% "custom"))
   cat(sprintf("  model_type: %s\n", x$model_type %||% NA_character_))
+  cat(sprintf("  source_format: %s\n", x$source_format %||% "tex"))
   cat(sprintf("  compartments: %s\n", x$compartments %||% NA_character_))
   cat(sprintf("  dynamic_beta: %s\n", x$dynamic_beta %||% NA))
   cat(sprintf("  dynamic_global: %s\n", x$dynamic_global %||% NA))
   cat(sprintf("  multi_outcome: %s\n", x$multi_outcome %||% NA))
+  if (!is.null(x$family)) {
+    cat(sprintf("  family: %s\n", x$family))
+  }
+  if (length(x$state_terms %||% character(0)) > 0L) {
+    cat(sprintf("  state_terms: %s\n", paste(x$state_terms, collapse = ", ")))
+  }
   if (!is.null(x$source_path)) {
     cat(sprintf("  source_path: %s\n", x$source_path))
   }

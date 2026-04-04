@@ -340,7 +340,13 @@ ndm_build_model <- function(runtime_env,
   if (!is.null(model_spec)) {
     materialized <- .ndm_materialize_model_spec(model_spec)
     cleanup <- isTRUE(materialized$cleanup)
-    runtime_env$model_tex_loc <- materialized$path
+    ndm_set_runtime_globals(
+      runtime_env,
+      list(
+        model_tex_loc = materialized$path,
+        ndm_model_spec = model_spec
+      )
+    )
     if (cleanup) {
       on.exit(unlink(materialized$path), add = TRUE)
     }
@@ -708,6 +714,14 @@ ndm_fit <- function(config = ndm_create_config(),
     config = config,
     runtime_globals = runtime_globals
   )
+  if (!is.null(model_spec)) {
+    ndm_set_runtime_globals(
+      runtime_env,
+      list(
+        ndm_model_spec = model_spec
+      )
+    )
+  }
   ndm_prepare_data(
     runtime_env = runtime_env,
     generator = data_generator,

@@ -120,6 +120,7 @@
   uq_globalneural_vec <- uq_globalneural_vec[!uq_globalneural_vec %in% uq_encneural_vec]
   uq_allneural_vec <- c(uq_encneural_vec,uq_globalneural_vec)
   uq_y_vec <- unique( nonuq_y_vec <- uq_y_vec  )
+  default_bio_state_terms <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
 
   # define unique terms as named parameter inputs to vector field
   # (initial conditions are *not* defined here)
@@ -161,7 +162,10 @@
       nDimODEOutput_ts_mean <- nDimODEOutput_ts <- ai( sum( unlist(  lapply(nODE_loc_list_param_mean,function(zer){
         nDim_ <- zer$shape; if(length(nDim_) == 0){nDim_<-1}; nDim_ }))) + nOutcomes  + LocalNeuralEmbedDim ) # experimental
     }
-    if( length(uq_encneural_vec) == 0 ){ encneural_inputs <- c("s_l","e_l","i_l","r_l") }
+    if( length(uq_encneural_vec) == 0 ){ encneural_inputs <- default_bio_state_terms }
+    encneural_inputs <- unique(encneural_inputs)
+    encneural_base_inputs <- unique(default_bio_state_terms)
+    encneural_extra_inputs <- encneural_inputs[!encneural_inputs %in% c(uq_encneural_vec, encneural_base_inputs)]
 
     LocalNeuralMLP <- LocalNeuralLinear <- NULL
     GlobalNeural <- LocalNeural <- list( jnp$array(1.) )
@@ -171,9 +175,10 @@
       
       LocalNeuralMLP <- list(
                           "WideProj1" = eq$nn$Linear(
-                              in_features = inputDim_nODE_local <- 4L + 
+                              in_features = inputDim_nODE_local <- ai(length(encneural_base_inputs)) + 
                                        ai(LocalNeuralEmbedDim + 
-                                           length(encneural_inputs[!encneural_inputs %in% c("s_l","e_l","i_l","r_l")]) +
+                                           length(uq_encneural_vec) +
+                                           length(encneural_extra_inputs) +
                                           nOutcomes+2*grepl(model_tex_loc,pattern="DynamicBeta_DynamicGlobal")# understand why needed better 
                                           ),
                               out_features = ai(nWidthODEHidden_ts_local),
@@ -251,109 +256,171 @@
 
   # process
   z <- transform_vec <- unlist(lapply(strsplit(TexTransformationRules,split = "="),function(zer){zer[2]}))
-  transform_vec <- gsub(transform_vec, pattern="cdot", replace="\\*")
-  transform_vec <- gsub(transform_vec, pattern = "frac\\{([^\\}]+)\\}\\{([^\\}]+)\\}",
-                                       replace = "jnp$divide( \\1 , \\2 )")
-  transform_vec <- gsub(transform_vec,pattern="[-]",replace=" - ")
-  transform_vec <- gsub(transform_vec,pattern="[\\+]",replace=" \\+ ")
-  transform_vec <- gsub(transform_vec,pattern="[*]",replace=" * ")
-  transform_vec <- gsub(transform_vec,pattern="Evolve",replace="Evolve___")
-  transform_vec <- gsub(transform_vec,pattern="Neural([[:alnum:]]+)",replace="Neural\\1___")
-  transform_vec <- gsub(transform_vec,pattern="\\{",replace="")
-  transform_vec <- gsub(transform_vec,pattern="\\}",replace="")
-  transform_vec <- unlist(lapply(strsplit(transform_vec,split=" "),function(zer){
-    if(length(uq_y_vec) > 0){
-      tmp <- sapply(uq_y_vec,function(zerr){
-        zer[zer == zerr]  <- eval(parse(text = sprintf("'YGOY%s'",zerr)))
-        return( zer )  })
-      zer <- apply(tmp,1,function(ra){ ra[which.max(nchar(ra))] })
+  split_top_level <- function(text, operators){
+    chars <- strsplit(text, split = "")[[1]]
+    tokens <- c()
+    ops_found <- c()
+    depth <- 0L
+    start_idx <- 1L
+    prev_nonspace <- ""
+    for(i in seq_along(chars)){
+      ch <- chars[[i]]
+      if(ch == "("){ depth <- depth + 1L }
+      if(ch == ")"){ depth <- depth - 1L }
+      is_operator <- (depth == 0L) && (ch %in% operators)
+      is_unary_minus <- identical(ch, "-") &&
+        (i == 1L || prev_nonspace %in% c("", "(", "+", "-", "*", "/", "^", ","))
+      if(is_operator && !is_unary_minus){
+        tokens <- c(tokens, substr(text, start_idx, i - 1L))
+        ops_found <- c(ops_found, ch)
+        start_idx <- i + 1L
+      }
+      if(!grepl("^\\s$", ch)){ prev_nonspace <- ch }
     }
-
-    if(length(uq_args_vec) > 0){
-      tmp <- sapply(uq_args_vec,function(zerr){
-        zer[zer == zerr]  <- eval(parse(text = sprintf("'ARGSGO%s'",zerr)))
-        return( zer )  })
-      zer <- try( apply(tmp,1,function(ra){ ra[which.max(nchar(ra))] }) , T)
-    }
-
-    if(length(ConstantsNames) > 0){
-      tmp <- sapply(ConstantsNames,function(zerr){
-        zer[zer == zerr]  <- eval(parse(text = sprintf("'CONSTSGO%s'",zerr)))
-        return( zer )  })
-    }
-
-    zer <- try(apply(tmp,1,function(ra){ ra[which.max(nchar(ra))] }), T)
-
-    paste(zer,collapse = " ")
-  }))
-
-  Transform2jnp <- function(text, r_transform = "\\*",
-                            jnp_transform = "jnp$multiply"){
-    text_ <- strsplit(text,split=r_transform)[[1]]
-    if(length(text_) == 1){ }
-    if(length(text_) > 1){
-      ok_ <- F;while(ok_ == F){
-        text_ <- Collapse2jnp(text_,jnp_transform = jnp_transform)
-        if(length(text_) == 1){ok_ <- T}
-      } }
-    return(  text_ )
+    tokens <- c(tokens, substr(text, start_idx, nchar(text)))
+    list(tokens = trimws(tokens), operators = ops_found)
   }
-  Collapse2jnp <- function(text__, jnp_transform = "jnp$multiply"){
-    indices_ <- 1:length(text__)
-    text_new <- text__[1]
-    for(i in indices_){
-      doNext <- try(text__[i+1],T)
-      if("try-error" %in% class(doNext)){doNext <- F}
-      if(is.na(doNext)){doNext <- F}
-      if(is.character(doNext)){doNext <- T}
-      if(doNext){
-        text_new <- c(text_new,paste(jnp_transform, "(",text_new[i], ",", text__[i+1], ")",sep =""))
+  strip_outer_parens <- function(text){
+    text <- trimws(text)
+    if(!nzchar(text)){ return(text) }
+    repeat{
+      if(substr(text, 1L, 1L) != "(" || substr(text, nchar(text), nchar(text)) != ")"){
+        break
       }
+      chars <- strsplit(text, split = "")[[1]]
+      depth <- 0L
+      encloses_all <- TRUE
+      for(i in seq_along(chars)){
+        if(chars[[i]] == "("){ depth <- depth + 1L }
+        if(chars[[i]] == ")"){ depth <- depth - 1L }
+        if(depth == 0L && i < length(chars)){
+          encloses_all <- FALSE
+          break
+        }
+      }
+      if(!encloses_all){ break }
+      text <- trimws(substr(text, 2L, nchar(text) - 1L))
     }
-    return( text_new[length(text_new)]  )
+    text
   }
-  transform_vec_final <- sapply(transform_vec, function(zer){
-      # zer <- transform_vec[1]
-      # deal with negative sign at the start
-      zer_a <- strsplit(zer,split="-")[[1]]
-      zer_b <- strsplit(zer,split="-\\(")[[1]]
-      if( gsub(zer_a[1],pattern=" ",replace="") == "" &
-          gsub(zer_b[1],pattern=" ",replace="") != "" ){
-        zer <- strsplit(zer,split="\\*")[[1]]
-        zer[1] <- gsub(zer[1],pattern="-",replace="jnp$negative(")
-        zer[1] <- paste(zer[1],")",sep = "")
-        zer <- paste(zer,collapse = " * ")
+  replace_symbol_tokens <- function(text, symbols, prefix){
+    if(length(symbols) == 0L){ return(text) }
+    symbols <- unique(symbols[order(nchar(symbols), decreasing = TRUE)])
+    for(symbol in symbols){
+      text <- gsub(
+        sprintf("(?<![[:alnum:]_])%s(?![[:alnum:]_])", symbol),
+        paste0(prefix, symbol),
+        text,
+        perl = TRUE
+      )
+    }
+    text
+  }
+  compile_math_expr <- NULL
+  compile_math_expr <- function(text){
+    text <- strip_outer_parens(trimws(text))
+    if(!nzchar(text)){ return("0") }
+
+    add_split <- split_top_level(text, c("+", "-"))
+    if(length(add_split$operators) > 0L){
+      ret_ <- compile_math_expr(add_split$tokens[[1L]])
+      for(i in seq_along(add_split$operators)){
+        rhs_ <- compile_math_expr(add_split$tokens[[i + 1L]])
+        ret_ <- if(add_split$operators[[i]] == "+"){
+          sprintf("jnp$add(%s, %s)", ret_, rhs_)
+        } else {
+          sprintf("jnp$subtract(%s, %s)", ret_, rhs_)
+        }
       }
+      return(ret_)
+    }
 
-      # reciprocol block - works only with one reciprocol!
-      zer <- sapply(zer,function(rez){
-        rez_replace_with <- qdapRegex::rm_between_multiple(rez,
-                                                           left = "frac{1}{ ", right = " }",
-                                                           extract = T)
-        rez_replace_with <- paste("jnp$reciprocal(",rez_replace_with,")",collapse="")
-        rez <- qdapRegex::rm_between_multiple(rez,
-                                              left = "frac{1}{ ", right = " }",
-                                              replace = " REPLACE_HERE ")
-        rez <- gsub(rez,pattern="REPLACE_HERE",replace = rez_replace_with)
-      })
-
-      # multiplication with subtract blocks
-      zer <- unlist(strsplit(zer,split="-"))
-      if(length(zer) > 1){
-        zer <- sapply(zer,function(rez){ Transform2jnp(rez,jnp_transform = "jnp$multiply")})
-        zer <- Collapse2jnp(zer,jnp_transform = "jnp$subtract")
+    mul_split <- split_top_level(text, c("*", "/"))
+    if(length(mul_split$operators) > 0L){
+      ret_ <- compile_math_expr(mul_split$tokens[[1L]])
+      for(i in seq_along(mul_split$operators)){
+        rhs_ <- compile_math_expr(mul_split$tokens[[i + 1L]])
+        ret_ <- if(mul_split$operators[[i]] == "*"){
+          sprintf("jnp$multiply(%s, %s)", ret_, rhs_)
+        } else {
+          sprintf("jnp$divide(%s, %s)", ret_, rhs_)
+        }
       }
+      return(ret_)
+    }
 
-      # multiplication within add block
-      zer <- unlist(strsplit(zer,split="\\+"))
-      if(length(zer) > 1){
-        zer <- sapply(zer,function(rez){ Transform2jnp(rez,jnp_transform = "jnp$multiply")})
-        zer <- Collapse2jnp(zer,jnp_transform = "jnp$add")
+    pow_split <- split_top_level(text, "^")
+    if(length(pow_split$operators) > 0L){
+      ret_ <- compile_math_expr(pow_split$tokens[[length(pow_split$tokens)]])
+      if(length(pow_split$tokens) > 1L){
+        for(i in rev(seq_len(length(pow_split$tokens) - 1L))){
+          ret_ <- sprintf("jnp$power(%s, %s)", compile_math_expr(pow_split$tokens[[i]]), ret_)
+        }
       }
+      return(ret_)
+    }
 
-      # residual multiplication block & return 
-      return( sapply(zer,function(rez){ Transform2jnp(rez,jnp_transform = "jnp$multiply")}) ) 
-  })
+    if(startsWith(text, "-")){
+      rhs_ <- trimws(substr(text, 2L, nchar(text)))
+      if(grepl("^[0-9.]+([eE][-+]?[0-9]+)?$", rhs_, perl = TRUE)){
+        return(paste0("-", rhs_))
+      }
+      return(sprintf("jnp$negative(%s)", compile_math_expr(rhs_)))
+    }
+
+    if(grepl("^[[:alpha:]_][[:alnum:]_$]*\\s*\\(", text, perl = TRUE) &&
+       substr(text, nchar(text), nchar(text)) == ")"){
+      open_idx <- regexpr("\\(", text, perl = TRUE)[[1]]
+      fn_name <- trimws(substr(text, 1L, open_idx - 1L))
+      fn_args <- substr(text, open_idx + 1L, nchar(text) - 1L)
+      args_split <- split_top_level(fn_args, ",")
+      compiled_args <- vapply(args_split$tokens, compile_math_expr, character(1L))
+      if(fn_name == "exp"){ return(sprintf("jnp$exp(%s)", compiled_args[[1L]])) }
+      if(fn_name == "sqrt"){ return(sprintf("jnp$sqrt(%s)", compiled_args[[1L]])) }
+      if(fn_name == "log"){ return(sprintf("jnp$log(%s)", compiled_args[[1L]])) }
+      if(fn_name == "SoftPlus"){ return(sprintf("SoftPlus(%s)", compiled_args[[1L]])) }
+      if(fn_name == "Sigmoid"){ return(sprintf("Sigmoid(%s)", compiled_args[[1L]])) }
+      if(fn_name == "max"){
+        ret_ <- compiled_args[[1L]]
+        if(length(compiled_args) > 1L){
+          for(i in 2:length(compiled_args)){
+            ret_ <- sprintf("jnp$maximum(%s, %s)", ret_, compiled_args[[i]])
+          }
+        }
+        return(ret_)
+      }
+      if(fn_name == "min"){
+        ret_ <- compiled_args[[1L]]
+        if(length(compiled_args) > 1L){
+          for(i in 2:length(compiled_args)){
+            ret_ <- sprintf("jnp$minimum(%s, %s)", ret_, compiled_args[[i]])
+          }
+        }
+        return(ret_)
+      }
+      return(sprintf("%s(%s)", fn_name, paste(compiled_args, collapse = ", ")))
+    }
+
+    text
+  }
+  normalize_rhs_expr <- function(text){
+    text <- gsub(text, pattern = "cdot", replace = "*")
+    text <- gsub(text, pattern = "frac\\{([^\\}]+)\\}\\{([^\\}]+)\\}", replace = "( \\1 ) / ( \\2 )")
+    text <- gsub(text, pattern = "\\\\", replace = "")
+    text <- gsub(text, pattern = "Neural([[:alnum:]]+)", replace = "Neural\\1___")
+    text <- gsub(text, pattern = "\\{", replace = "")
+    text <- gsub(text, pattern = "\\}", replace = "")
+    text <- replace_symbol_tokens(text, uq_y_vec, "YGOY")
+    text <- replace_symbol_tokens(text, uq_args_vec, "ARGSGO")
+    text <- replace_symbol_tokens(text, ConstantsNames, "CONSTSGO")
+    text <- gsub(text, pattern = "\\s+", replace = " ")
+    text <- trimws(text)
+    if(grepl("Neural[[:alnum:]]+___", text)){
+      return(text)
+    }
+    compile_math_expr(text)
+  }
+  transform_vec_final <- vapply(transform_vec, normalize_rhs_expr, character(1L))
   names(transform_vec_final) <- NULL
   transform_vec_final <- gsub(transform_vec_final,pattern="ARGSGO",replace="args$")
   transform_vec_final <- gsub(transform_vec_final,pattern="YGOY",replace="y$")
@@ -372,7 +439,13 @@
     #"Neural1___$s_l , y$e_l , y$i_l , y$r_l"
     # add SD evolution if no otherwise specified neural ODE term
     neural_key_vec <- c(neural_key_vec, "Neural1")
-    transform_vec_final <- c(transform_vec_final, "Neural1___ $s_l , y$e_l , y$i_l , y$r_l")
+    transform_vec_final <- c(
+      transform_vec_final,
+      paste(
+        "Neural1___",
+        paste(sprintf("y$%s", default_bio_state_terms), collapse = " , ")
+      )
+    )
   }
   transform_vec_final_split <- strsplit(transform_vec_final, split = "Neural([[:alnum:]]+)___")
   transform_vec_final <- unlist(sapply(1:length(transform_vec_final_split), function(i_){
@@ -381,14 +454,22 @@
 
     if(length(l_) > 1){
       if(neural_key_vec[i_] == "Neural1"){
-        YARGS_NEURAL_TEXT_PARTIAL_0 <- c("y$Neural", paste("jnp$divide(y$",
-                                                           c("s_l","e_l","i_l","r_l"),
-                                                           ",CONST_N) - 1/4",sep=""))
-        if(length(encneural_inputs[!encneural_inputs %in% c(uq_encneural_vec,"s_l","e_l","i_l","r_l")]) > 0){ 
+        state_center <- ifelse(length(encneural_base_inputs) > 0L, 1/length(encneural_base_inputs), 0)
+        YARGS_NEURAL_TEXT_PARTIAL_0 <- c(
+          "y$Neural",
+          paste(
+            "jnp$divide(y$",
+            encneural_base_inputs,
+            ",CONST_N) - ",
+            state_center,
+            sep=""
+          )
+        )
+        if(length(encneural_extra_inputs) > 0){ 
           YARGS_NEURAL_TEXT_PARTIAL_0 <- c(YARGS_NEURAL_TEXT_PARTIAL_0, 
                                            paste(
                                            "jnp$take(y$XXX2 / sqrt(LocalNeuralEmbedDim), ai(GlobalNeuralEmbedDim+",
-                                           1:length(encneural_inputs[!encneural_inputs %in% uq_encneural_vec]),"L",
+                                           1:length(encneural_extra_inputs),"L",
                                            "-1L))" , sep = "") ) 
         }
         YARGS_NEURAL_TEXT_PARTIAL_0 <- c(YARGS_NEURAL_TEXT_PARTIAL_0)

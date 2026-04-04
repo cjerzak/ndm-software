@@ -792,14 +792,14 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                               # take global
                               if(!name_zap %in% ArgLDeps & !(name_zap %in% uq_globalneural_vec) & !name_zap %in% "Neural1"){
                                 eval(parse(text = sprintf("
-                    %s_samp <- %s( jnp$take(globalze,indices = jnp$array(tmp_i <- (ai(which(gDepParamsVec_ == '%s')-1L))), axis=0L) )
+                    %s_samp <- %s( jnp$squeeze(jnp$take(globalze,indices = jnp$array(tmp_i <- (ai(which(gDepParamsVec_ == '%s')-1L))), axis=0L)) )
                 ",name_zap, transform_zap, name_zap)))
                               }
 
                               # take dynamic global (ODE solved outside of Samp2Params)
                               if(!name_zap %in% ArgLDeps & (name_zap %in% uq_globalneural_vec)){
                                 eval(parse(text = sprintf("
-                    %s_samp <- %s( jnp$take(dynamicglobalze,indices = jnp$array(tmp_i <- (ai(which(dgDepParamsVec_ == '%s')-1L))), axis=0L) )
+                    %s_samp <- %s( jnp$squeeze(jnp$take(dynamicglobalze,indices = jnp$array(tmp_i <- (ai(which(dgDepParamsVec_ == '%s')-1L))), axis=0L)) )
                 ",name_zap, transform_zap, name_zap)))
                               }
 
@@ -831,17 +831,15 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       ifnotfound = uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
     )
     uq_initcond_vec <- as.character(uq_initcond_vec)
-    init_state_supported_terms <- c("s_l", "e_l", "i_l", "r_l")
-    if (length(uq_initcond_vec) != length(init_state_supported_terms) ||
-        !setequal(uq_initcond_vec, init_state_supported_terms)) {
+    init_state_supported_terms <- unique(uq_initcond_vec)
+    if (length(init_state_supported_terms) == 0L) {
       stop(
-        sprintf(
-          "NeuralODE init-state softmax currently supports the SEIR/SEIRS state set {%s}; got {%s}.",
-          paste(init_state_supported_terms, collapse = ", "),
-          paste(uq_initcond_vec, collapse = ", ")
-        ),
+        "NeuralODE init-state softmax requires at least one declared init-state term.",
         call. = FALSE
       )
+    }
+    if (length(init_state_supported_terms) != length(uq_initcond_vec)) {
+      stop("NeuralODE init-state softmax requires unique `InitStateTerms`.", call. = FALSE)
     }
     init_logit_param_names <- get0(
       "InitStateLogitParamNames",
@@ -872,7 +870,15 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
    
    { # performs better in tests 
       init_m <- jnp$take(localze, jnp$array(init_param_indices - 1L))
-      init_logit_offset_raw <- get0("InitStateLogitOffset", inherits = TRUE, ifnotfound = c(10, -1, -1, -1))
+      init_logit_offset_default <- c(10, rep(-1, max(0L, length(uq_initcond_vec) - 1L)))
+      if (length(init_logit_offset_default) > 0L) {
+        names(init_logit_offset_default) <- uq_initcond_vec
+      }
+      init_logit_offset_raw <- get0(
+        "InitStateLogitOffset",
+        inherits = TRUE,
+        ifnotfound = init_logit_offset_default
+      )
       init_logit_offset_names <- names(init_logit_offset_raw)
       init_logit_offset <- as.numeric(init_logit_offset_raw)
       if(length(init_logit_offset) == 1L){
@@ -891,7 +897,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         init_logit_offset <- init_logit_offset[uq_initcond_vec]
       } else {
         if(length(init_logit_offset) != length(init_state_supported_terms)){
-          stop("InitStateLogitOffset must have length 1 or 4, or be named by init-state terms.")
+          stop(
+            sprintf(
+              "InitStateLogitOffset must have length 1 or %s, or be named by init-state terms.",
+              length(init_state_supported_terms)
+            ),
+            call. = FALSE
+          )
         }
         names(init_logit_offset) <- init_state_supported_terms
         init_logit_offset <- init_logit_offset[uq_initcond_vec]

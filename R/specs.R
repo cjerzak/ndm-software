@@ -43,6 +43,26 @@
   )
 }
 
+.ndm_execution_spec_compartments <- function(execution_spec) {
+  stopifnot(is.list(execution_spec))
+
+  family <- execution_spec$family %||% NULL
+  if (!is.null(family) && grepl("^tb_", family)) {
+    return("tb")
+  }
+
+  state_terms <- execution_spec$state_terms %||% character(0)
+  if (length(state_terms) > 0L &&
+      all(c("s_l", "e_l", "i_l") %in% state_terms)) {
+    if ("r_l" %in% state_terms) {
+      return("seirs")
+    }
+    return("seir")
+  }
+
+  "custom"
+}
+
 .ndm_spec_with_path <- function(entry) {
   entry$source_path <- .ndm_embedded_model_spec_path(entry$file)
   entry
@@ -108,9 +128,9 @@
 #'
 #' @export
 ndm_model_spec_presets <- function() {
-  registry <- .ndm_builtin_spec_registry()
-  rows <- lapply(names(registry), function(name) {
-    entry <- registry[[name]]
+  builtin_registry <- .ndm_builtin_spec_registry()
+  builtin_rows <- lapply(names(builtin_registry), function(name) {
+    entry <- builtin_registry[[name]]
     data.frame(
       preset = name,
       compartments = entry$compartments,
@@ -122,7 +142,21 @@ ndm_model_spec_presets <- function() {
     )
   })
 
-  out <- do.call(rbind, rows)
+  structured_registry <- .ndm_structured_spec_registry()
+  structured_rows <- lapply(names(structured_registry), function(name) {
+    entry <- structured_registry[[name]]
+    data.frame(
+      preset = name,
+      compartments = entry$compartments,
+      dynamic_beta = FALSE,
+      dynamic_global = FALSE,
+      multi_outcome = FALSE,
+      description = entry$description,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  out <- do.call(rbind, c(builtin_rows, structured_rows))
   rownames(out) <- NULL
   out
 }
@@ -146,6 +180,8 @@ ndm_model_spec_presets <- function() {
 #'   endogenous term metadata stored on the returned spec.
 #' @param tex_path Optional path to a custom `.tex` file. When supplied,
 #'   `ndm_model_spec()` delegates to `ndm_model_spec_from_tex()`.
+#' @param family_args Optional named list used to expand parameterized model
+#'   families such as chained latent-stage specifications.
 #'
 #' @returns `ndm_model_spec()` returns an object of class `ndm_model_spec`.
 #'   Built-in presets include metadata such as the packaged source path and the
@@ -164,14 +200,16 @@ ndm_model_spec <- function(preset = NULL,
                            model_type = c("DecoderOnly", "NeuralODE"),
                            time_varying_terms = NULL,
                            endogenous_terms = NULL,
-                           tex_path = NULL) {
+                           tex_path = NULL,
+                           family_args = NULL) {
   model_type <- match.arg(model_type)
 
   if (!is.null(tex_path)) {
     return(ndm_model_spec_from_tex(tex_path, model_type = model_type))
   }
 
-  registry <- .ndm_builtin_spec_registry()
+  builtin_registry <- .ndm_builtin_spec_registry()
+  structured_registry <- .ndm_structured_spec_registry()
   if (is.null(preset)) {
     compartments <- match.arg(compartments)
     if (is.null(dynamic_beta)) {
@@ -185,12 +223,23 @@ ndm_model_spec <- function(preset = NULL,
     )
   }
 
-  if (!preset %in% names(registry)) {
+  if (preset %in% names(structured_registry)) {
+    return(.ndm_structured_spec_from_preset(
+      preset = preset,
+      model_type = model_type,
+      family_args = family_args,
+      time_varying_terms = time_varying_terms,
+      endogenous_terms = endogenous_terms
+    ))
+  }
+
+  if (!preset %in% names(builtin_registry)) {
     stop("Unknown preset '", preset, "'.", call. = FALSE)
   }
 
-  entry <- .ndm_spec_with_path(registry[[preset]])
+  entry <- .ndm_spec_with_path(builtin_registry[[preset]])
   tex_text <- paste(readLines(entry$source_path, warn = FALSE), collapse = "\n")
+  execution_spec <- .ndm_parse_tex_execution_spec(tex_text)
 
   if (is.null(time_varying_terms)) {
     time_varying_terms <- switch(
@@ -225,10 +274,20 @@ ndm_model_spec <- function(preset = NULL,
       dynamic_global = entry$dynamic_global,
       multi_outcome = entry$multi_outcome,
       description = entry$description,
+      source_format = "tex",
+      family = NULL,
+      family_args = list(),
       time_varying_terms = unique(time_varying_terms),
       endogenous_terms = unique(endogenous_terms),
+      state_terms = execution_spec$state_terms %||% character(0),
+      init_state_terms = execution_spec$init_state_terms %||% character(0),
+      parameter_terms = execution_spec$parameter_terms %||% character(0),
+      auxiliary_terms = execution_spec$auxiliary_terms %||% character(0),
+      local_dynamic_terms = execution_spec$local_dynamic_terms %||% character(0),
+      global_dynamic_terms = execution_spec$global_dynamic_terms %||% character(0),
       source_path = entry$source_path,
-      tex_text = tex_text
+      tex_text = tex_text,
+      execution_spec = execution_spec
     ),
     "ndm_model_spec"
   )
@@ -253,35 +312,55 @@ ndm_model_spec_from_tex <- function(path,
                                     model_type = c("DecoderOnly", "NeuralODE")) {
   model_type <- match.arg(model_type)
   source_path <- .ndm_normalize_path(path, must_work = TRUE)
-  registry <- .ndm_builtin_spec_registry()
-  preset_name <- names(registry)[vapply(
-    registry,
+  builtin_registry <- .ndm_builtin_spec_registry()
+  preset_name <- names(builtin_registry)[vapply(
+    builtin_registry,
     function(entry) identical(basename(source_path), entry$file),
     logical(1)
   )]
 
   tex_text <- paste(readLines(source_path, warn = FALSE), collapse = "\n")
+  execution_spec <- .ndm_parse_tex_execution_spec(tex_text)
 
   if (length(preset_name) == 1L) {
     spec <- ndm_model_spec(preset = preset_name, model_type = model_type)
     spec$source_path <- source_path
     spec$tex_text <- tex_text
+    spec$execution_spec <- execution_spec
     return(spec)
+  }
+
+  preset <- execution_spec$preset %||% "custom"
+  description <- if (!is.null(execution_spec$family) && grepl("^tb_", execution_spec$family)) {
+    registry_entry <- .ndm_structured_spec_registry()[[execution_spec$family]]
+    registry_entry$description %||% "Structured model specification imported from disk."
+  } else {
+    "Custom TeX model specification imported from disk."
   }
 
   .ndm_make_classed_list(
     list(
-      preset = "custom",
+      preset = preset,
       model_type = model_type,
-      compartments = NA_character_,
+      compartments = .ndm_execution_spec_compartments(execution_spec),
       dynamic_beta = NA,
       dynamic_global = NA,
       multi_outcome = NA,
-      description = "Custom TeX model specification imported from disk.",
-      time_varying_terms = character(0),
-      endogenous_terms = character(0),
+      description = description,
+      source_format = execution_spec$source_format %||% "tex",
+      family = execution_spec$family %||% NULL,
+      family_args = execution_spec$family_args %||% list(),
+      time_varying_terms = execution_spec$time_varying_terms %||% character(0),
+      endogenous_terms = execution_spec$endogenous_terms %||% character(0),
+      state_terms = execution_spec$state_terms %||% character(0),
+      init_state_terms = execution_spec$init_state_terms %||% character(0),
+      parameter_terms = execution_spec$parameter_terms %||% character(0),
+      auxiliary_terms = execution_spec$auxiliary_terms %||% character(0),
+      local_dynamic_terms = execution_spec$local_dynamic_terms %||% character(0),
+      global_dynamic_terms = execution_spec$global_dynamic_terms %||% character(0),
       source_path = source_path,
-      tex_text = tex_text
+      tex_text = tex_text,
+      execution_spec = execution_spec
     ),
     "ndm_model_spec"
   )

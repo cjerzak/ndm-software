@@ -416,6 +416,40 @@ test_that("NeuralODE latent dims follow ModelDims by default and honor explicit 
   expect_equal(as.integer(override_details$runtime_env$GlobalNeuralEmbedDim), 40L)
 })
 
+ndm_test_expect_neuralode_smoke <- function(spec,
+                                            label,
+                                            model_dims = 32L,
+                                            n_times_lookahead = 2L) {
+  details <- ndm_test_fit_sim_case(
+    model_type = "NeuralODE",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    model_dims = model_dims,
+    n_times_lookahead = n_times_lookahead,
+    model_spec = spec,
+    return_details = TRUE
+  )
+  pred <- ndm_predict(
+    details$trained,
+    batch = details$batch,
+    seed = 123L,
+    update_state = FALSE
+  )
+  pred_mu <- details$runtime_env$np$asanyarray(pred$y_mu)
+  grad_norm <- as.numeric(details$trained$env$grad_norm_vec[[1L]])
+  loss_value <- as.numeric(details$summary$last_loss[[1L]])
+
+  expect_equal(details$summary$spec_preset[[1L]], spec$preset, info = label)
+  expect_identical(as.character(details$runtime_env$InitStateTerms), spec$init_state_terms, info = label)
+  expect_true(all(is.finite(pred_mu)), info = label)
+  expect_true(length(dim(pred_mu)) >= 1L, info = label)
+  expect_true(is.finite(loss_value), info = label)
+  expect_true(is.finite(grad_norm), info = label)
+  expect_false(is.null(details$trained$opt_state), info = label)
+
+  details
+}
+
 test_that("NeuralODE init-state mapping survives interleaved dynamic-state order in custom tex specs", {
   ndm_skip_if_no_sim_backend()
 
@@ -454,26 +488,83 @@ test_that("NeuralODE init-state mapping survives interleaved dynamic-state order
   expect_lt(unname(state_metrics$mean_components[["r"]]), 0.1)
 })
 
-test_that("unsupported custom NeuralODE init-state layouts fail fast in jax_cpu", {
+test_that("custom NeuralODE init-state layouts train in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
-  base_spec <- ndm_model_spec(preset = "seirs_dynamic_beta", model_type = "NeuralODE")
-  lines <- strsplit(ndm_model_spec_to_tex(base_spec), "\n", fixed = TRUE)[[1L]]
-  idx_r <- grep("Evolve{r_l}", lines, fixed = TRUE)[[1L]]
-  lines <- append(lines, "\\item $\\Evolve{q_l} = 0$", after = idx_r)
-  invalid_path <- tempfile(fileext = ".tex")
-  writeLines(lines, invalid_path, useBytes = TRUE)
-  invalid_spec <- ndm_model_spec_from_tex(invalid_path, model_type = "NeuralODE")
-
-  expect_error(
-    ndm_test_fit_sim_case(
-      model_type = "NeuralODE",
-      endogeneity = 0.0,
-      n_sgd = 1L,
-      model_spec = invalid_spec
+  custom_spec <- ndm_model_spec_from_structure(
+    list(
+      preset = "custom_slqi",
+      description = "Custom four-state latent structure with a holding compartment.",
+      states = c("s_l", "l_l", "q_l", "i_l"),
+      parameters = list(
+        lambda = ndm:::.ndm_param_spec("InvSoftPlus", prior_mean = 0.08, prior_sd = 0.25),
+        c = ndm:::.ndm_param_spec("InvSoftPlus", prior_mean = 0.05, prior_sd = 0.25),
+        h = ndm:::.ndm_param_spec("InvSoftPlus", prior_mean = 0.03, prior_sd = 0.25)
+      ),
+      equations = c(
+        s_l = "- lambda * s_l",
+        l_l = "lambda * s_l - (c + h) * l_l",
+        q_l = "h * l_l",
+        i_l = "c * l_l"
+      ),
+      observations = "i_l"
     ),
-    "NeuralODE init-state softmax currently supports"
+    model_type = "NeuralODE"
   )
+
+  details <- ndm_test_expect_neuralode_smoke(
+    spec = custom_spec,
+    label = "custom_slqi"
+  )
+
+  expect_true("q_l" %in% as.character(details$runtime_env$InitStateTerms))
+})
+
+test_that("NeuralODE generalized structures smoke-test across SEIRS and the 12 TB forms", {
+  ndm_skip_if_no_sim_backend()
+
+  cases <- list(
+    list(label = "seirs_dynamic_beta", spec = ndm_model_spec(preset = "seirs_dynamic_beta", model_type = "NeuralODE")),
+    list(label = "tb_a", spec = ndm_model_spec(preset = "tb_a", model_type = "NeuralODE")),
+    list(label = "tb_b_n2", spec = ndm_model_spec(preset = "tb_b", model_type = "NeuralODE", family_args = list(n = 2L))),
+    list(label = "tb_b_n5", spec = ndm_model_spec(preset = "tb_b", model_type = "NeuralODE", family_args = list(n = 5L))),
+    list(label = "tb_c", spec = ndm_model_spec(preset = "tb_c", model_type = "NeuralODE")),
+    list(label = "tb_d", spec = ndm_model_spec(preset = "tb_d", model_type = "NeuralODE")),
+    list(label = "tb_e", spec = ndm_model_spec(preset = "tb_e", model_type = "NeuralODE")),
+    list(label = "tb_f", spec = ndm_model_spec(preset = "tb_f", model_type = "NeuralODE")),
+    list(label = "tb_g", spec = ndm_model_spec(preset = "tb_g", model_type = "NeuralODE")),
+    list(label = "tb_h", spec = ndm_model_spec(preset = "tb_h", model_type = "NeuralODE")),
+    list(label = "tb_i", spec = ndm_model_spec(preset = "tb_i", model_type = "NeuralODE")),
+    list(label = "tb_j_n2", spec = ndm_model_spec(preset = "tb_j", model_type = "NeuralODE", family_args = list(n = 2L))),
+    list(label = "tb_j_n5", spec = ndm_model_spec(preset = "tb_j", model_type = "NeuralODE", family_args = list(n = 5L))),
+    list(label = "tb_k", spec = ndm_model_spec(preset = "tb_k", model_type = "NeuralODE")),
+    list(label = "tb_l", spec = ndm_model_spec(preset = "tb_l", model_type = "NeuralODE"))
+  )
+
+  results <- lapply(
+    cases,
+    function(case) {
+      details <- ndm_test_expect_neuralode_smoke(
+        spec = case$spec,
+        label = case$label
+      )
+      data.frame(
+        label = case$label,
+        preset = case$spec$preset,
+        n_states = length(case$spec$state_terms),
+        last_loss = details$summary$last_loss[[1L]],
+        grad_norm = as.numeric(details$trained$env$grad_norm_vec[[1L]]),
+        stringsAsFactors = FALSE
+      )
+    }
+  )
+  results_df <- do.call(rbind, results)
+  results_info <- paste(capture.output(print(results_df)), collapse = "\n")
+
+  expect_equal(nrow(results_df), length(cases))
+  expect_true(all(is.finite(results_df$last_loss)), info = results_info)
+  expect_true(all(is.finite(results_df$grad_norm)), info = results_info)
+  expect_true(all(results_df$n_states >= 2L), info = results_info)
 })
 
 test_that("non-finite sim training fails fast and writes a debug artifact", {

@@ -19,7 +19,8 @@ ndm_model_spec(
   model_type = c("DecoderOnly", "NeuralODE"),
   time_varying_terms = NULL,
   endogenous_terms = NULL,
-  tex_path = NULL
+  tex_path = NULL,
+  family_args = NULL
 )
 
 ndm_model_spec_from_tex(path, model_type = c("DecoderOnly", "NeuralODE"))
@@ -54,6 +55,9 @@ endogenous term metadata stored on the returned spec.}
 
 \item{tex_path}{Optional path to a custom `.tex` file. When supplied,
 `ndm_model_spec()` delegates to `ndm_model_spec_from_tex()`.}
+
+\item{family_args}{Optional named list used to expand parameterized model
+families such as chained latent-stage specifications.}
 
 \item{path}{Path to a `.tex` model specification file on disk.}
 
