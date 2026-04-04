@@ -613,11 +613,11 @@ test_that("TB NeuralODE structures complete finite forward/backward passes with 
     expect_true(all(is.finite(diagnostics$pred_mu)), info = case_info)
     expect_true(all(is.finite(diagnostics$pred_sigma)), info = case_info)
     expect_true(all(is.finite(diagnostics$state_cube)), info = case_info)
-    expect_gte(diagnostics$min_state, -diagnostics$state_epsilon, info = case_info)
-    expect_lte(diagnostics$max_rel_mass_drift, 5e-3, info = case_info)
+    expect_true(diagnostics$min_state >= -diagnostics$state_epsilon, info = case_info)
+    expect_true(diagnostics$max_rel_mass_drift <= 5e-3, info = case_info)
     if (length(case$spec$time_varying_terms) > 0L) {
       expect_true(diagnostics$time_varying_all_finite, info = case_info)
-      expect_gte(diagnostics$time_varying_min, -diagnostics$state_epsilon, info = case_info)
+      expect_true(diagnostics$time_varying_min >= -diagnostics$state_epsilon, info = case_info)
     }
 
     results[[i]] <- data.frame(
