@@ -446,6 +446,7 @@ ndm_test_expect_neuralode_smoke <- function(spec,
   expect_true(is.finite(loss_value), info = label)
   expect_true(is.finite(grad_norm), info = label)
   expect_false(is.null(details$trained$opt_state), info = label)
+  details$smoke_pred <- pred
 
   details
 }
@@ -565,6 +566,92 @@ test_that("NeuralODE generalized structures smoke-test across SEIRS and the 12 T
   expect_true(all(is.finite(results_df$last_loss)), info = results_info)
   expect_true(all(is.finite(results_df$grad_norm)), info = results_info)
   expect_true(all(results_df$n_states >= 2L), info = results_info)
+})
+
+test_that("TB NeuralODE structures complete finite forward/backward passes with invariant-respecting state trajectories", {
+  ndm_skip_if_no_sim_backend()
+
+  cases <- list(
+    list(label = "tb_a", spec = ndm_model_spec(preset = "tb_a", model_type = "NeuralODE")),
+    list(label = "tb_b_n3", spec = ndm_model_spec(preset = "tb_b", model_type = "NeuralODE", family_args = list(n = 3L))),
+    list(label = "tb_c", spec = ndm_model_spec(preset = "tb_c", model_type = "NeuralODE")),
+    list(label = "tb_d", spec = ndm_model_spec(preset = "tb_d", model_type = "NeuralODE")),
+    list(label = "tb_e", spec = ndm_model_spec(preset = "tb_e", model_type = "NeuralODE")),
+    list(label = "tb_f", spec = ndm_model_spec(preset = "tb_f", model_type = "NeuralODE")),
+    list(label = "tb_g", spec = ndm_model_spec(preset = "tb_g", model_type = "NeuralODE")),
+    list(label = "tb_h", spec = ndm_model_spec(preset = "tb_h", model_type = "NeuralODE")),
+    list(label = "tb_i", spec = ndm_model_spec(preset = "tb_i", model_type = "NeuralODE")),
+    list(label = "tb_j_n3", spec = ndm_model_spec(preset = "tb_j", model_type = "NeuralODE", family_args = list(n = 3L))),
+    list(label = "tb_k", spec = ndm_model_spec(preset = "tb_k", model_type = "NeuralODE")),
+    list(label = "tb_l", spec = ndm_model_spec(preset = "tb_l", model_type = "NeuralODE"))
+  )
+
+  results <- vector("list", length(cases))
+  for (i in seq_along(cases)) {
+    case <- cases[[i]]
+    details <- ndm_test_expect_neuralode_smoke(
+      spec = case$spec,
+      label = case$label
+    )
+    diagnostics <- ndm_test_capture_tb_structure_diagnostics(
+      details = details,
+      spec = case$spec,
+      label = case$label
+    )
+
+    case_info <- paste(
+      case$label,
+      sprintf("preset=%s", case$spec$preset),
+      sprintf("n_states=%s", length(case$spec$state_terms)),
+      sprintf("min_state=%.6g", diagnostics$min_state),
+      sprintf("max_rel_mass_drift=%.6g", diagnostics$max_rel_mass_drift),
+      sprintf("last_loss=%.6g", details$summary$last_loss[[1L]]),
+      sprintf("grad_norm=%.6g", as.numeric(details$trained$env$grad_norm_vec[[1L]])),
+      sep = "; "
+    )
+
+    expect_true(all(is.finite(diagnostics$pred_mu)), info = case_info)
+    expect_true(all(is.finite(diagnostics$pred_sigma)), info = case_info)
+    expect_true(all(is.finite(diagnostics$state_cube)), info = case_info)
+    expect_gte(diagnostics$min_state, -diagnostics$state_epsilon, info = case_info)
+    expect_lte(diagnostics$max_rel_mass_drift, 5e-3, info = case_info)
+    if (length(case$spec$time_varying_terms) > 0L) {
+      expect_true(diagnostics$time_varying_all_finite, info = case_info)
+      expect_gte(diagnostics$time_varying_min, -diagnostics$state_epsilon, info = case_info)
+    }
+
+    results[[i]] <- data.frame(
+      label = case$label,
+      preset = case$spec$preset,
+      n_states = length(case$spec$state_terms),
+      min_state = diagnostics$min_state,
+      state_epsilon = diagnostics$state_epsilon,
+      max_rel_mass_drift = diagnostics$max_rel_mass_drift,
+      last_loss = details$summary$last_loss[[1L]],
+      grad_norm = as.numeric(details$trained$env$grad_norm_vec[[1L]]),
+      n_time_varying_terms = length(case$spec$time_varying_terms),
+      time_varying_all_finite = diagnostics$time_varying_all_finite,
+      time_varying_min = diagnostics$time_varying_min,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  results_df <- do.call(rbind, results)
+  results_info <- paste(capture.output(print(results_df)), collapse = "\n")
+
+  expect_equal(nrow(results_df), length(cases))
+  expect_true(all(is.finite(results_df$last_loss)), info = results_info)
+  expect_true(all(is.finite(results_df$grad_norm)), info = results_info)
+  expect_true(all(results_df$min_state >= (-1 * results_df$state_epsilon)), info = results_info)
+  expect_true(all(results_df$max_rel_mass_drift <= 5e-3), info = results_info)
+  expect_true(
+    all(results_df$time_varying_all_finite[results_df$n_time_varying_terms > 0L]),
+    info = results_info
+  )
+  expect_true(
+    all(is.finite(results_df$time_varying_min[results_df$n_time_varying_terms > 0L])),
+    info = results_info
+  )
 })
 
 test_that("non-finite sim training fails fast and writes a debug artifact", {

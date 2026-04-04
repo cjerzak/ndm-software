@@ -486,7 +486,100 @@ ndm_test_sim_parity_neural_runtime_globals_after_setup <- function() {
   )
 }
 
-ndm_test_capture_initial_state_metrics <- function(details, seed = 1L) {
+ndm_test_py_numeric_array <- function(x) {
+  if (is.null(x)) {
+    return(NULL)
+  }
+  if (isTRUE(tryCatch(reticulate::is_py_object(x), error = function(...) FALSE))) {
+    x <- tryCatch(
+      reticulate::import("numpy", delay_load = TRUE)$asanyarray(x),
+      error = function(...) x
+    )
+    if (isTRUE(tryCatch(reticulate::is_py_object(x), error = function(...) FALSE))) {
+      x <- reticulate::py_to_r(x)
+    }
+  }
+  arr <- as.array(x)
+  storage.mode(arr) <- "double"
+  arr
+}
+
+ndm_test_as_numeric_matrix <- function(x, label = "value") {
+  arr <- ndm_test_py_numeric_array(x)
+  if (is.null(arr)) {
+    stop("Expected `", label, "` to be available.", call. = FALSE)
+  }
+
+  dims <- dim(arr)
+  if (is.null(dims) || length(dims) == 0L) {
+    return(matrix(as.numeric(arr), ncol = 1L))
+  }
+  if (length(dims) == 1L) {
+    return(matrix(as.numeric(arr), nrow = dims[[1L]], ncol = 1L))
+  }
+  if (length(dims) == 2L) {
+    return(matrix(as.numeric(arr), nrow = dims[[1L]], ncol = dims[[2L]]))
+  }
+
+  matrix(as.numeric(arr), nrow = dims[[1L]], ncol = prod(dims[-1L]))
+}
+
+ndm_test_broadcast_like <- function(x, target, label = "value") {
+  value <- ndm_test_as_numeric_matrix(x, label = label)
+  target_dim <- dim(target)
+  if (is.null(target_dim) || length(target_dim) != 2L) {
+    stop("`target` must be a numeric matrix.", call. = FALSE)
+  }
+  if (identical(dim(value), target_dim)) {
+    return(value)
+  }
+  if (nrow(value) == 1L && ncol(value) == target_dim[[2L]]) {
+    return(matrix(
+      rep(value[1L, ], each = target_dim[[1L]]),
+      nrow = target_dim[[1L]],
+      ncol = target_dim[[2L]]
+    ))
+  }
+  if (ncol(value) == 1L && nrow(value) == target_dim[[1L]]) {
+    return(matrix(
+      rep(value[, 1L], times = target_dim[[2L]]),
+      nrow = target_dim[[1L]],
+      ncol = target_dim[[2L]]
+    ))
+  }
+
+  value_vec <- as.numeric(value)
+  if (length(value_vec) == 1L) {
+    return(matrix(value_vec, nrow = target_dim[[1L]], ncol = target_dim[[2L]]))
+  }
+  if (length(value_vec) == target_dim[[2L]]) {
+    return(matrix(
+      rep(value_vec, each = target_dim[[1L]]),
+      nrow = target_dim[[1L]],
+      ncol = target_dim[[2L]]
+    ))
+  }
+  if (length(value_vec) == target_dim[[1L]]) {
+    return(matrix(
+      rep(value_vec, times = target_dim[[2L]]),
+      nrow = target_dim[[1L]],
+      ncol = target_dim[[2L]]
+    ))
+  }
+
+  stop(
+    "Could not broadcast `",
+    label,
+    "` with dims ",
+    paste(dim(value), collapse = "x"),
+    " to target dims ",
+    paste(target_dim, collapse = "x"),
+    ".",
+    call. = FALSE
+  )
+}
+
+ndm_test_capture_train_prediction <- function(details, seed = 1L) {
   if (is.null(details$batch)) {
     stop("Expected `details$batch` to capture a simulation batch for state diagnostics.")
   }
@@ -505,7 +598,7 @@ ndm_test_capture_initial_state_metrics <- function(details, seed = 1L) {
     seed_matrix <- runtime_env$ndm_runtime_data_to_device(seed_matrix)
   }
 
-  pred <- runtime_env$GetPred_train_jit(
+  runtime_env$GetPred_train_jit(
     runtime_env$ModelList,
     runtime_env$batch2package(details$batch),
     runtime_env$state,
@@ -514,6 +607,160 @@ ndm_test_capture_initial_state_metrics <- function(details, seed = 1L) {
     getpred_saveat_info,
     seed_matrix
   )[[1L]]
+}
+
+ndm_test_collect_tb_time_varying_trajectories <- function(pred, spec) {
+  if (length(spec$time_varying_terms) == 0L) {
+    return(list())
+  }
+
+  times <- ndm_test_as_numeric_matrix(
+    pred$ODEParamsSampList[["diff_eq_sol_ts"]],
+    label = "diff_eq_sol_ts"
+  )
+  trajectories <- list()
+  keys <- names(pred$ODEParamsSampList)
+
+  for (term in spec$time_varying_terms) {
+    flat_key <- paste0("diff_eq_sol_ys.", term)
+    if (flat_key %in% keys) {
+      trajectories[[term]] <- ndm_test_as_numeric_matrix(
+        pred$ODEParamsSampList[[flat_key]],
+        label = flat_key
+      )
+      next
+    }
+
+    if (identical(term, "c_t") && identical(spec$preset, "tb_k")) {
+      x1 <- ndm_test_broadcast_like(pred$ODEParamsSampList[["x1_samp"]], times, label = "x1_samp")
+      x2 <- ndm_test_broadcast_like(pred$ODEParamsSampList[["x2_samp"]], times, label = "x2_samp")
+      trajectories[[term]] <- x1 * (pmax(1.0, times) ^ x2)
+      next
+    }
+
+    if (identical(term, "c_t") && identical(spec$preset, "tb_l")) {
+      x1 <- ndm_test_broadcast_like(pred$ODEParamsSampList[["x1_samp"]], times, label = "x1_samp")
+      x2 <- ndm_test_broadcast_like(pred$ODEParamsSampList[["x2_samp"]], times, label = "x2_samp")
+      x3 <- ndm_test_broadcast_like(pred$ODEParamsSampList[["x3_samp"]], times, label = "x3_samp")
+      trajectories[[term]] <- x1 * (x2 + exp((-1 * x3) * times))
+      next
+    }
+
+    stop(
+      "Missing trajectory data for time-varying term `",
+      term,
+      "` in preset `",
+      spec$preset,
+      "`.",
+      call. = FALSE
+    )
+  }
+
+  trajectories
+}
+
+ndm_test_capture_tb_structure_diagnostics <- function(details,
+                                                      spec,
+                                                      label,
+                                                      seed = 123L) {
+  runtime_env <- details$trained$env
+  public_pred <- details$smoke_pred
+  if (is.null(public_pred)) {
+    public_pred <- ndm_predict(
+      details$trained,
+      batch = details$batch,
+      seed = seed,
+      update_state = FALSE
+    )
+  }
+  raw_pred <- ndm_test_capture_train_prediction(details, seed = seed)
+
+  keys <- names(raw_pred$ODEParamsSampList)
+  state_keys <- paste0("diff_eq_sol_ys.", spec$state_terms)
+  missing_state_keys <- state_keys[!state_keys %in% keys]
+  if (length(missing_state_keys) > 0L) {
+    stop(
+      "Missing solved-state keys for `",
+      label,
+      "`: ",
+      paste(missing_state_keys, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  state_mats <- lapply(
+    setNames(state_keys, spec$state_terms),
+    function(key) {
+      ndm_test_as_numeric_matrix(raw_pred$ODEParamsSampList[[key]], label = key)
+    }
+  )
+  state_dim <- dim(state_mats[[1L]])
+  bad_dims <- names(state_mats)[!vapply(state_mats, function(mat) identical(dim(mat), state_dim), logical(1))]
+  if (length(bad_dims) > 0L) {
+    stop(
+      "State trajectory dims differ for `",
+      label,
+      "`: ",
+      paste(bad_dims, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  state_cube <- array(
+    NA_real_,
+    dim = c(state_dim[[1L]], state_dim[[2L]], length(state_mats)),
+    dimnames = list(NULL, NULL, spec$state_terms)
+  )
+  for (i in seq_along(state_mats)) {
+    state_cube[, , i] <- state_mats[[i]]
+  }
+
+  state_totals <- apply(state_cube, c(1L, 2L), sum)
+  initial_totals <- matrix(
+    state_totals[1L, ],
+    nrow = nrow(state_totals),
+    ncol = ncol(state_totals),
+    byrow = TRUE
+  )
+  state_scale <- suppressWarnings(max(abs(initial_totals), na.rm = TRUE))
+  if (!is.finite(state_scale) || state_scale <= 0) {
+    state_scale <- 1.0
+  }
+  state_epsilon <- 1e-6 * max(1.0, state_scale)
+  time_varying <- ndm_test_collect_tb_time_varying_trajectories(raw_pred, spec)
+  time_varying_all_finite <- if (length(time_varying) == 0L) {
+    TRUE
+  } else {
+    all(vapply(time_varying, function(mat) all(is.finite(mat)), logical(1)))
+  }
+  time_varying_min <- if (length(time_varying) == 0L) {
+    NA_real_
+  } else {
+    min(unlist(time_varying, use.names = FALSE), na.rm = TRUE)
+  }
+
+  list(
+    label = label,
+    public_pred = public_pred,
+    raw_pred = raw_pred,
+    pred_mu = runtime_env$np$asanyarray(public_pred$y_mu),
+    pred_sigma = runtime_env$np$asanyarray(public_pred$y_sigma),
+    state_cube = state_cube,
+    state_totals = state_totals,
+    state_epsilon = state_epsilon,
+    min_state = min(state_cube, na.rm = TRUE),
+    max_rel_mass_drift = max(abs(state_totals - initial_totals) / pmax(abs(initial_totals), 1e-12), na.rm = TRUE),
+    time_varying = time_varying,
+    time_varying_all_finite = time_varying_all_finite,
+    time_varying_min = time_varying_min
+  )
+}
+
+ndm_test_capture_initial_state_metrics <- function(details, seed = 1L) {
+  pred <- ndm_test_capture_train_prediction(details, seed = seed)
+  runtime_env <- details$trained$env
 
   state_components <- cbind(
     s = as.numeric(reticulate::py_to_r(runtime_env$np$asanyarray(pred$ODEParamsSampList$s_l_samp))),
