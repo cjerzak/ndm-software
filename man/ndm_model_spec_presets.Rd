@@ -92,16 +92,36 @@ specifications and also supports importing custom `.tex` model definitions
 from disk. The structured `ndm_model_spec` object is the canonical
 representation used by the runtime wrappers.
 }
+\details{
+For a maintainer-oriented walkthrough of preset selection, structured
+families, TeX round-tripping, and safe modification workflows, see
+\code{vignette("ode-structures", package = "ndm")}.
+}
 \examples{
 ndm_model_spec_presets()
 
 spec <- ndm_model_spec()
 print(spec)
 
+tb_spec <- ndm_model_spec(
+  preset = "tb_b",
+  model_type = "NeuralODE",
+  family_args = list(n = 4L)
+)
+tb_spec$family_args
+
 spec <- ndm_model_spec()
 tex_path <- tempfile(fileext = ".tex")
 ndm_model_spec_to_tex(spec, tex_path)
 ndm_model_spec_from_tex(tex_path)
+
+tb_spec <- ndm_model_spec(
+  preset = "tb_k",
+  model_type = "NeuralODE"
+)
+tb_tex_path <- tempfile(fileext = ".tex")
+ndm_model_spec_to_tex(tb_spec, tb_tex_path)
+ndm_model_spec_from_tex(tb_tex_path, model_type = "NeuralODE")
 
 spec <- ndm_model_spec()
 tex <- ndm_model_spec_to_tex(spec)

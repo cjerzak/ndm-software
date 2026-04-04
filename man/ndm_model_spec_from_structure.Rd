@@ -28,3 +28,53 @@ structured declaration. The declaration may either describe the full model
 directly or identify a supported built-in family plus optional `family_args`
 that expand parameterized structures into explicit executable equations.
 }
+\details{
+For a maintainer-oriented guide to the required fields, parameter-spec shape,
+TeX contract, and extension workflow, see
+\code{vignette("ode-structures", package = "ndm")}.
+}
+\examples{
+family_spec <- ndm_model_spec_from_structure(
+  list(
+    family = "tb_b",
+    family_args = list(n = 4L)
+  ),
+  model_type = "NeuralODE"
+)
+family_spec$state_terms
+
+toy_spec <- ndm_model_spec_from_structure(
+  list(
+    preset = "toy_slqi",
+    description = "Toy four-state latent structure with a holding compartment.",
+    states = c("s_l", "l_l", "q_l", "i_l"),
+    parameters = list(
+      lambda = list(
+        transformation = "InvSoftPlus",
+        prior_mean = 0.08,
+        prior_sd = 0.25
+      ),
+      c = list(
+        transformation = "InvSoftPlus",
+        prior_mean = 0.05,
+        prior_sd = 0.25
+      ),
+      h = list(
+        transformation = "InvSoftPlus",
+        prior_mean = 0.03,
+        prior_sd = 0.25
+      )
+    ),
+    equations = c(
+      s_l = "- lambda * s_l",
+      l_l = "lambda * s_l - (c + h) * l_l",
+      q_l = "h * l_l",
+      i_l = "c * l_l"
+    ),
+    observations = "i_l"
+  ),
+  model_type = "NeuralODE"
+)
+toy_spec$parameter_terms
+
+}

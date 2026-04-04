@@ -22,12 +22,15 @@ Imports:
     utils
 Suggests:
     fastmatch,
+    knitr,
     progress,
+    rmarkdown,
     rrapply,
     testthat (>= 3.0.0),
     yaml,
     zip,
     zoo
+VignetteBuilder: knitr
 License: AGPL-3
 Encoding: UTF-8
 Config/testthat/edition: 3

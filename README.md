@@ -83,6 +83,11 @@ stopifnot(
 )
 ```
 
+For a maintainer-oriented guide to the ODE structure system, including the
+built-in preset taxonomy, structured TB families, custom structured
+declarations, and TeX round-tripping, see
+`vignette("ode-structures", package = "ndm")`.
+
 The maintained orchestration surface is package-native. You can preview real,
 simulation, and multidisease runs with an in-memory grid and `dry_run = TRUE`.
 This minimal grid is for preview-only and is intentionally lighter than the

@@ -1,0 +1,248 @@
+---
+title: "Understanding and Modifying ODE Structures"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Understanding and Modifying ODE Structures}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+library(ndm)
+```
+
+This vignette is maintainer-facing. It explains how ODE structures are
+represented in `ndm`, how the package distinguishes built-in versus structured
+families, what the TeX parser expects, and how to modify or extend structures
+without changing the runtime contract by accident.
+
+## Mental model
+
+`ndm_model_spec` is the canonical package-side representation of an ODE
+structure. You can obtain one in three ways:
+
+1. Select a built-in preset with `ndm_model_spec()`.
+2. Build a structured declaration with `ndm_model_spec_from_structure()`.
+3. Import a custom TeX file with `ndm_model_spec_from_tex()`.
+
+All three routes eventually produce the same kind of object. The legacy runtime
+builder still consumes TeX, so structured declarations are converted to TeX
+before the NeuralODE parser sees them.
+
+```{r}
+spec <- ndm_model_spec(preset = "seirs_dynamic_beta", model_type = "NeuralODE")
+class(spec)
+print(spec)
+```
+
+## Built-in taxonomy
+
+Use `ndm_model_spec_presets()` to inspect the packaged presets and their high
+level metadata.
+
+```{r}
+presets <- ndm_model_spec_presets()
+presets[, c("preset", "compartments", "dynamic_beta", "dynamic_global", "multi_outcome")]
+```
+
+There are two broad families:
+
+- Built-in SEIR/SEIRS presets are registered in `R/specs.R` and point at TeX
+  source files under `tools/runtime_source/ndm_runtime/ModelStructureTex`.
+- Structured TB families are registered in `R/specs_structured.R` and expand
+  parameterized families into explicit equations before they are serialized to
+  TeX.
+
+The metadata columns are meant as quick selectors rather than a full semantic
+description:
+
+- `dynamic_beta`: local transmission terms like `beta_l` or related latent
+  local dynamics are time-varying.
+- `dynamic_global`: global rates such as `sigma`, `gamma`, `xi`, or `delta`
+  evolve through a global neural block.
+- `multi_outcome`: more than one `\\Observe` expression is emitted.
+- `family_args`: extra arguments for structured families such as chain length
+  in `tb_b` or `tb_j`.
+- `time_varying_terms` and `endogenous_terms`: metadata used to describe the
+  dynamic terms on the spec object; inspect them directly on the returned spec.
+
+```{r}
+tb_spec <- ndm_model_spec(
+  preset = "tb_b",
+  model_type = "NeuralODE",
+  family_args = list(n = 4L)
+)
+
+tb_spec$family
+tb_spec$family_args
+tb_spec$state_terms
+```
+
+## Structured declarations
+
+`ndm_model_spec_from_structure()` accepts either:
+
+- a short declaration with `family = "tb_*"` plus optional `family_args`, or
+- a fully explicit declaration containing `states`, `parameters`, `equations`,
+  and `observations`.
+
+The explicit form is useful when you want a new structure without editing the
+package registries first.
+
+```{r}
+toy_structure <- list(
+  preset = "toy_slqi",
+  description = "Toy four-state latent structure with a holding compartment.",
+  states = c("s_l", "l_l", "q_l", "i_l"),
+  parameters = list(
+    lambda = list(
+      transformation = "InvSoftPlus",
+      prior_mean = 0.08,
+      prior_sd = 0.25
+    ),
+    c = list(
+      transformation = "InvSoftPlus",
+      prior_mean = 0.05,
+      prior_sd = 0.25
+    ),
+    h = list(
+      transformation = "InvSoftPlus",
+      prior_mean = 0.03,
+      prior_sd = 0.25
+    )
+  ),
+  equations = c(
+    s_l = "- lambda * s_l",
+    l_l = "lambda * s_l - (c + h) * l_l",
+    q_l = "h * l_l",
+    i_l = "c * l_l"
+  ),
+  observations = "i_l",
+  init_state_terms = c("s_l", "l_l", "q_l", "i_l"),
+  neural = list(local_inputs = c("s_l", "l_l", "q_l", "i_l"))
+)
+
+toy_spec <- ndm_model_spec_from_structure(
+  toy_structure,
+  model_type = "NeuralODE"
+)
+
+toy_spec$state_terms
+toy_spec$parameter_terms
+```
+
+For direct structured declarations, each parameter is currently represented as
+a named list with these fields:
+
+- `transformation`: one of `Identity`, `InvSoftPlus`, or `InvSigmoid`
+- `prior_mean`
+- `prior_sd`
+
+That is the current contract consumed by the TeX serializer. It is not wrapped
+in a public helper yet, so maintainers should document any future changes to
+that shape if the API is formalized later.
+
+## TeX contract
+
+The runtime parser still works from TeX snippets bounded by explicit markers:
+
+```{r}
+tex_lines <- strsplit(ndm_model_spec_to_tex(spec), "\n", fixed = TRUE)[[1L]]
+tex_lines[grep(
+  "%%%START BAYES ODE%%%|%%%END BAYES ODE%%%|Evolve|Observe|sim|leftarrow",
+  tex_lines
+)]
+```
+
+The important conventions are:
+
+- `%%%START BAYES ODE%%%` and `%%%END BAYES ODE%%%` mark the parseable block.
+- `\\item $x \\leftarrow ...$` defines constants.
+- `\\item $... \\sim \\Dist{Normal}(... )$` defines priors.
+- Init-state priors are distinguished by names like `s_{l0}` and are mapped
+  back to `s_l`, `e_l`, and so on.
+- `\\Evolve{state}` defines one ODE equation per evolved term.
+- `\\Observe = ...` defines one or more observation expressions.
+- `\\Neural1{...}` denotes local dynamics.
+- `\\Neural2{...}` denotes global dynamics.
+
+In the current runtime code, these conventions are parsed mostly through string
+processing. When you change naming or formatting, assume the parser is strict
+unless tests prove otherwise.
+
+## Safe modification workflow
+
+When you want to modify an existing structure without creating a new package
+family, start from a packaged spec, round-trip it through TeX, and inspect the
+resulting metadata before using it in training code.
+
+```{r}
+base_spec <- ndm_model_spec(
+  preset = "seirs_dynamic_beta_dynamic_global",
+  model_type = "NeuralODE"
+)
+
+tmp <- tempfile(fileext = ".tex")
+ndm_model_spec_to_tex(base_spec, tmp)
+roundtrip <- ndm_model_spec_from_tex(tmp, model_type = "NeuralODE")
+
+identical(base_spec$state_terms, roundtrip$state_terms)
+identical(base_spec$init_state_terms, roundtrip$init_state_terms)
+identical(base_spec$parameter_terms, roundtrip$parameter_terms)
+```
+
+Use this route when you are experimenting with:
+
+- reordered `\\Evolve{}` blocks
+- alternative `\\Observe` expressions
+- new dynamic terms in an otherwise existing model
+
+If you are only varying arguments of an existing structured family, prefer
+`family_args` rather than editing TeX directly.
+
+## Extending the package
+
+Choose the extension route that matches the change:
+
+### Add a built-in TeX preset
+
+Do this when the structure is best expressed as a maintained named preset.
+
+- Add or update the TeX source under
+  `tools/runtime_source/ndm_runtime/ModelStructureTex`.
+- Register the preset in `.ndm_builtin_spec_registry()` in `R/specs.R`.
+- Update any default `time_varying_terms` or `endogenous_terms` mappings in
+  `ndm_model_spec()`.
+- Refresh generated runtime artifacts before documenting or building the
+  package. `documentPackage.R` already runs the generation helpers; if working
+  manually, run `tools/generate_runtime_registry.R` and
+  `tools/generate_runtime_sources.R`.
+
+### Add a structured family
+
+Do this when the family is parameterized or easier to maintain as equations in
+R than as hand-written TeX.
+
+- Add the family builder logic in `.ndm_tb_structure_spec()` or the equivalent
+  structured-family constructor.
+- Register the family in `.ndm_structured_spec_registry()`.
+- Confirm the resulting spec emits the right TeX metadata and round-trips back
+  through `ndm_model_spec_from_tex()`.
+
+## Validation checklist
+
+Before trusting a modified or new structure:
+
+1. Create the spec and print it to confirm `preset`, `family`, and
+   `source_format`.
+2. Check `state_terms`, `init_state_terms`, and `parameter_terms`.
+3. Round-trip through TeX with `ndm_model_spec_to_tex()` and
+   `ndm_model_spec_from_tex()`.
+4. Run the spec-focused tests in `tests/testthat/test-specs.R`.
+5. If the structure is meant to execute end to end, run the relevant
+   NeuralODE smoke coverage in `tests/testthat/test-sim-fit.R`.
+
+Those tests currently provide the most concrete examples of supported
+modification patterns, especially for custom init-state layouts and the TB
+family coverage.
