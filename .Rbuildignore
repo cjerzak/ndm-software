@@ -12,3 +12,5 @@
 ^\.{2}Rcheck$
 ^[^/]+\.Rcheck$
 ^ndm_.*\.tar\.gz$
+^doc$
+^Meta$
