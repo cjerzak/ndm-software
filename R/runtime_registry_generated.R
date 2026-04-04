@@ -3234,10 +3234,10 @@
                           d_a, name_zap, d_a)))
                       }
                     }
-                    tmp <- eval(parse(text = paste("list(", paste(sapply(1:(nDepth_nODE + 
-                      1), function(d_r) sprintf("'nODE_wt_resid' = nODE_wt_resid,\n                                     'nODE_ln%s_scale' = nODE_ln%s_scale,\n                                     'nODE_wt%s' = nODE_wt%s,\n                                     'nODE_bias%s' = nODE_bias%s", 
-                      d_r, d_r, d_r, d_r, d_r, d_r, d_r, d_r)), 
-                      collapse = ","), ",'nODE_scale' = ModelList$ScaleList$nODE_scale, \n\n                                    # scaling output\n                                    'nODE_out_scale' = SoftPlus( ModelList$ScaleList$nODE_out_scale[[1]] ),", 
+                    tmp <- eval(parse(text = paste("list(", "'nODE_wt_resid' = nODE_wt_resid,", 
+                      paste(sapply(1:(nDepth_nODE + 1), function(d_r) sprintf("'nODE_ln%s_scale' = nODE_ln%s_scale,\n                                       'nODE_wt%s' = nODE_wt%s,\n                                       'nODE_bias%s' = nODE_bias%s", 
+                        d_r, d_r, d_r, d_r, d_r, d_r)), collapse = ","), 
+                      ",'nODE_scale' = ModelList$ScaleList$nODE_scale, \n\n                                    # scaling output\n                                    'nODE_out_scale' = SoftPlus( ModelList$ScaleList$nODE_out_scale[[1]] ),", 
                       sprintf("'%s_0' = jnp$take(%s_samp,jnp$array( (length(tmp_i)-LocalNeuralEmbedDim-length(uq_encneural_vec)):\n                                                                                      (length(tmp_i)-1L)  )))", 
                         name_zap, name_zap), collapse = "")))
                     eval(parse(text = sprintf("%s_samp <- tmp", 

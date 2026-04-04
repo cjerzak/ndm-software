@@ -766,11 +766,12 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                     }
                                   }
                                   tmp <- eval(parse(text =
-                                  paste("list(",paste(sapply(1:(nDepth_nODE+1),function(d_r) sprintf(
-                                    "'nODE_wt_resid' = nODE_wt_resid,
-                                     'nODE_ln%s_scale' = nODE_ln%s_scale,
-                                     'nODE_wt%s' = nODE_wt%s,
-                                     'nODE_bias%s' = nODE_bias%s", d_r, d_r, d_r, d_r, d_r, d_r, d_r, d_r)), collapse = ","),
+                                  paste("list(",
+                                    "'nODE_wt_resid' = nODE_wt_resid,",
+                                    paste(sapply(1:(nDepth_nODE+1),function(d_r) sprintf(
+                                      "'nODE_ln%s_scale' = nODE_ln%s_scale,
+                                       'nODE_wt%s' = nODE_wt%s,
+                                       'nODE_bias%s' = nODE_bias%s", d_r, d_r, d_r, d_r, d_r, d_r)), collapse = ","),
 
                                     # wt norm scaling
                                     # NOTE: nODE SCALE DEPRECIATED
