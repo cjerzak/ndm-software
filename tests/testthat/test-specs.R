@@ -40,6 +40,45 @@ test_that("built-in specs can be imported and exported", {
   expect_equal(roundtrip$tex_text, spec$tex_text)
 })
 
+test_that("built-in TeX specs keep init-state priors separate from dynamic priors", {
+  spec <- ndm_model_spec(
+    preset = "seirs_dynamic_beta",
+    model_type = "NeuralODE"
+  )
+  roundtrip <- ndm_model_spec_from_tex(spec$source_path, model_type = "NeuralODE")
+
+  expect_identical(spec$init_state_terms, c("s_l", "e_l", "i_l", "r_l"))
+  expect_null(names(spec$init_state_terms))
+  expect_false("beta_l" %in% spec$init_state_terms)
+  expect_true(all(c("beta_l", "sigma", "gamma", "xi", "delta") %in% spec$parameter_terms))
+  expect_identical(roundtrip$init_state_terms, spec$init_state_terms)
+  expect_null(names(roundtrip$init_state_terms))
+})
+
+test_that("fallback TeX parsing distinguishes init priors from dynamic state priors", {
+  tex_path <- tempfile(fileext = ".tex")
+  on.exit(unlink(tex_path), add = TRUE)
+  writeLines(
+    c(
+      "%%%START BAYES ODE%%%",
+      "\\item $s_{l0} \\sim \\Dist{Normal}(0, 0.1)$",
+      "\\item $\\InvSoftPlus(\\beta_{l}) \\sim \\Dist{Normal}(0, 0.1)$",
+      "\\item $\\Evolve{s_l} = - \\beta_l \\cdot s_l$",
+      "\\item $\\Evolve{\\beta_l} = \\Neural1{ \\beta_l , s_l }$",
+      "\\item $\\Observe = s_l$",
+      "%%%END BAYES ODE%%%"
+    ),
+    tex_path,
+    useBytes = TRUE
+  )
+
+  spec <- ndm_model_spec_from_tex(tex_path, model_type = "NeuralODE")
+
+  expect_identical(spec$init_state_terms, "s_l")
+  expect_null(names(spec$init_state_terms))
+  expect_identical(spec$parameter_terms, "beta_l")
+})
+
 test_that("structured TB presets expose execution metadata and family arguments", {
   spec <- ndm_model_spec(
     preset = "tb_b",

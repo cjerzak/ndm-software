@@ -218,6 +218,27 @@
   expr
 }
 
+.ndm_normalize_prior_lhs <- function(lhs, init_state = FALSE) {
+  lhs <- trimws(lhs)
+  lhs <- sub("^\\\\[A-Za-z0-9]+\\(", "", lhs)
+  lhs <- sub("\\)$", "", lhs)
+  lhs <- gsub("\\s+", "", lhs)
+  lhs <- gsub("[{}\\\\]", "", lhs)
+  if (isTRUE(init_state)) {
+    lhs <- sub("0$", "", lhs)
+    lhs <- sub("_$", "", lhs)
+  }
+  lhs
+}
+
+.ndm_prior_lhs_is_init_state <- function(lhs) {
+  lhs <- trimws(lhs)
+  lhs <- sub("^\\\\[A-Za-z0-9]+\\(", "", lhs)
+  lhs <- sub("\\)$", "", lhs)
+  lhs <- gsub("\\s+", "", lhs)
+  grepl("(_\\{[^{}]*0\\}|_0)$", lhs, perl = TRUE)
+}
+
 .ndm_parse_bayes_ode_text <- function(tex_text) {
   lines <- strsplit(tex_text, "\n", fixed = TRUE)[[1L]]
   start_idx <- grep("^%%%START BAYES ODE%%%\\s*$", lines)
@@ -227,6 +248,8 @@
       constants = numeric(),
       equations = character(),
       observations = character(),
+      init_state_terms = character(),
+      parameter_terms = character(),
       prior_terms = character()
     ))
   }
@@ -288,23 +311,38 @@
     character(1L)
   )
 
-  prior_terms <- vapply(
-    lines[grepl("\\\\sim", lines)],
-    function(line) {
-      lhs <- trimws(strsplit(line, "\\\\sim")[[1L]][[1L]])
-      lhs <- sub("^\\\\[A-Za-z0-9]+\\(", "", lhs)
-      lhs <- sub("\\)$", "", lhs)
-      lhs <- gsub("_\\{l0\\}", "_l", lhs)
-      lhs <- gsub("[{}\\\\ ]", "", lhs)
-      lhs
-    },
-    character(1L)
-  )
+  prior_lines <- lines[grepl("\\\\sim", lines)]
+  if (length(prior_lines) == 0L) {
+    init_state_terms <- character()
+    parameter_terms <- character()
+  } else {
+    prior_lhs <- vapply(
+      prior_lines,
+      function(line) trimws(strsplit(line, "\\\\sim")[[1L]][[1L]]),
+      character(1L)
+    )
+    init_flags <- vapply(prior_lhs, .ndm_prior_lhs_is_init_state, logical(1L))
+    init_state_terms <- unname(vapply(
+      prior_lhs[init_flags],
+      .ndm_normalize_prior_lhs,
+      character(1L),
+      init_state = TRUE
+    ))
+    parameter_terms <- unname(vapply(
+      prior_lhs[!init_flags],
+      .ndm_normalize_prior_lhs,
+      character(1L),
+      init_state = FALSE
+    ))
+  }
+  prior_terms <- c(init_state_terms, parameter_terms)
 
   list(
     constants = constants,
     equations = equations,
     observations = observations,
+    init_state_terms = init_state_terms,
+    parameter_terms = parameter_terms,
     prior_terms = prior_terms
   )
 }
@@ -874,16 +912,14 @@
   bayes <- .ndm_parse_bayes_ode_text(tex_text)
   if (is.null(metadata)) {
     state_terms <- names(bayes$equations)
-    init_state_terms <- bayes$prior_terms[bayes$prior_terms %in% state_terms]
-    parameter_terms <- setdiff(bayes$prior_terms, init_state_terms)
     return(list(
       source_format = "tex",
       preset = "custom",
       family = NULL,
       family_args = list(),
       state_terms = state_terms,
-      init_state_terms = init_state_terms,
-      parameter_terms = parameter_terms,
+      init_state_terms = bayes$init_state_terms,
+      parameter_terms = bayes$parameter_terms,
       auxiliary_terms = character(0),
       local_dynamic_terms = character(0),
       global_dynamic_terms = character(0),
