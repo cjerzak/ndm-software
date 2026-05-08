@@ -15,8 +15,56 @@ It provides:
 
 ## Installation
 
-`ndm` imports `ndmdatasets`, so install that package before installing
-`ndm`:
+Install from GitHub with `remotes::install_github()`. `ndm` imports
+`ndmdatasets`, so install that package before installing `ndm`. The helper
+below uses `GITHUB_PAT` when it is already set; otherwise, if the terminal has
+been authenticated with `gh auth login`, it asks the GitHub CLI for the active
+token. Public repositories can install without a token, while private
+repositories require the token/account to have access to both repositories.
+
+```r
+install.packages(c("remotes", "reticulate"))
+
+github_token <- function() {
+  token <- Sys.getenv("GITHUB_PAT")
+  if (nzchar(token)) {
+    return(token)
+  }
+
+  if (!nzchar(Sys.which("gh"))) {
+    return(NULL)
+  }
+
+  token <- tryCatch(
+    system2("gh", c("auth", "token"), stdout = TRUE, stderr = FALSE),
+    warning = function(w) character(),
+    error = function(e) character()
+  )
+
+  if (!length(token) || !nzchar(token[[1L]])) {
+    return(NULL)
+  }
+
+  token <- token[[1L]]
+  Sys.setenv(GITHUB_PAT = token)
+  token
+}
+
+token <- github_token()
+
+remotes::install_github(
+  "cjerzak/ndm-datasets",
+  auth_token = token,
+  upgrade = "never"
+)
+remotes::install_github(
+  "cjerzak/ndm-software",
+  auth_token = token,
+  upgrade = "never"
+)
+```
+
+If you are developing from local checkouts instead, use the local paths:
 
 ```r
 install.packages(c("remotes", "reticulate"))
