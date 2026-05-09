@@ -1532,9 +1532,26 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                      replace="ModelList_GlobalNeural")
         ODEParamsSampList_y0 <- c(ODEParamsSampList_y0, "Neural2_samp" =  dynamicglobal_x0_samp)
       }
-      neuralArgsText <- ifelse(encneuralType=="g",
-        yes = sprintf("list('Neural1' = %s, %s", coreNeuralText, globalNeuralArgsText),
-        no  = sprintf("list('Neural1' = ODEParamsSampList_args$Neural1_samp, %s ", globalNeuralArgsText ) )
+      neuralArgsEntries <- c(
+        if(encneuralType=="g"){
+          sprintf("'Neural1' = %s", coreNeuralText)
+        } else {
+          "'Neural1' = ODEParamsSampList_args$Neural1_samp"
+        },
+        if(length(uq_globalneural_vec) > 0L){
+          globalNeuralArgsText
+        } else {
+          character(0)
+        },
+        if(length(uq_args_vec) > 0L){
+          sapply(c(uq_args_vec),function(ze){
+            sprintf("'%s' = ODEParamsSampList_args$%s_samp",ze,ze)
+          })
+        } else {
+          character(0)
+        }
+      )
+      neuralArgsText <- sprintf("list(%s)", paste(neuralArgsEntries, collapse=","))
       y0_names <- c(uq_y_vec[!uq_y_vec %in% uq_globalneural_vec],
                     ifelse(length(uq_globalneural_vec)>0, no = list(NULL), yes = list("Neural2"))[[1]] )
       y0_names <- c(y0_names[!y0_names %in%  uq_encneural_vec], "Neural1")
@@ -1546,22 +1563,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                          args = 
                                           { 
                                           ndm_runtime_replicate_tree(
-                                         c(eval(parse(text = paste(
-                                           # dynamic params
-                                           neuralArgsText,
-  
-                                           # conditional comma
-                                           ifelse(length(uq_args_vec) > 0 & length(uq_globalneural_vec) > 0, yes = ",",no = ""),
-  
-                                           # non-dynamic params
-                                           ifelse(length(uq_args_vec) > 0,
-                                           yes = list(paste(sapply(c(uq_args_vec),function(ze){
-                                                sprintf("'%s' = ODEParamsSampList_args$%s_samp",ze,ze) }),
-                                                 collapse=",")),
-                                            no = list(""))[[1]],
-  
-                                           # close group
-                                            ")", collapse="")  )),
+                                         c(eval(parse(text = neuralArgsText)),
                                                 "policy_scenario_indicator" = PolicyList[[1]],
                                                 "policy_scenario" = PolicyList[[2]]))
                                         },

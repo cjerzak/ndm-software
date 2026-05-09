@@ -521,6 +521,51 @@ test_that("custom NeuralODE init-state layouts train in jax_cpu", {
   expect_true("q_l" %in% as.character(details$runtime_env$InitStateTerms))
 })
 
+test_that("NeuralODE local-only dynamic parameters do not emit empty args lists in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  base_spec <- ndm_model_spec_from_structure(
+    list(
+      preset = "custom_local_only_neural_args",
+      description = "Minimal two-state model with all structural parameters in Neural1.",
+      states = c("s_l", "i_l"),
+      parameters = list(
+        lambda_l = ndm:::.ndm_param_spec("InvSoftPlus", prior_mean = 0.08, prior_sd = 0.25)
+      ),
+      equations = c(
+        s_l = "- lambda_l * s_l",
+        i_l = "lambda_l * s_l"
+      ),
+      observations = "i_l"
+    ),
+    model_type = "NeuralODE"
+  )
+  lines <- strsplit(ndm_model_spec_to_tex(base_spec), "\n", fixed = TRUE)[[1L]]
+  lines <- sub("% local_dynamic_terms:.*", "% local_dynamic_terms: lambda_l", lines)
+  lines <- sub("% time_varying_terms:.*", "% time_varying_terms: lambda_l", lines)
+  lines <- sub("% endogenous_terms:.*", "% endogenous_terms: lambda_l", lines)
+  insert_after <- grep("Evolve{i_l}", lines, fixed = TRUE)[[1L]]
+  lines <- append(
+    lines,
+    "\\item $\\Evolve{lambda_l} = \\Neural1{ lambda_l , s_l , i_l }$",
+    after = insert_after
+  )
+
+  local_only_path <- tempfile(fileext = ".tex")
+  writeLines(lines, local_only_path, useBytes = TRUE)
+  local_only_spec <- ndm_model_spec_from_tex(local_only_path, model_type = "NeuralODE")
+
+  details <- ndm_test_expect_neuralode_smoke(
+    spec = local_only_spec,
+    label = "custom_local_only_neural_args",
+    model_dims = 16L
+  )
+
+  expect_identical(as.character(details$runtime_env$uq_args_vec), character(0))
+  expect_identical(as.character(details$runtime_env$uq_globalneural_vec), character(0))
+  expect_identical(as.character(details$runtime_env$uq_encneural_vec), "lambda_l")
+})
+
 test_that("NeuralODE generalized structures smoke-test across SEIRS and the 12 TB forms", {
   ndm_skip_if_no_sim_backend()
 

@@ -106,7 +106,7 @@
   }
 
   if (dir.exists(file.path(package_path, "vignettes"))) {
-    devtools::build_vignettes(package_path)
+    devtools::build_vignettes(package_path, install = FALSE)
   }
 
   refresh_runtime_artifacts()
@@ -134,4 +134,5 @@
 
   refresh_runtime_artifacts()
   install.packages(package_path, repos = NULL, type = "source", force = FALSE)
+  # install.packages("~/Documents/ndm-software", repos = NULL, type = "source", force = FALSE)
 }
