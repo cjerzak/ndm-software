@@ -5,6 +5,7 @@
 ^ndm\.pdf$
 ^tmp$
 ^SavedModels$
+^reports$
 ^tests/fixtures/analysis_runtime$
 ^tools/runtime_source$
 ^\.DS_Store$

@@ -78,7 +78,7 @@
     if (length(kv) != 2L || !nzchar(kv[[1L]])) {
       next
     }
-    value <- type.convert(kv[[2L]], as.is = TRUE)
+    value <- utils::type.convert(kv[[2L]], as.is = TRUE)
     out[[i]] <- value
     names(out)[[i]] <- kv[[1L]]
   }
@@ -464,7 +464,7 @@
                                      state_init_priors = NULL,
                                      neural = list(local_inputs = states)) {
   if (is.null(state_init_priors)) {
-    state_init_priors <- setNames(
+    state_init_priors <- stats::setNames(
       replicate(length(init_state_terms), .ndm_state_init_prior_spec(), simplify = FALSE),
       init_state_terms
     )

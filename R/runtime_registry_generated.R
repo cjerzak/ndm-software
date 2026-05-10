@@ -5470,6 +5470,8 @@
         observed_vec_final <- gsub(observed_vec_final, pattern = sprintf("\\$%s", 
             z_), replace = sprintf("\\$%s_samp", z_))
     }
+    observed_vec_final <- gsub(observed_vec_final, pattern = "(?<![[:alnum:]_])t(?![[:alnum:]_])",
+        replace = "diff_eq_sol$ts", perl = TRUE)
     observed_vec_final <- gsub(observed_vec_final, pattern = " ", 
         replace = "")
     observed_vec_final <- gsub(observed_vec_final, pattern = "(jnp\\$take\\(diff_eq_sol\\$ys\\$Neural1,)([^)]+)\\)", 

@@ -15,32 +15,69 @@ resolve_script_path <- function() {
   stop("Unable to resolve the path to tools/generate_runtime_sources.R.", call. = FALSE)
 }
 
+escape_r_codepoint <- function(codepoint) {
+  if (codepoint == 0x5CL) {
+    return("\\\\")
+  }
+  if (codepoint == 0x22L) {
+    return("\\\"")
+  }
+  if (codepoint == 0x0AL) {
+    return("\\n")
+  }
+  if (codepoint == 0x0DL) {
+    return("\\r")
+  }
+  if (codepoint == 0x09L) {
+    return("\\t")
+  }
+  if (codepoint > 0x7FL) {
+    if (codepoint <= 0xFFFFL) {
+      return(sprintf("\\u%04X", codepoint))
+    }
+    return(sprintf("\\U%08X", codepoint))
+  }
+  intToUtf8(codepoint)
+}
+
 escape_r_string <- function(x) {
-  codepoints <- utf8ToInt(enc2utf8(x))
   pieces <- vapply(
-    codepoints,
-    function(codepoint) {
-      if (codepoint == 0x5CL) {
-        return("\\\\")
-      }
-      if (codepoint == 0x22L) {
-        return("\\\"")
-      }
-      if (codepoint == 0x0AL) {
-        return("\\n")
-      }
-      if (codepoint == 0x0DL) {
-        return("\\r")
-      }
-      if (codepoint == 0x09L) {
-        return("\\t")
-      }
-      intToUtf8(codepoint)
-    },
+    utf8ToInt(enc2utf8(x)),
+    escape_r_codepoint,
     character(1L),
     USE.NAMES = FALSE
   )
   paste0(pieces, collapse = "")
+}
+
+escape_r_string_chunks <- function(x, max_chars = 6000L) {
+  pieces <- vapply(
+    utf8ToInt(enc2utf8(x)),
+    escape_r_codepoint,
+    character(1L),
+    USE.NAMES = FALSE
+  )
+  if (length(pieces) == 0L) {
+    return("")
+  }
+
+  chunks <- character()
+  current <- character()
+  current_chars <- 0L
+  for (piece in pieces) {
+    piece_chars <- nchar(piece, type = "chars", allowNA = FALSE, keepNA = FALSE)
+    if (current_chars > 0L && current_chars + piece_chars > max_chars) {
+      chunks <- c(chunks, paste0(current, collapse = ""))
+      current <- character()
+      current_chars <- 0L
+    }
+    current <- c(current, piece)
+    current_chars <- current_chars + piece_chars
+  }
+  if (length(current) > 0L) {
+    chunks <- c(chunks, paste0(current, collapse = ""))
+  }
+  chunks
 }
 
 repo_root <- normalizePath(file.path(dirname(resolve_script_path()), ".."), winslash = "/", mustWork = TRUE)
@@ -68,15 +105,26 @@ writeLines("list(", con = con)
 
 for (i in seq_along(runtime_files)) {
   comma <- if (i < length(runtime_files)) "," else ""
-  writeLines(
-    sprintf(
-      "  `%s` = \"%s\"%s",
-      runtime_files[[i]],
-      escape_r_string(runtime_text[[i]]),
-      comma
-    ),
-    con = con
-  )
+  chunks <- escape_r_string_chunks(runtime_text[[i]])
+  if (length(chunks) == 1L) {
+    writeLines(
+      sprintf(
+        "  `%s` = \"%s\"%s",
+        runtime_files[[i]],
+        chunks[[1L]],
+        comma
+      ),
+      con = con
+    )
+    next
+  }
+
+  writeLines(sprintf("  `%s` = paste0(", runtime_files[[i]]), con = con)
+  for (chunk_index in seq_along(chunks)) {
+    chunk_comma <- if (chunk_index < length(chunks)) "," else ""
+    writeLines(sprintf("    \"%s\"%s", chunks[[chunk_index]], chunk_comma), con = con)
+  }
+  writeLines(sprintf("  )%s", comma), con = con)
 }
 
 writeLines(")", con = con)
@@ -84,3 +132,8 @@ close(con)
 
 # Fail at generation time if the serialized UTF-8 payload is not valid R code.
 invisible(parse(file = output_path))
+
+generated_bytes <- readBin(output_path, what = "raw", n = file.info(output_path)$size)
+if (any(as.integer(generated_bytes) > 0x7F)) {
+  stop("Generated runtime source file must contain only ASCII bytes.", call. = FALSE)
+}
