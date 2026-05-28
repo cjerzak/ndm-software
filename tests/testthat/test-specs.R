@@ -100,22 +100,30 @@ test_that("structured TB presets expose execution metadata and family arguments"
   expect_true(all(sprintf("d%s", 1:5) %in% spec$parameter_terms))
 })
 
-test_that("structured TB presets observe active-TB incidence by default", {
+test_that("structured TB presets use balanced incidence by default", {
   tb_presets <- sprintf("tb_%s", letters[1:12])
 
   for (preset in tb_presets) {
     family_args <- if (preset %in% c("tb_b", "tb_j")) list(n = 4L) else NULL
+    legacy_args <- utils::modifyList(if (is.null(family_args)) list() else family_args, list(dynamics_variant = "progression"))
+    legacy_spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = legacy_args
+    )
     spec <- ndm_model_spec(
       preset = preset,
       model_type = "NeuralODE",
       family_args = family_args
     )
 
+    expect_true(all(c("mu", "gamma_i") %in% spec$parameter_terms), info = preset)
     expect_equal(
       spec$execution_spec$observations,
-      unname(spec$execution_spec$equations[["i_l"]]),
+      unname(legacy_spec$execution_spec$equations[["i_l"]]),
       info = preset
     )
+    expect_false(identical(spec$execution_spec$observations, unname(spec$execution_spec$equations[["i_l"]])), info = preset)
     expect_false(identical(spec$execution_spec$observations, "i_l"), info = preset)
   }
 
@@ -138,9 +146,9 @@ test_that("structured TB presets support cumulative observation override", {
 
   for (preset in tb_presets) {
     family_args <- if (preset %in% c("tb_b", "tb_j")) {
-      list(n = 4L, observation_target = "cumulative")
+      list(n = 4L, dynamics_variant = "progression", observation_target = "cumulative")
     } else {
-      list(observation_target = "cumulative")
+      list(dynamics_variant = "progression", observation_target = "cumulative")
     }
     spec <- ndm_model_spec(
       preset = preset,
@@ -160,6 +168,158 @@ test_that("structured TB presets support cumulative observation override", {
     ),
     "observation_target"
   )
+})
+
+tb_family_args <- function(preset, ...) {
+  args <- list(...)
+  if (preset %in% c("tb_b", "tb_j")) {
+    args <- utils::modifyList(list(n = 4L), args)
+  }
+  args
+}
+
+tb_has_token <- function(text, token) {
+  any(grepl(sprintf("(?<![[:alnum:]_])%s(?![[:alnum:]_])", token), text, perl = TRUE))
+}
+
+tb_eval_expression <- function(expr, env) {
+  eval(parse(text = expr), envir = env)
+}
+
+tb_numeric_equation_env <- function(spec) {
+  states <- spec$state_terms
+  state_values <- stats::setNames(rep(0.04, length(states)), states)
+  state_values[["s_l"]] <- 0.70
+  state_values[["i_l"]] <- 0.06
+
+  parameters <- spec$parameter_terms
+  parameter_values <- stats::setNames(rep(0.12, length(parameters)), parameters)
+  for (name in intersect(c("lambda", "c", "x1", "x2", "x3"), parameters)) {
+    parameter_values[[name]] <- switch(name, lambda = 0.08, c = 0.09, x1 = 0.05, x2 = 0.40, x3 = 0.30)
+  }
+  for (name in intersect(c("p", "a", "b"), parameters)) {
+    parameter_values[[name]] <- switch(name, p = 0.25, a = 0.30, b = 0.35)
+  }
+  if ("mu" %in% parameters) {
+    parameter_values[["mu"]] <- 0.03
+  }
+  if ("gamma_i" %in% parameters) {
+    parameter_values[["gamma_i"]] <- 0.80
+  }
+
+  env <- list2env(
+    as.list(c(state_values, parameter_values, spec$execution_spec$constants, t = 2.5)),
+    parent = baseenv()
+  )
+  for (name in names(spec$execution_spec$auxiliary)) {
+    assign(name, tb_eval_expression(spec$execution_spec$auxiliary[[name]], env), envir = env)
+  }
+  env
+}
+
+test_that("structured TB progression variant preserves legacy equations", {
+  tb_presets <- sprintf("tb_%s", letters[1:12])
+
+  for (preset in tb_presets) {
+    progression_spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset, dynamics_variant = "progression")
+    )
+
+    expect_equal(progression_spec$execution_spec$observations, unname(progression_spec$execution_spec$equations[["i_l"]]), info = preset)
+    expect_false(identical(progression_spec$execution_spec$observations, "i_l"), info = preset)
+    expect_false(any(c("mu", "gamma_i") %in% progression_spec$parameter_terms), info = preset)
+  }
+})
+
+test_that("structured TB balanced incidence variant observes original incidence flow", {
+  tb_presets <- sprintf("tb_%s", letters[1:12])
+
+  for (preset in tb_presets) {
+    legacy_spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset, dynamics_variant = "progression")
+    )
+    default_spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset)
+    )
+    balanced_spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset, dynamics_variant = "balanced_incidence")
+    )
+
+    expect_equal(default_spec$execution_spec$equations, balanced_spec$execution_spec$equations, info = preset)
+    expect_equal(default_spec$execution_spec$observations, balanced_spec$execution_spec$observations, info = preset)
+    expect_equal(balanced_spec$family_args$dynamics_variant, "balanced_incidence", info = preset)
+    expect_true(all(c("mu", "gamma_i") %in% balanced_spec$parameter_terms), info = preset)
+    expect_equal(balanced_spec$execution_spec$constants[["N"]], 1, info = preset)
+    expect_equal(
+      unname(balanced_spec$execution_spec$observations),
+      unname(legacy_spec$execution_spec$equations[["i_l"]]),
+      info = preset
+    )
+    expect_false(identical(
+      unname(balanced_spec$execution_spec$observations),
+      unname(balanced_spec$execution_spec$equations[["i_l"]])
+    ), info = preset)
+    expect_false(tb_has_token(balanced_spec$execution_spec$observations, "i_l"), info = preset)
+    expect_true(
+      grepl("- (gamma_i + mu) * i_l", balanced_spec$execution_spec$equations[["i_l"]], fixed = TRUE),
+      info = preset
+    )
+    expect_true(
+      grepl("mu * N + gamma_i * i_l", balanced_spec$execution_spec$equations[["s_l"]], fixed = TRUE),
+      info = preset
+    )
+    for (state in setdiff(balanced_spec$state_terms, c("s_l", "i_l"))) {
+      expect_true(
+        grepl(paste0("- mu * ", state), balanced_spec$execution_spec$equations[[state]], fixed = TRUE),
+        info = paste(preset, state)
+      )
+    }
+    expect_equal(
+      balanced_spec$execution_spec$state_init_priors[["i_l"]]$prior_mean,
+      0.08 / 1.02,
+      tolerance = 1e-12,
+      info = preset
+    )
+  }
+
+  expect_error(
+    ndm_model_spec(
+      preset = "tb_a",
+      model_type = "NeuralODE",
+      family_args = list(dynamics_variant = "balanced_incidence", observation_target = "cumulative")
+    ),
+    "Balanced TB specs require"
+  )
+})
+
+test_that("structured TB balanced incidence variant is population balanced", {
+  tb_presets <- sprintf("tb_%s", letters[1:12])
+
+  for (preset in tb_presets) {
+    spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset, dynamics_variant = "balanced_incidence")
+    )
+    env <- tb_numeric_equation_env(spec)
+    derivatives <- vapply(
+      spec$state_terms,
+      function(state) tb_eval_expression(spec$execution_spec$equations[[state]], env),
+      numeric(1L)
+    )
+    total_state <- sum(vapply(spec$state_terms, get, numeric(1L), envir = env))
+    expected <- get("mu", envir = env) * (get("N", envir = env) - total_state)
+
+    expect_equal(sum(derivatives), expected, tolerance = 1e-12, info = preset)
+  }
 })
 
 test_that("structured model specs roundtrip through TeX metadata", {
@@ -185,7 +345,7 @@ test_that("structured model specs roundtrip through TeX metadata", {
   cumulative_spec <- ndm_model_spec(
     preset = "tb_k",
     model_type = "NeuralODE",
-    family_args = list(observation_target = "cumulative")
+    family_args = list(dynamics_variant = "progression", observation_target = "cumulative")
   )
   cumulative_tex_path <- tempfile(fileext = ".tex")
   on.exit(unlink(cumulative_tex_path), add = TRUE)

@@ -188,6 +188,11 @@ ndm_model_spec_presets <- function() {
 #'   families such as chained latent-stage specifications. For structured TB
 #'   presets, `n` controls supported chain lengths and `observation_target`
 #'   chooses `"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).
+#'   TB presets use `dynamics_variant = "balanced_incidence"` by default to
+#'   keep the original progression topology while adding demographic renewal,
+#'   active-disease exit back to susceptibility, and incidence-flow
+#'   observations. Set `dynamics_variant = "progression"` for legacy one-way
+#'   depletion dynamics. Balanced TB specs require incidence observations.
 #'
 #' @returns `ndm_model_spec()` returns an object of class `ndm_model_spec`.
 #'   Built-in presets include metadata such as the packaged source path and the

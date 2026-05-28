@@ -18,7 +18,13 @@ specification. Either `"DecoderOnly"` or `"NeuralODE"`.}
 
 \item{family_args}{Optional named list used to expand parameterized family
 declarations. For structured TB families, `observation_target` chooses
-`"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).}
+`"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).
+TB families use `dynamics_variant = "balanced_incidence"` by default,
+preserving the original active-progression flow while adding normalized
+at-risk renewal (`N = 1`), active-disease exit back to susceptibility,
+latent mortality, and incidence-flow observations. Set
+`dynamics_variant = "progression"` for legacy one-way depletion dynamics.
+Balanced TB specs require incidence observations.}
 }
 \value{
 An object of class `ndm_model_spec`.

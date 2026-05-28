@@ -525,11 +525,108 @@
   target
 }
 
-.ndm_tb_observations_from_equations <- function(equations, observation_target) {
+.ndm_tb_dynamics_variant <- function(family_args) {
+  variant <- family_args$dynamics_variant %||% "balanced_incidence"
+  variant <- as.character(variant)
+  if (length(variant) != 1L || is.na(variant) || !variant %in% c("progression", "balanced_incidence")) {
+    stop(
+      "`family_args$dynamics_variant` must be either \"progression\" or \"balanced_incidence\".",
+      call. = FALSE
+    )
+  }
+  variant
+}
+
+.ndm_tb_family_numeric_arg <- function(family_args, name, default, positive = TRUE) {
+  value <- family_args[[name]] %||% default
+  value <- suppressWarnings(as.numeric(value))
+  if (length(value) != 1L || !is.finite(value) || (isTRUE(positive) && value <= 0)) {
+    stop("`family_args$", name, "` must be a finite", if (isTRUE(positive)) " positive" else "", " numeric scalar.", call. = FALSE)
+  }
+  value
+}
+
+.ndm_tb_balanced_parameters <- function(parameters, family_args) {
+  if (any(c("mu", "gamma_i") %in% names(parameters))) {
+    stop("Balanced TB specs reserve parameter names `mu` and `gamma_i`.", call. = FALSE)
+  }
+  c(
+    parameters,
+    list(
+      mu = .ndm_tb_positive_rate(
+        .ndm_tb_family_numeric_arg(family_args, "balanced_mu_mean", 0.02),
+        .ndm_tb_family_numeric_arg(family_args, "balanced_mu_sd", 0.05)
+      ),
+      gamma_i = .ndm_tb_positive_rate(
+        .ndm_tb_family_numeric_arg(family_args, "balanced_gamma_i_mean", 1.0),
+        .ndm_tb_family_numeric_arg(family_args, "balanced_gamma_i_sd", 0.35)
+      )
+    )
+  )
+}
+
+.ndm_tb_balanced_state_init_priors <- function(states, family_args) {
+  priors <- stats::setNames(
+    replicate(length(states), .ndm_state_init_prior_spec(), simplify = FALSE),
+    states
+  )
+  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "balanced_initial_incidence_mean", 0.08, positive = FALSE)
+  mu <- .ndm_tb_family_numeric_arg(family_args, "balanced_mu_mean", 0.02)
+  gamma_i <- .ndm_tb_family_numeric_arg(family_args, "balanced_gamma_i_mean", 1.0)
+  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "balanced_i0_prior_sd", 0.1)
+  if ("i_l" %in% names(priors)) {
+    priors[["i_l"]] <- .ndm_state_init_prior_spec(
+      prior_mean = initial_incidence / (gamma_i + mu),
+      prior_sd = i0_sd
+    )
+  }
+  priors
+}
+
+.ndm_tb_susceptible_infection_outflow <- function(equations) {
+  s_equation <- .ndm_compact_text(equations[["s_l"]] %||% "")
+  if (!nzchar(s_equation)) {
+    stop("TB structures must define an `s_l` susceptible equation.", call. = FALSE)
+  }
+  outflow <- sub("^-\\s*", "", s_equation)
+  if (identical(outflow, s_equation)) {
+    stop(
+      "Balanced TB specs require the original `s_l` equation to be a susceptible outflow.",
+      call. = FALSE
+    )
+  }
+  .ndm_compact_text(outflow)
+}
+
+.ndm_tb_balance_equations <- function(states, parameters, equations, family_args) {
+  incidence_expr <- .ndm_compact_text(equations[["i_l"]] %||% "")
+  if (!nzchar(incidence_expr)) {
+    stop("TB structures must define an `i_l` progression equation.", call. = FALSE)
+  }
+  susceptible_infection_outflow <- .ndm_tb_susceptible_infection_outflow(equations)
+  latent_states <- setdiff(states, c("s_l", "i_l"))
+  balanced_equations <- equations
+  balanced_equations[["s_l"]] <- sprintf(
+    "mu * N + gamma_i * i_l - (%s) - mu * s_l",
+    susceptible_infection_outflow
+  )
+  for (state in latent_states) {
+    balanced_equations[[state]] <- sprintf("(%s) - mu * %s", equations[[state]], state)
+  }
+  balanced_equations[["i_l"]] <- sprintf("(%s) - (gamma_i + mu) * i_l", incidence_expr)
+  list(
+    parameters = .ndm_tb_balanced_parameters(parameters, family_args),
+    equations = balanced_equations,
+    incidence_expr = incidence_expr,
+    state_init_priors = .ndm_tb_balanced_state_init_priors(states, family_args)
+  )
+}
+
+.ndm_tb_observations_from_equations <- function(equations, observation_target, incidence_expr = NULL) {
   if (identical(observation_target, "cumulative")) {
     return("i_l")
   }
-  i_l_equation <- equations[["i_l"]]
+  i_l_equation <- incidence_expr %||% equations[["i_l"]]
   if (is.null(i_l_equation) || !nzchar(i_l_equation)) {
     stop("TB structures must define an `i_l` progression equation.", call. = FALSE)
   }
@@ -538,9 +635,28 @@
 
 .ndm_make_tb_execution_spec <- function(observation_target, ...) {
   args <- list(...)
+  family_args <- args$family_args %||% list()
+  dynamics_variant <- .ndm_tb_dynamics_variant(family_args)
+  incidence_expr <- NULL
+  if (identical(dynamics_variant, "balanced_incidence")) {
+    if (identical(observation_target, "cumulative")) {
+      stop("Balanced TB specs require `observation_target = \"incidence\"`.", call. = FALSE)
+    }
+    balanced <- .ndm_tb_balance_equations(
+      states = args$states,
+      parameters = args$parameters,
+      equations = args$equations,
+      family_args = family_args
+    )
+    args$parameters <- balanced$parameters
+    args$equations <- balanced$equations
+    args$state_init_priors <- args$state_init_priors %||% balanced$state_init_priors
+    incidence_expr <- balanced$incidence_expr
+  }
   args$observations <- .ndm_tb_observations_from_equations(
     equations = args$equations,
-    observation_target = observation_target
+    observation_target = observation_target,
+    incidence_expr = incidence_expr
   )
   do.call(.ndm_make_execution_spec, args)
 }
@@ -986,6 +1102,12 @@
 #' @param family_args Optional named list used to expand parameterized family
 #'   declarations. For structured TB families, `observation_target` chooses
 #'   `"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).
+#'   TB families use `dynamics_variant = "balanced_incidence"` by default,
+#'   preserving the original active-progression flow while adding normalized
+#'   at-risk renewal (`N = 1`), active-disease exit back to susceptibility,
+#'   latent mortality, and incidence-flow observations. Set
+#'   `dynamics_variant = "progression"` for legacy one-way depletion dynamics.
+#'   Balanced TB specs require incidence observations.
 #'
 #' @returns An object of class `ndm_model_spec`.
 #'

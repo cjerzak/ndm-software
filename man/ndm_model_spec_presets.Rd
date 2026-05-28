@@ -59,7 +59,12 @@ endogenous term metadata stored on the returned spec.}
 \item{family_args}{Optional named list used to expand parameterized model
 families such as chained latent-stage specifications. For structured TB
 presets, `n` controls supported chain lengths and `observation_target`
-chooses `"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).}
+chooses `"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).
+TB presets use `dynamics_variant = "balanced_incidence"` by default to
+keep the original progression topology while adding demographic renewal,
+active-disease exit back to susceptibility, and incidence-flow
+observations. Set `dynamics_variant = "progression"` for legacy one-way
+depletion dynamics. Balanced TB specs require incidence observations.}
 
 \item{path}{Path to a `.tex` model specification file on disk.}
 
