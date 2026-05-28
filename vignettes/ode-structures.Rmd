@@ -63,7 +63,7 @@ description:
   evolve through a global neural block.
 - `multi_outcome`: more than one `\\Observe` expression is emitted.
 - `family_args`: extra arguments for structured families such as chain length
-  in `tb_b` or `tb_j`.
+  in `tb_b` or `tb_j`, and TB observation semantics.
 - `time_varying_terms` and `endogenous_terms`: metadata used to describe the
   dynamic terms on the spec object; inspect them directly on the returned spec.
 
@@ -78,6 +78,11 @@ tb_spec$family
 tb_spec$family_args
 tb_spec$state_terms
 ```
+
+Structured TB presets keep `i_l` as the cumulative endpoint for progression to
+active TB. Their default observation is the incidence flow into `i_l`; use
+`family_args = list(observation_target = "cumulative")` only when the data target
+is cumulative progression risk rather than incident active TB.
 
 ## Structured declarations
 

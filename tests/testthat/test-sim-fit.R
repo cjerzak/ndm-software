@@ -594,6 +594,11 @@ test_that("NeuralODE generalized structures smoke-test across SEIRS and the 12 T
         spec = case$spec,
         label = case$label
       )
+      if (identical(case$spec$compartments, "tb")) {
+        observed_expr <- as.character(details$runtime_env$observed_vec_final)
+        expect_equal(length(observed_expr), length(case$spec$execution_spec$observations), info = case$label)
+        expect_false(any(grepl("diff_eq_sol$ys$i_l", observed_expr, fixed = TRUE)), info = case$label)
+      }
       data.frame(
         label = case$label,
         preset = case$spec$preset,

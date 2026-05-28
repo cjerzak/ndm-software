@@ -5467,10 +5467,10 @@
     observed_vec_final <- gsub(observed_vec_final, pattern = "args\\$", 
         replace = "ODEParamsSampList_args\\$")
     for (z_ in unique(uq_args_vec)) {
-        observed_vec_final <- gsub(observed_vec_final, pattern = sprintf("\\$%s", 
-            z_), replace = sprintf("\\$%s_samp", z_))
+        observed_vec_final <- gsub(observed_vec_final, pattern = sprintf("\\$%s(?![[:alnum:]_])", 
+            z_), replace = sprintf("\\$%s_samp", z_), perl = TRUE)
     }
-    observed_vec_final <- gsub(observed_vec_final, pattern = "(?<![[:alnum:]_])t(?![[:alnum:]_])",
+    observed_vec_final <- gsub(observed_vec_final, pattern = "(?<![[:alnum:]_])t(?![[:alnum:]_])", 
         replace = "diff_eq_sol$ts", perl = TRUE)
     observed_vec_final <- gsub(observed_vec_final, pattern = " ", 
         replace = "")

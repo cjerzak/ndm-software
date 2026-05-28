@@ -185,7 +185,9 @@ ndm_model_spec_presets <- function() {
 #' @param tex_path Optional path to a custom `.tex` file. When supplied,
 #'   `ndm_model_spec()` delegates to `ndm_model_spec_from_tex()`.
 #' @param family_args Optional named list used to expand parameterized model
-#'   families such as chained latent-stage specifications.
+#'   families such as chained latent-stage specifications. For structured TB
+#'   presets, `n` controls supported chain lengths and `observation_target`
+#'   chooses `"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).
 #'
 #' @returns `ndm_model_spec()` returns an object of class `ndm_model_spec`.
 #'   Built-in presets include metadata such as the packaged source path and the

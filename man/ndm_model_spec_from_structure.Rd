@@ -17,7 +17,8 @@ ndm_model_spec_from_structure(
 specification. Either `"DecoderOnly"` or `"NeuralODE"`.}
 
 \item{family_args}{Optional named list used to expand parameterized family
-declarations.}
+declarations. For structured TB families, `observation_target` chooses
+`"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).}
 }
 \value{
 An object of class `ndm_model_spec`.

@@ -57,7 +57,9 @@ endogenous term metadata stored on the returned spec.}
 `ndm_model_spec()` delegates to `ndm_model_spec_from_tex()`.}
 
 \item{family_args}{Optional named list used to expand parameterized model
-families such as chained latent-stage specifications.}
+families such as chained latent-stage specifications. For structured TB
+presets, `n` controls supported chain lengths and `observation_target`
+chooses `"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).}
 
 \item{path}{Path to a `.tex` model specification file on disk.}
 

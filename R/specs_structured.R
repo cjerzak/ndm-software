@@ -513,16 +513,50 @@
   )
 }
 
+.ndm_tb_observation_target <- function(family_args) {
+  target <- family_args$observation_target %||% "incidence"
+  target <- as.character(target)
+  if (length(target) != 1L || is.na(target) || !target %in% c("incidence", "cumulative")) {
+    stop(
+      "`family_args$observation_target` must be either \"incidence\" or \"cumulative\".",
+      call. = FALSE
+    )
+  }
+  target
+}
+
+.ndm_tb_observations_from_equations <- function(equations, observation_target) {
+  if (identical(observation_target, "cumulative")) {
+    return("i_l")
+  }
+  i_l_equation <- equations[["i_l"]]
+  if (is.null(i_l_equation) || !nzchar(i_l_equation)) {
+    stop("TB structures must define an `i_l` progression equation.", call. = FALSE)
+  }
+  unname(i_l_equation)
+}
+
+.ndm_make_tb_execution_spec <- function(observation_target, ...) {
+  args <- list(...)
+  args$observations <- .ndm_tb_observations_from_equations(
+    equations = args$equations,
+    observation_target = observation_target
+  )
+  do.call(.ndm_make_execution_spec, args)
+}
+
 .ndm_tb_structure_spec <- function(family, family_args = list()) {
   family_args <- .ndm_coerce_family_args(family_args)
   n <- if (!is.null(family_args$n)) as.integer(family_args$n) else 3L
   if (!is.na(n) && n < 2L) {
     stop("TB chain-family specs require `family_args$n >= 2`.", call. = FALSE)
   }
+  observation_target <- .ndm_tb_observation_target(family_args)
 
   switch(
     family,
-    tb_a = .ndm_make_execution_spec(
+    tb_a = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_a",
       family = "tb_a",
       family_args = family_args,
@@ -536,8 +570,7 @@
         s_l = "- lambda * s_l",
         l_l = "lambda * s_l - c * l_l",
         i_l = "c * l_l"
-      ),
-      observations = "i_l"
+      )
     ),
     tb_b = {
       fast_states <- sprintf("lf%s_l", seq_len(n))
@@ -562,18 +595,19 @@
         "c * ls_l"
       )
       equations[["i_l"]] <- paste(infectious_terms, collapse = " + ")
-      .ndm_make_execution_spec(
+      .ndm_make_tb_execution_spec(
+        observation_target = observation_target,
         preset = "tb_b",
         family = "tb_b",
         family_args = utils::modifyList(list(n = n), family_args),
         description = "TB structure B: fast latent chain into slow latent and infectious.",
         states = states,
         parameters = parameters,
-        equations = equations,
-        observations = "i_l"
+        equations = equations
       )
     },
-    tb_c = .ndm_make_execution_spec(
+    tb_c = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_c",
       family = "tb_c",
       family_args = family_args,
@@ -590,10 +624,10 @@
         lf_l = "lambda * s_l - (d + e) * lf_l",
         ls_l = "e * lf_l - c * ls_l",
         i_l = "d * lf_l + c * ls_l"
-      ),
-      observations = "i_l"
+      )
     ),
-    tb_d = .ndm_make_execution_spec(
+    tb_d = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_d",
       family = "tb_d",
       family_args = family_args,
@@ -605,10 +639,10 @@
       equations = c(
         s_l = "- lambda * s_l",
         i_l = "lambda * s_l"
-      ),
-      observations = "i_l"
+      )
     ),
-    tb_e = .ndm_make_execution_spec(
+    tb_e = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_e",
       family = "tb_e",
       family_args = family_args,
@@ -623,10 +657,10 @@
         s_l = "- lambda * s_l",
         l_l = "lambda * (1 - a) * s_l - c * l_l",
         i_l = "lambda * a * s_l + c * l_l"
-      ),
-      observations = "i_l"
+      )
     ),
-    tb_f = .ndm_make_execution_spec(
+    tb_f = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_f",
       family = "tb_f",
       family_args = family_args,
@@ -643,10 +677,10 @@
         ls_l = "lambda * (1 - b) * s_l - c * ls_l",
         lf_l = "lambda * b * s_l - d * lf_l",
         i_l = "c * ls_l + d * lf_l"
-      ),
-      observations = "i_l"
+      )
     ),
-    tb_g = .ndm_make_execution_spec(
+    tb_g = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_g",
       family = "tb_g",
       family_args = family_args,
@@ -664,10 +698,10 @@
         lf_l = "lambda * (1 - a) * s_l - (d + e) * lf_l",
         ls_l = "e * lf_l - c * ls_l",
         i_l = "lambda * a * s_l + d * lf_l + c * ls_l"
-      ),
-      observations = "i_l"
+      )
     ),
-    tb_h = .ndm_make_execution_spec(
+    tb_h = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_h",
       family = "tb_h",
       family_args = family_args,
@@ -684,10 +718,10 @@
         ls_l = "lambda * (1 - b) * s_l - f * ls_l",
         lf_l = "lambda * b * s_l + f * ls_l - d * lf_l",
         i_l = "d * lf_l"
-      ),
-      observations = "i_l"
+      )
     ),
-    tb_i = .ndm_make_execution_spec(
+    tb_i = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_i",
       family = "tb_i",
       family_args = family_args,
@@ -704,8 +738,7 @@
         lf_l = "lambda * s_l + f * ls_l - (d + e) * lf_l",
         ls_l = "e * lf_l - f * ls_l",
         i_l = "d * lf_l"
-      ),
-      observations = "i_l"
+      )
     ),
     tb_j = {
       chain_states <- sprintf("l%s_l", seq_len(n))
@@ -725,18 +758,19 @@
       }
       equations[[chain_states[[n]]]] <- sprintf("f%s * %s - c * %s", n - 1L, chain_states[[n - 1L]], chain_states[[n]])
       equations[["i_l"]] <- sprintf("c * %s", chain_states[[n]])
-      .ndm_make_execution_spec(
+      .ndm_make_tb_execution_spec(
+        observation_target = observation_target,
         preset = "tb_j",
         family = "tb_j",
         family_args = utils::modifyList(list(n = n), family_args),
         description = "TB structure J: Erlang-style latent chain.",
         states = states,
         parameters = parameters,
-        equations = equations,
-        observations = "i_l"
+        equations = equations
       )
     },
-    tb_k = .ndm_make_execution_spec(
+    tb_k = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_k",
       family = "tb_k",
       family_args = family_args,
@@ -753,10 +787,10 @@
         l_l = "lambda * s_l - c_t * l_l",
         i_l = "c_t * l_l"
       ),
-      observations = "i_l",
       time_varying_terms = "c_t"
     ),
-    tb_l = .ndm_make_execution_spec(
+    tb_l = .ndm_make_tb_execution_spec(
+      observation_target = observation_target,
       preset = "tb_l",
       family = "tb_l",
       family_args = family_args,
@@ -774,7 +808,6 @@
         l_l = "lambda * s_l - c_t * l_l",
         i_l = "c_t * l_l"
       ),
-      observations = "i_l",
       time_varying_terms = "c_t"
     ),
     stop("Unknown structured model family `", family, "`.", call. = FALSE)
@@ -951,7 +984,8 @@
 #' @param model_type Model family metadata attached to the returned
 #'   specification. Either `"DecoderOnly"` or `"NeuralODE"`.
 #' @param family_args Optional named list used to expand parameterized family
-#'   declarations.
+#'   declarations. For structured TB families, `observation_target` chooses
+#'   `"incidence"` (default flow into `i_l`) or `"cumulative"` (`i_l`).
 #'
 #' @returns An object of class `ndm_model_spec`.
 #'

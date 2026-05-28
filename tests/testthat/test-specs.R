@@ -100,6 +100,68 @@ test_that("structured TB presets expose execution metadata and family arguments"
   expect_true(all(sprintf("d%s", 1:5) %in% spec$parameter_terms))
 })
 
+test_that("structured TB presets observe active-TB incidence by default", {
+  tb_presets <- sprintf("tb_%s", letters[1:12])
+
+  for (preset in tb_presets) {
+    family_args <- if (preset %in% c("tb_b", "tb_j")) list(n = 4L) else NULL
+    spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = family_args
+    )
+
+    expect_equal(
+      spec$execution_spec$observations,
+      unname(spec$execution_spec$equations[["i_l"]]),
+      info = preset
+    )
+    expect_false(identical(spec$execution_spec$observations, "i_l"), info = preset)
+  }
+
+  tb_b <- ndm_model_spec(
+    preset = "tb_b",
+    model_type = "NeuralODE",
+    family_args = list(n = 4L)
+  )
+  tb_j <- ndm_model_spec(
+    preset = "tb_j",
+    model_type = "NeuralODE",
+    family_args = list(n = 4L)
+  )
+  expect_equal(tb_b$execution_spec$observations, "d1 * lf1_l + d2 * lf2_l + d3 * lf3_l + d4 * lf4_l + c * ls_l")
+  expect_equal(tb_j$execution_spec$observations, "c * l4_l")
+})
+
+test_that("structured TB presets support cumulative observation override", {
+  tb_presets <- sprintf("tb_%s", letters[1:12])
+
+  for (preset in tb_presets) {
+    family_args <- if (preset %in% c("tb_b", "tb_j")) {
+      list(n = 4L, observation_target = "cumulative")
+    } else {
+      list(observation_target = "cumulative")
+    }
+    spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = family_args
+    )
+
+    expect_equal(spec$execution_spec$observations, "i_l", info = preset)
+    expect_equal(spec$family_args$observation_target, "cumulative", info = preset)
+  }
+
+  expect_error(
+    ndm_model_spec(
+      preset = "tb_a",
+      model_type = "NeuralODE",
+      family_args = list(observation_target = "stock")
+    ),
+    "observation_target"
+  )
+})
+
 test_that("structured model specs roundtrip through TeX metadata", {
   spec <- ndm_model_spec(
     preset = "tb_k",
@@ -118,6 +180,22 @@ test_that("structured model specs roundtrip through TeX metadata", {
   expect_equal(roundtrip$parameter_terms, spec$parameter_terms)
   expect_equal(roundtrip$time_varying_terms, "c_t")
   expect_match(roundtrip$tex_text, "max\\(1.0, t\\)")
+  expect_true(grepl("\\Observe = (x1 * (max(1.0, t) ^ x2)) * l_l", roundtrip$tex_text, fixed = TRUE))
+
+  cumulative_spec <- ndm_model_spec(
+    preset = "tb_k",
+    model_type = "NeuralODE",
+    family_args = list(observation_target = "cumulative")
+  )
+  cumulative_tex_path <- tempfile(fileext = ".tex")
+  on.exit(unlink(cumulative_tex_path), add = TRUE)
+
+  ndm_model_spec_to_tex(cumulative_spec, path = cumulative_tex_path)
+  cumulative_roundtrip <- ndm_model_spec_from_tex(cumulative_tex_path, model_type = "NeuralODE")
+
+  expect_equal(cumulative_roundtrip$family_args$observation_target, "cumulative")
+  expect_equal(unname(cumulative_roundtrip$execution_spec$observations), "i_l")
+  expect_true(grepl("\\Observe = i_l", cumulative_roundtrip$tex_text, fixed = TRUE))
 })
 
 test_that("structured model declarations can be built directly", {
