@@ -989,6 +989,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                           BNList = ModelList$BNList, 
                           state = state,
                           inference = inference)
+      TemporalLatents <- list()
       # plot( np$array(x[[1]]$val)[i_<-sample(1:10,1),,1] )
       # plot( np$array(x[[2]]$val)[i_,,1] )
       
@@ -1030,7 +1031,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                 xt_running[[2]], jnp$ones(list(1L,1L), dtype = xt_running[[2]]$dtype), jnp$array(c(start_idx, 0L), dtype = jnp$int32)
               )
               xt_running <- list(new_input, new_mask)
-              list(xt_running, ModelList$TSList$TSBackbone$DecoderProj(xt_new))
+              list(xt_running, list(
+                "logits" = ModelList$TSList$TSBackbone$DecoderProj(xt_new),
+                "decoder_head_input" = xt_new
+              ))
             }
             K_static <- as.integer(nTimesLookahead) 
             scan_out <- jax$lax$scan(
@@ -1039,8 +1043,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               #xs   = jnp$arange(start = 1L, stop = GetPredSaveAtInfo[[1]]+1)
               xs = NULL, length = K_static
             )
-            y_mean  <- jax$nn$softplus(scan_out[[2]])
+            decoder_scan_out <- scan_out[[2]]
+            y_mean  <- jax$nn$softplus(decoder_scan_out$logits)
             y_sigma <- jnp$ones_like(y_mean)
+            TemporalLatents <- list("decoder_head_input" = decoder_scan_out$decoder_head_input)
             KL_TERM <- jnp$array(0.)
             ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
             diff_eq_sol <- NULL; diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
@@ -1114,7 +1120,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               y_t <- ModelList$TSList$TSBackbone$DecoderProj(embed_out) # [nOutcomes]
               
               list(list(list(xt_next, m_next), cache, write_pos),
-                   y_t)
+                   list("logits" = y_t, "decoder_head_input" = embed_out))
             }
             
             scan_out2 <- jax$lax$scan(
@@ -1122,7 +1128,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               init = list(xt_running, kv_cache, insert_pos),
               xs   = jnp$arange(start = 0L, stop = GEN_CAP-1L) # first entry is already in the prefill, hence -1L
             )
-            y_tail <- scan_out2[[2]]  # [num_steps, nOutcomes, nFeatures]
+            decoder_scan_out2 <- scan_out2[[2]]
+            y_tail <- decoder_scan_out2$logits  # [num_steps, nOutcomes, nFeatures]
+            head_tail <- decoder_scan_out2$decoder_head_input
             
             # Concatenate first + tail => [nTimesLookahead, nOutcomes]
             # Goal:
@@ -1131,16 +1139,21 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             # We want: [1 + count, D] logically,
             # but we keep static shape [1 + K, D] by zero-masking tail rows >= count.
             count_i32   <- jnp$astype(GEN_CAP-1L, jnp$int32)
-            K           <- scan_out2[[2]]$shape[[1]]
+            K           <- y_tail$shape[[1]]
             idxK        <- jnp$arange(K, dtype = jnp$int32)       # OK: K is static
             keep_tail   <- jnp$less(idxK, count_i32)              # [K]
             masked_tail <- jnp$where(jnp$expand_dims(keep_tail, 1L),
-                                       scan_out2[[2]],
-                                       jnp$zeros_like(scan_out2[[2]]))
+                                       y_tail,
+                                       jnp$zeros_like(y_tail))
+            masked_head_tail <- jnp$where(jnp$expand_dims(keep_tail, 1L),
+                                       head_tail,
+                                       jnp$zeros_like(head_tail))
             y_all <- jnp$concatenate(list(jnp$expand_dims(y_first, 0L), masked_tail), 0L)
+            decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last, 0L), masked_head_tail), 0L)
             
             y_mean  <- jax$nn$softplus(y_all)   # preserve your softplus post-proj
             y_sigma <- jnp$ones_like(y_mean)
+            TemporalLatents <- list("decoder_head_input" = decoder_head_input_all)
             KL_TERM <- jnp$array(0.)
             ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
             diff_eq_sol <- NULL; diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
@@ -1615,6 +1628,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       return_v <- list(list("y_mu" = y_mean,
                             "y_sigma" = y_sigma,
                             "KL_TERM" = KL_TERM,
+                            "TemporalLatents" = TemporalLatents,
                             "ODEParamsSampList" = c(ODEParamsSampList_args,
                                                     ODEParamsSampList_y0,
                                                     "center_param" = y_mean,

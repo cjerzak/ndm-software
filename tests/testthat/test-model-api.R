@@ -108,6 +108,110 @@ test_that("loss accepts explicit targets and leaves state unchanged when request
   expect_equal(env$state$stage, "built")
 })
 
+test_that("temporal latent extraction exposes decoder head inputs", {
+  env <- ndm_test_runtime_env()
+  env$ModelType <- "DecoderOnly"
+  env$ModelDims <- 3L
+  env$nOutcomes <- 1L
+  decoder_head_input <- array(seq_len(12), dim = c(2, 2, 3))
+  env$GetPred_inference <- function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed) {
+    list(
+      list(
+        y_mu = array(1, dim = c(2, 2, 1)),
+        y_sigma = array(1, dim = c(2, 2, 1)),
+        TemporalLatents = list(decoder_head_input = decoder_head_input),
+        ODEParamsSampList = list(
+          center_param = array(1, dim = c(2, 2, 1)),
+          scale_param = array(1, dim = c(2, 2, 1))
+        )
+      ),
+      list(stage = "predicted")
+    )
+  }
+  trained <- structure(list(env = env, model_type = "DecoderOnly"), class = "ndm_trained_model")
+
+  latents <- ndm_extract_temporal_latents(
+    trained,
+    batch = ndm_test_named_batch(),
+    update_state = FALSE
+  )
+
+  expect_s3_class(latents, "ndm_temporal_latents")
+  expect_equal(dim(latents$decoder$head_input), c(2L, 2L, 3L))
+  expect_equal(latents$time, 0:1)
+  expect_equal(nrow(latents$feature_map$ode$local), 0L)
+  decoder_matrix <- ndm_latent_matrix(latents, "decoder_head_input")
+  expect_equal(dim(decoder_matrix), c(4L, 3L))
+  expect_equal(colnames(decoder_matrix), paste0("decoder_head_input_", 1:3))
+})
+
+test_that("temporal latent extraction maps NeuralODE hidden and interpretable features", {
+  env <- ndm_test_runtime_env()
+  env$ModelType <- "NeuralODE"
+  env$ModelDims <- 4L
+  env$nOutcomes <- 1L
+  env$LocalNeuralEmbedDim <- 2L
+  env$GlobalNeuralEmbedDim <- 2L
+  env$uq_encneural_vec <- c("beta_l", "p_l")
+  env$uq_globalneural_vec <- "delta"
+  env$ndm_model_spec <- ndm_model_spec(
+    preset = "seirs_dynamic_beta_dynamic_global",
+    model_type = "NeuralODE"
+  )
+
+  local_state <- array(seq(-3, 26), dim = c(2, 3, 5))
+  global_state <- array(seq(-2, 15), dim = c(2, 3, 3))
+  s_state <- array(seq_len(6), dim = c(2, 3))
+  env$GetPred_inference <- function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed) {
+    list(
+      list(
+        y_mu = array(1, dim = c(2, 3, 1)),
+        y_sigma = array(1, dim = c(2, 3, 1)),
+        ODEParamsSampList = list(
+          "diff_eq_sol_ts" = 0:2,
+          "diff_eq_sol_ys.Neural1" = local_state,
+          "diff_eq_sol_ys.Neural2" = global_state,
+          "diff_eq_sol_ys.s_l" = s_state,
+          center_param = array(1, dim = c(2, 3, 1)),
+          scale_param = array(1, dim = c(2, 3, 1))
+        )
+      ),
+      list(stage = "predicted")
+    )
+  }
+  trained <- structure(list(env = env, model_type = "NeuralODE"), class = "ndm_trained_model")
+
+  latents <- ndm_extract_temporal_latents(
+    trained,
+    batch = ndm_test_named_batch(),
+    update_state = FALSE
+  )
+
+  expect_equal(nrow(latents$feature_map$decoder$head_input), 0L)
+  local_map <- latents$feature_map$ode$local
+  expect_equal(local_map$index[match("beta_l", local_map$feature)], 3L)
+  expect_equal(local_map$transform[match("beta_l", local_map$feature)], "InvSoftPlus")
+  expect_equal(local_map$index[match("p_l", local_map$feature)], 4L)
+  expect_equal(local_map$transform[match("p_l", local_map$feature)], "Identity")
+
+  local_hidden <- ndm_latent_matrix(latents, "ode_local_hidden")
+  expect_equal(dim(local_hidden), c(6L, 2L))
+  beta_feature <- ndm_latent_matrix(latents, "ode_local_features", features = "beta_l")
+  expect_equal(
+    as.numeric(beta_feature[, 1]),
+    as.numeric(ndm:::.ndm_softplus_r(local_state[, , 3]))
+  )
+
+  delta_feature <- ndm_latent_matrix(latents, "ode_global_features", features = "delta")
+  expect_equal(
+    as.numeric(delta_feature[, 1]),
+    as.numeric(ndm:::.ndm_sigmoid_r(global_state[, , 3]))
+  )
+
+  state_matrix <- ndm_latent_matrix(latents, "ode_states", features = "s_l")
+  expect_equal(as.numeric(state_matrix[, 1]), as.numeric(s_state))
+})
+
 test_that("prediction and loss surface missing runtime bindings clearly", {
   env <- ndm_new_runtime_env()
   env$ModelList <- list(model = TRUE)

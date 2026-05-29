@@ -77,6 +77,8 @@ test_that("fallback TeX parsing distinguishes init priors from dynamic state pri
   expect_identical(spec$init_state_terms, "s_l")
   expect_null(names(spec$init_state_terms))
   expect_identical(spec$parameter_terms, "beta_l")
+  expect_identical(names(spec$parameter_transforms), "beta_l")
+  expect_identical(unname(spec$parameter_transforms), "InvSoftPlus")
 })
 
 test_that("structured TB presets expose execution metadata and family arguments", {

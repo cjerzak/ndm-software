@@ -592,6 +592,671 @@ ndm_loss <- function(x,
   result[[1]]
 }
 
+.ndm_prediction_value <- function(pred, name) {
+  if (is.null(pred)) {
+    return(NULL)
+  }
+  if (is.list(pred) && !is.null(names(pred)) && name %in% names(pred)) {
+    return(pred[[name]])
+  }
+  NULL
+}
+
+.ndm_prediction_ode_value <- function(pred, name) {
+  params <- .ndm_prediction_value(pred, "ODEParamsSampList")
+  if (is.null(params)) {
+    return(NULL)
+  }
+  if (is.list(params) && !is.null(names(params)) && name %in% names(params)) {
+    return(params[[name]])
+  }
+  parts <- strsplit(name, ".", fixed = TRUE)[[1L]]
+  if (length(parts) == 2L && is.list(params)) {
+    nested <- params[[parts[[1L]]]]
+    if (is.list(nested) && !is.null(names(nested)) && parts[[2L]] %in% names(nested)) {
+      return(nested[[parts[[2L]]]])
+    }
+  }
+  NULL
+}
+
+.ndm_array_to_r <- function(x, env = NULL) {
+  if (is.null(x)) {
+    return(NULL)
+  }
+  if ("python.builtin.object" %in% class(x)) {
+    if (is.environment(env) && exists("np", envir = env, inherits = FALSE)) {
+      arr <- try(get("np", envir = env, inherits = FALSE)$asanyarray(x), silent = TRUE)
+      if (!inherits(arr, "try-error")) {
+        return(reticulate::py_to_r(arr))
+      }
+    }
+    return(reticulate::py_to_r(x))
+  }
+  x
+}
+
+.ndm_runtime_int <- function(env, name, ifnotfound = NA_integer_) {
+  value <- .ndm_runtime_get0(env, name, ifnotfound = ifnotfound)
+  value <- suppressWarnings(as.integer(value))
+  if (length(value) != 1L || is.na(value)) {
+    return(ifnotfound)
+  }
+  value
+}
+
+.ndm_runtime_character <- function(env, name, ifnotfound = character(0)) {
+  value <- .ndm_runtime_get0(env, name, ifnotfound = ifnotfound)
+  if (is.null(value)) {
+    return(character(0))
+  }
+  value <- as.character(value)
+  value[nzchar(value)]
+}
+
+.ndm_prediction_model_type <- function(x, env) {
+  if ((inherits(x, "ndm_model") || inherits(x, "ndm_trained_model")) && !is.null(x$model_type)) {
+    return(as.character(x$model_type))
+  }
+  as.character(.ndm_runtime_get0(
+    env,
+    "ModelType",
+    ifnotfound = .ndm_runtime_get0(env, "ndm_model_type", ifnotfound = NA_character_)
+  ))
+}
+
+.ndm_prediction_n_outcomes <- function(env, pred) {
+  n_outcomes <- .ndm_runtime_int(env, "nOutcomes", ifnotfound = NA_integer_)
+  if (!is.na(n_outcomes)) {
+    return(n_outcomes)
+  }
+  y_mu <- .ndm_array_to_r(.ndm_prediction_value(pred, "y_mu"), env = env)
+  dims <- dim(y_mu)
+  if (!is.null(dims) && length(dims) > 0L) {
+    return(as.integer(tail(dims, 1L)))
+  }
+  0L
+}
+
+.ndm_spec_parameter_transforms <- function(spec) {
+  transforms <- spec$parameter_transforms %||% spec$execution_spec$parameter_transforms %||% character(0)
+  if (length(transforms) == 0L) {
+    return(character(0))
+  }
+  transforms <- as.character(transforms)
+  if (is.null(names(transforms)) || any(!nzchar(names(transforms)))) {
+    names(transforms) <- spec$parameter_terms[seq_along(transforms)]
+  }
+  transforms
+}
+
+.ndm_transform_output_name <- function(transform) {
+  switch(
+    as.character(transform %||% "Identity"),
+    InvSoftPlus = "SoftPlus",
+    InvSigmoid = "Sigmoid",
+    Identity = "Identity",
+    as.character(transform)
+  )
+}
+
+.ndm_temporal_feature_map <- function(env, pred = NULL) {
+  spec <- .ndm_runtime_get0(env, "ndm_model_spec", ifnotfound = NULL)
+  model_type <- as.character(.ndm_runtime_get0(
+    env,
+    "ModelType",
+    ifnotfound = .ndm_runtime_get0(env, "ndm_model_type", ifnotfound = NA_character_)
+  ))
+  has_ode_output <- !is.null(.ndm_prediction_ode_value(pred, "diff_eq_sol_ys.Neural1")) ||
+    !is.null(.ndm_prediction_ode_value(pred, "diff_eq_sol_ys.Neural2"))
+  has_decoder_output <- {
+    temporal <- .ndm_prediction_value(pred, "TemporalLatents")
+    is.list(temporal) && "decoder_head_input" %in% names(temporal)
+  }
+  is_ode <- identical(model_type, "NeuralODE") || has_ode_output
+  is_decoder <- identical(model_type, "DecoderOnly") || has_decoder_output
+
+  local_dim <- if (is_ode) {
+    .ndm_runtime_int(env, "LocalNeuralEmbedDim", ifnotfound = 0L)
+  } else {
+    0L
+  }
+  global_dim <- if (is_ode) {
+    .ndm_runtime_int(env, "GlobalNeuralEmbedDim", ifnotfound = 0L)
+  } else {
+    0L
+  }
+  n_outcomes <- .ndm_prediction_n_outcomes(env, pred)
+
+  local_terms <- if (is_ode) {
+    .ndm_runtime_character(env, "uq_encneural_vec")
+  } else {
+    character(0)
+  }
+  global_terms <- if (is_ode) {
+    .ndm_runtime_character(env, "uq_globalneural_vec")
+  } else {
+    character(0)
+  }
+  if (is_ode && inherits(spec, "ndm_model_spec")) {
+    if (length(local_terms) == 0L) {
+      local_terms <- spec$local_dynamic_terms %||% character(0)
+    }
+    if (length(global_terms) == 0L) {
+      global_terms <- spec$global_dynamic_terms %||% character(0)
+    }
+    if (length(local_terms) == 0L && length(global_terms) == 0L) {
+      local_terms <- grep("_l$", spec$time_varying_terms %||% character(0), value = TRUE)
+      global_terms <- setdiff(spec$time_varying_terms %||% character(0), local_terms)
+    }
+  }
+
+  transforms <- if (inherits(spec, "ndm_model_spec")) {
+    .ndm_spec_parameter_transforms(spec)
+  } else {
+    character(0)
+  }
+
+  make_rows <- function(source, role, feature, index, transform = "Identity") {
+    feature <- unname(as.character(feature))
+    index <- unname(as.integer(index))
+    transform <- unname(as.character(transform))
+    data.frame(
+      source = rep(source, length(feature)),
+      role = rep(role, length(feature)),
+      feature = feature,
+      index = index,
+      transform = transform,
+      output = unname(vapply(transform, .ndm_transform_output_name, character(1L))),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  local_rows <- data.frame()
+  if (local_dim > 0L) {
+    local_rows <- rbind(
+      local_rows,
+      make_rows(
+        source = "Neural1",
+        role = "hidden",
+        feature = paste0("local_hidden_", seq_len(local_dim)),
+        index = seq_len(local_dim)
+      )
+    )
+  }
+  if (length(local_terms) > 0L) {
+    term_transforms <- transforms[local_terms]
+    term_transforms[is.na(term_transforms)] <- "Identity"
+    local_rows <- rbind(
+      local_rows,
+      make_rows(
+        source = "Neural1",
+        role = "interpretable",
+        feature = local_terms,
+        index = local_dim + seq_along(local_terms),
+        transform = term_transforms
+      )
+    )
+  }
+  if (is_ode && n_outcomes > 0L) {
+    local_rows <- rbind(
+      local_rows,
+      make_rows(
+        source = "Neural1",
+        role = "observation_scale",
+        feature = paste0("observation_scale_", seq_len(n_outcomes)),
+        index = local_dim + length(local_terms) + seq_len(n_outcomes),
+        transform = rep("InvSoftPlus", n_outcomes)
+      )
+    )
+  }
+  rownames(local_rows) <- NULL
+
+  global_rows <- data.frame()
+  if (global_dim > 0L) {
+    global_rows <- rbind(
+      global_rows,
+      make_rows(
+        source = "Neural2",
+        role = "hidden",
+        feature = paste0("global_hidden_", seq_len(global_dim)),
+        index = seq_len(global_dim)
+      )
+    )
+  }
+  if (length(global_terms) > 0L) {
+    term_transforms <- transforms[global_terms]
+    term_transforms[is.na(term_transforms)] <- "Identity"
+    global_rows <- rbind(
+      global_rows,
+      make_rows(
+        source = "Neural2",
+        role = "interpretable",
+        feature = global_terms,
+        index = global_dim + seq_along(global_terms),
+        transform = term_transforms
+      )
+    )
+  }
+  rownames(global_rows) <- NULL
+
+  list(
+    decoder = list(
+      head_input = {
+        decoder_dim <- if (is_decoder) {
+          max(0L, .ndm_runtime_int(env, "ModelDims", 0L))
+        } else {
+          0L
+        }
+        data.frame(
+          source = rep("DecoderOnly", decoder_dim),
+          role = rep("head_input", decoder_dim),
+          feature = if (decoder_dim > 0L) {
+            paste0("decoder_head_input_", seq_len(decoder_dim))
+          } else {
+            character(0)
+          },
+          index = seq_len(decoder_dim),
+          transform = rep("Identity", decoder_dim),
+          output = rep("Identity", decoder_dim),
+          stringsAsFactors = FALSE
+        )
+      }
+    ),
+    ode = list(
+      local = local_rows,
+      global = global_rows,
+      states = if (is_ode && inherits(spec, "ndm_model_spec")) {
+        spec$state_terms %||% character(0)
+      } else {
+        character(0)
+      }
+    )
+  )
+}
+
+.ndm_take_last_dim <- function(x, index, env = NULL, as_r = TRUE) {
+  if (is.null(x) || length(index) == 0L) {
+    return(NULL)
+  }
+  if (!isTRUE(as_r) && "python.builtin.object" %in% class(x)) {
+    shape <- try(reticulate::py_to_r(x$shape), silent = TRUE)
+    if (!inherits(shape, "try-error") && length(shape) > 0L &&
+        is.environment(env) && exists("jnp", envir = env, inherits = FALSE)) {
+      jnp <- get("jnp", envir = env, inherits = FALSE)
+      return(jnp$take(x, jnp$array(as.integer(index) - 1L), axis = as.integer(length(shape) - 1L)))
+    }
+  }
+
+  x <- .ndm_array_to_r(x, env = env)
+  dims <- dim(x)
+  if (is.null(dims)) {
+    return(x)
+  }
+  if (length(dims) == 1L) {
+    return(x[index])
+  }
+  if (length(dims) == 2L) {
+    return(x[, index, drop = FALSE])
+  }
+  index_expr <- rep(list(TRUE), length(dims))
+  index_expr[[length(dims)]] <- index
+  do.call("[", c(list(x), index_expr, list(drop = FALSE)))
+}
+
+.ndm_softplus_r <- function(x) {
+  log1p(exp(-abs(x))) + pmax(x, 0)
+}
+
+.ndm_sigmoid_r <- function(x) {
+  1 / (1 + exp(-x))
+}
+
+.ndm_apply_feature_transform <- function(x, transform, env = NULL, as_r = TRUE) {
+  transform <- as.character(transform %||% "Identity")
+  if (identical(transform, "Identity") || is.null(x)) {
+    return(x)
+  }
+  if (!isTRUE(as_r) && "python.builtin.object" %in% class(x)) {
+    if (identical(transform, "InvSoftPlus") && is.environment(env) && exists("SoftPlus", envir = env, inherits = FALSE)) {
+      return(get("SoftPlus", envir = env, inherits = FALSE)(x))
+    }
+    if (identical(transform, "InvSigmoid") && is.environment(env) && exists("Sigmoid", envir = env, inherits = FALSE)) {
+      return(get("Sigmoid", envir = env, inherits = FALSE)(x))
+    }
+    return(x)
+  }
+  x <- .ndm_array_to_r(x, env = env)
+  switch(
+    transform,
+    InvSoftPlus = .ndm_softplus_r(x),
+    InvSigmoid = .ndm_sigmoid_r(x),
+    x
+  )
+}
+
+.ndm_drop_last_singleton <- function(x) {
+  dims <- dim(x)
+  if (is.null(dims) || length(dims) < 2L || tail(dims, 1L) != 1L) {
+    return(x)
+  }
+  dn <- dimnames(x)
+  dim(x) <- dims[-length(dims)]
+  if (!is.null(dn)) {
+    dimnames(x) <- dn[-length(dn)]
+  }
+  x
+}
+
+.ndm_named_feature_arrays <- function(raw, rows, role, env, as_r) {
+  rows <- rows[rows$role == role, , drop = FALSE]
+  if (nrow(rows) == 0L || is.null(raw)) {
+    return(list())
+  }
+  out <- lapply(seq_len(nrow(rows)), function(i) {
+    .ndm_drop_last_singleton(.ndm_apply_feature_transform(
+      .ndm_take_last_dim(raw, rows$index[[i]], env = env, as_r = as_r),
+      rows$transform[[i]],
+      env = env,
+      as_r = as_r
+    ))
+  })
+  names(out) <- rows$feature
+  out
+}
+
+.ndm_set_feature_names <- function(x, feature_names) {
+  if (is.null(x) || "python.builtin.object" %in% class(x)) {
+    return(x)
+  }
+  dims <- dim(x)
+  if (is.null(dims) || length(dims) == 0L || tail(dims, 1L) != length(feature_names)) {
+    return(x)
+  }
+  dn <- dimnames(x)
+  if (is.null(dn)) {
+    dn <- vector("list", length(dims))
+  }
+  dn[[length(dims)]] <- feature_names
+  dimnames(x) <- dn
+  x
+}
+
+.ndm_extract_ode_latents <- function(pred, feature_map, env, as_r = TRUE) {
+  local_raw <- .ndm_prediction_ode_value(pred, "diff_eq_sol_ys.Neural1")
+  global_raw <- .ndm_prediction_ode_value(pred, "diff_eq_sol_ys.Neural2")
+  local_rows <- feature_map$ode$local
+  global_rows <- feature_map$ode$global
+
+  if (isTRUE(as_r)) {
+    local_raw <- .ndm_array_to_r(local_raw, env = env)
+    global_raw <- .ndm_array_to_r(global_raw, env = env)
+  }
+
+  local_hidden_rows <- local_rows[local_rows$role == "hidden", , drop = FALSE]
+  global_hidden_rows <- global_rows[global_rows$role == "hidden", , drop = FALSE]
+  state_terms <- feature_map$ode$states %||% character(0)
+  states <- lapply(state_terms, function(term) {
+    value <- .ndm_prediction_ode_value(pred, paste0("diff_eq_sol_ys.", term))
+    if (isTRUE(as_r)) {
+      value <- .ndm_array_to_r(value, env = env)
+    }
+    value
+  })
+  names(states) <- state_terms
+  states <- states[!vapply(states, is.null, logical(1L))]
+
+  list(
+    local_state = .ndm_set_feature_names(local_raw, local_rows$feature),
+    global_state = .ndm_set_feature_names(global_raw, global_rows$feature),
+    local_hidden = .ndm_set_feature_names(
+      .ndm_take_last_dim(local_raw, local_hidden_rows$index, env = env, as_r = as_r),
+      local_hidden_rows$feature
+    ),
+    global_hidden = .ndm_set_feature_names(
+      .ndm_take_last_dim(global_raw, global_hidden_rows$index, env = env, as_r = as_r),
+      global_hidden_rows$feature
+    ),
+    features = list(
+      local = .ndm_named_feature_arrays(local_raw, local_rows, "interpretable", env = env, as_r = as_r),
+      global = .ndm_named_feature_arrays(global_raw, global_rows, "interpretable", env = env, as_r = as_r),
+      observation_scale = .ndm_named_feature_arrays(local_raw, local_rows, "observation_scale", env = env, as_r = as_r)
+    ),
+    states = states
+  )
+}
+
+#' Extract temporal latent states for interpretability analyses
+#'
+#' `ndm_extract_temporal_latents()` runs the existing prediction path and
+#' returns aligned temporal representations for decoder-only and NeuralODE
+#' models. `ndm_latent_matrix()` flattens one extracted representation to a
+#' two-dimensional matrix suitable for external analyses such as CCA.
+#'
+#' @param x Either an `ndm_model`, an `ndm_trained_model`, or a prepared runtime
+#'   environment that already contains the required runtime objects.
+#' @param batch Optional prediction batch passed through to [ndm_predict()].
+#' @param seed Integer seed used to derive the per-example JAX RNG keys.
+#' @param inference Logical scalar indicating whether the inference prediction
+#'   path or training prediction path should be used.
+#' @param update_state Logical scalar indicating whether the runtime `state`
+#'   object should be updated with the returned state.
+#' @param as_r Logical scalar. When `TRUE`, JAX arrays are copied to R arrays.
+#' @param latents An object returned by `ndm_extract_temporal_latents()`.
+#' @param source Representation to flatten. Supported values include
+#'   `"decoder_head_input"`, `"ode_local_hidden"`, `"ode_global_hidden"`,
+#'   `"ode_local_features"`, `"ode_global_features"`, and `"ode_states"`.
+#' @param features Optional feature names or integer feature positions.
+#'
+#' @returns `ndm_extract_temporal_latents()` returns an
+#'   `ndm_temporal_latents` list. `ndm_latent_matrix()` returns a numeric matrix
+#'   with rows ordered by batch within time.
+#'
+#' @examples
+#' \dontrun{
+#' latents <- ndm_extract_temporal_latents(trained, batch = batch_l_cal)
+#' decoder_x <- ndm_latent_matrix(latents, "decoder_head_input")
+#' ode_x <- ndm_latent_matrix(latents, "ode_local_hidden")
+#' }
+#'
+#' @export
+ndm_extract_temporal_latents <- function(x,
+                                         batch = NULL,
+                                         seed = 1L,
+                                         inference = TRUE,
+                                         update_state = FALSE,
+                                         as_r = TRUE) {
+  runtime_env <- .ndm_runtime_env_from_object(x)
+  pred <- ndm_predict(
+    x,
+    batch = batch,
+    inference = inference,
+    seed = seed,
+    update_state = update_state
+  )
+  feature_map <- .ndm_temporal_feature_map(runtime_env, pred = pred)
+  model_type <- .ndm_prediction_model_type(x, runtime_env)
+
+  temporal_latents <- .ndm_prediction_value(pred, "TemporalLatents")
+  decoder_head_input <- NULL
+  if (is.list(temporal_latents) && "decoder_head_input" %in% names(temporal_latents)) {
+    decoder_head_input <- temporal_latents$decoder_head_input
+    if (isTRUE(as_r)) {
+      decoder_head_input <- .ndm_array_to_r(decoder_head_input, env = runtime_env)
+    }
+    decoder_features <- feature_map$decoder$head_input$feature
+    if (!is.null(dim(decoder_head_input)) && length(decoder_features) == tail(dim(decoder_head_input), 1L)) {
+      decoder_head_input <- .ndm_set_feature_names(decoder_head_input, decoder_features)
+    }
+  }
+
+  ode <- .ndm_extract_ode_latents(pred, feature_map = feature_map, env = runtime_env, as_r = as_r)
+
+  time <- .ndm_prediction_ode_value(pred, "diff_eq_sol_ts")
+  if (isTRUE(as_r)) {
+    time <- .ndm_array_to_r(time, env = runtime_env)
+  }
+  if (is.null(time) && !is.null(decoder_head_input)) {
+    dims <- dim(decoder_head_input)
+    if (!is.null(dims) && length(dims) >= 2L) {
+      time <- seq_len(dims[[2L]]) - 1L
+    }
+  }
+
+  out <- list(
+    model_type = model_type,
+    time = time,
+    decoder = list(head_input = decoder_head_input),
+    ode = ode,
+    feature_map = feature_map,
+    prediction = list(
+      y_mu = if (isTRUE(as_r)) .ndm_array_to_r(.ndm_prediction_value(pred, "y_mu"), env = runtime_env) else .ndm_prediction_value(pred, "y_mu"),
+      y_sigma = if (isTRUE(as_r)) .ndm_array_to_r(.ndm_prediction_value(pred, "y_sigma"), env = runtime_env) else .ndm_prediction_value(pred, "y_sigma")
+    )
+  )
+  class(out) <- c("ndm_temporal_latents", "list")
+  out
+}
+
+.ndm_latent_source_object <- function(latents, source) {
+  source <- match.arg(
+    source,
+    c(
+      "decoder_head_input",
+      "decoder",
+      "ode_local_hidden",
+      "local_hidden",
+      "ode_global_hidden",
+      "global_hidden",
+      "ode_local_features",
+      "local_features",
+      "ode_global_features",
+      "global_features",
+      "ode_observation_scale",
+      "observation_scale",
+      "ode_states",
+      "states"
+    )
+  )
+  switch(
+    source,
+    decoder_head_input = latents$decoder$head_input,
+    decoder = latents$decoder$head_input,
+    ode_local_hidden = latents$ode$local_hidden,
+    local_hidden = latents$ode$local_hidden,
+    ode_global_hidden = latents$ode$global_hidden,
+    global_hidden = latents$ode$global_hidden,
+    ode_local_features = latents$ode$features$local,
+    local_features = latents$ode$features$local,
+    ode_global_features = latents$ode$features$global,
+    global_features = latents$ode$features$global,
+    ode_observation_scale = latents$ode$features$observation_scale,
+    observation_scale = latents$ode$features$observation_scale,
+    ode_states = latents$ode$states,
+    states = latents$ode$states
+  )
+}
+
+.ndm_feature_list_to_array <- function(x, features = NULL) {
+  if (length(x) == 0L) {
+    stop("No features are available for this latent source.", call. = FALSE)
+  }
+  if (!is.null(features)) {
+    if (is.character(features)) {
+      missing <- setdiff(features, names(x))
+      if (length(missing) > 0L) {
+        stop("Unknown feature(s): ", paste(missing, collapse = ", "), call. = FALSE)
+      }
+      x <- x[features]
+    } else {
+      x <- x[features]
+    }
+  }
+  dims <- dim(x[[1L]])
+  if (is.null(dims)) {
+    dims <- length(x[[1L]])
+  }
+  out <- array(NA_real_, dim = c(dims, length(x)))
+  for (i in seq_along(x)) {
+    out_slice <- x[[i]]
+    dim(out_slice) <- dims
+    selector <- c(rep(list(TRUE), length(dims)), list(i))
+    out <- do.call("[<-", c(list(out), selector, list(value = out_slice)))
+  }
+  dn <- vector("list", length(dim(out)))
+  dn[[length(dim(out))]] <- names(x)
+  dimnames(out) <- dn
+  out
+}
+
+.ndm_array_select_features <- function(x, features = NULL) {
+  if (is.null(features)) {
+    return(x)
+  }
+  dims <- dim(x)
+  if (is.null(dims) || length(dims) < 2L) {
+    stop("Selected latent source is not feature-indexed.", call. = FALSE)
+  }
+  if (is.character(features)) {
+    feature_names <- dimnames(x)[[length(dims)]]
+    if (is.null(feature_names)) {
+      stop("This latent source does not have feature names; use integer `features`.", call. = FALSE)
+    }
+    features <- match(features, feature_names)
+    if (anyNA(features)) {
+      stop("Unknown feature name in `features`.", call. = FALSE)
+    }
+  }
+  index_expr <- rep(list(TRUE), length(dims))
+  index_expr[[length(dims)]] <- features
+  do.call("[", c(list(x), index_expr, list(drop = FALSE)))
+}
+
+.ndm_flatten_latent_array <- function(x) {
+  if ("python.builtin.object" %in% class(x)) {
+    stop("`ndm_latent_matrix()` requires R arrays. Re-run extraction with `as_r = TRUE`.", call. = FALSE)
+  }
+  dims <- dim(x)
+  if (is.null(dims)) {
+    return(matrix(as.numeric(x), ncol = 1L))
+  }
+  if (length(dims) == 1L) {
+    return(matrix(as.numeric(x), ncol = 1L))
+  }
+  if (length(dims) == 2L) {
+    mat <- matrix(as.numeric(x), nrow = dims[[1L]], ncol = dims[[2L]])
+    colnames(mat) <- dimnames(x)[[2L]]
+    return(mat)
+  }
+  feature_names <- dimnames(x)[[length(dims)]]
+  feature_dim <- dims[[length(dims)]]
+  mat <- matrix(as.numeric(x), nrow = prod(dims[-length(dims)]), ncol = feature_dim)
+  if (!is.null(feature_names) && length(feature_names) == feature_dim) {
+    colnames(mat) <- feature_names
+  }
+  mat
+}
+
+#' @rdname ndm_extract_temporal_latents
+#' @export
+ndm_latent_matrix <- function(latents,
+                              source = "decoder_head_input",
+                              features = NULL) {
+  if (!inherits(latents, "ndm_temporal_latents")) {
+    stop("`latents` must be returned by ndm_extract_temporal_latents().", call. = FALSE)
+  }
+  x <- .ndm_latent_source_object(latents, source)
+  if (is.null(x)) {
+    stop("The requested latent source is not available.", call. = FALSE)
+  }
+  if (is.list(x) && !is.null(names(x)) && !is.data.frame(x)) {
+    x <- .ndm_feature_list_to_array(x, features = features)
+  } else {
+    x <- .ndm_array_select_features(x, features = features)
+  }
+  .ndm_flatten_latent_array(x)
+}
+
 #' @rdname ndm_build_model
 #' @export
 ndm_train <- function(x,

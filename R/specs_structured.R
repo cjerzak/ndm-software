@@ -220,7 +220,7 @@
 
 .ndm_normalize_prior_lhs <- function(lhs, init_state = FALSE) {
   lhs <- trimws(lhs)
-  lhs <- sub("^\\\\[A-Za-z0-9]+\\(", "", lhs)
+  lhs <- sub("^\\\\[A-Za-z0-9]+\\s*\\(", "", lhs)
   lhs <- sub("\\)$", "", lhs)
   lhs <- gsub("\\s+", "", lhs)
   lhs <- gsub("[{}\\\\]", "", lhs)
@@ -233,10 +233,21 @@
 
 .ndm_prior_lhs_is_init_state <- function(lhs) {
   lhs <- trimws(lhs)
-  lhs <- sub("^\\\\[A-Za-z0-9]+\\(", "", lhs)
+  lhs <- sub("^\\\\[A-Za-z0-9]+\\s*\\(", "", lhs)
   lhs <- sub("\\)$", "", lhs)
   lhs <- gsub("\\s+", "", lhs)
   grepl("(_\\{[^{}]*0\\}|_0)$", lhs, perl = TRUE)
+}
+
+.ndm_prior_lhs_transform <- function(lhs) {
+  lhs <- trimws(lhs)
+  if (grepl("^\\\\InvSoftPlus\\s*\\(", lhs)) {
+    return("InvSoftPlus")
+  }
+  if (grepl("^\\\\InvSigmoid\\s*\\(", lhs)) {
+    return("InvSigmoid")
+  }
+  "Identity"
 }
 
 .ndm_parse_bayes_ode_text <- function(tex_text) {
@@ -315,6 +326,7 @@
   if (length(prior_lines) == 0L) {
     init_state_terms <- character()
     parameter_terms <- character()
+    parameter_transforms <- character()
   } else {
     prior_lhs <- vapply(
       prior_lines,
@@ -334,6 +346,12 @@
       character(1L),
       init_state = FALSE
     ))
+    parameter_transforms <- unname(vapply(
+      prior_lhs[!init_flags],
+      .ndm_prior_lhs_transform,
+      character(1L)
+    ))
+    names(parameter_transforms) <- parameter_terms
   }
   prior_terms <- c(init_state_terms, parameter_terms)
 
@@ -343,6 +361,7 @@
     observations = observations,
     init_state_terms = init_state_terms,
     parameter_terms = parameter_terms,
+    parameter_transforms = parameter_transforms,
     prior_terms = prior_terms
   )
 }
@@ -478,6 +497,7 @@
     state_terms = as.character(states),
     init_state_terms = as.character(init_state_terms),
     parameter_terms = names(parameters),
+    parameter_transforms = vapply(parameters, function(param) param$transformation, character(1L)),
     constant_terms = names(constants),
     constants = .ndm_as_named_numeric_list(constants, arg = "constants"),
     parameters = parameters,
@@ -1019,6 +1039,7 @@
       state_terms = execution_spec$state_terms,
       init_state_terms = execution_spec$init_state_terms,
       parameter_terms = execution_spec$parameter_terms,
+      parameter_transforms = execution_spec$parameter_transforms %||% character(0),
       auxiliary_terms = execution_spec$auxiliary_terms %||% character(0),
       local_dynamic_terms = execution_spec$local_dynamic_terms %||% character(0),
       global_dynamic_terms = execution_spec$global_dynamic_terms %||% character(0),
@@ -1069,6 +1090,7 @@
       state_terms = state_terms,
       init_state_terms = bayes$init_state_terms,
       parameter_terms = bayes$parameter_terms,
+      parameter_transforms = bayes$parameter_transforms,
       auxiliary_terms = character(0),
       local_dynamic_terms = character(0),
       global_dynamic_terms = character(0),
@@ -1081,6 +1103,7 @@
   metadata$constants <- bayes$constants
   metadata$equations <- bayes$equations
   metadata$observations <- bayes$observations
+  metadata$parameter_transforms <- bayes$parameter_transforms
   metadata$auxiliary <- stats::setNames(rep("", length(metadata$auxiliary_terms)), metadata$auxiliary_terms)
   metadata
 }

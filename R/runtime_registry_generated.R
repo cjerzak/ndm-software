@@ -3392,6 +3392,7 @@
                   TSList = ModelList$TSList, xt = x, time = time_indices, 
                   place = loc_indices, BNList = ModelList$BNList, 
                   state = state, inference = inference)
+                TemporalLatents <- list()
                 if (TRUE) {
                   if (ModelType == "DecoderOnly") {
                     if (paddingMethod == "right") {
@@ -3420,13 +3421,16 @@
                           jnp$ones(list(1L, 1L), dtype = xt_running[[2]]$dtype), 
                           jnp$array(c(start_idx, 0L), dtype = jnp$int32))
                         xt_running <- list(new_input, new_mask)
-                        list(xt_running, ModelList$TSList$TSBackbone$DecoderProj(xt_new))
+                        list(xt_running, list(logits = ModelList$TSList$TSBackbone$DecoderProj(xt_new), 
+                          decoder_head_input = xt_new))
                       }
                       K_static <- as.integer(nTimesLookahead)
                       scan_out <- jax$lax$scan(f = decoder_step, 
                         init = xt_running, xs = NULL, length = K_static)
-                      y_mean <- jax$nn$softplus(scan_out[[2]])
+                      decoder_scan_out <- scan_out[[2]]
+                      y_mean <- jax$nn$softplus(decoder_scan_out$logits)
                       y_sigma <- jnp$ones_like(y_mean)
+                      TemporalLatents <- list(decoder_head_input = decoder_scan_out$decoder_head_input)
                       KL_TERM <- jnp$array(0)
                       ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
                       diff_eq_sol <- NULL
@@ -3469,23 +3473,30 @@
                           jnp$array(c(write_pos, 0L), dtype = jnp$int32))
                         y_t <- ModelList$TSList$TSBackbone$DecoderProj(embed_out)
                         list(list(list(xt_next, m_next), cache, 
-                          write_pos), y_t)
+                          write_pos), list(logits = y_t, decoder_head_input = embed_out))
                       }
                       scan_out2 <- jax$lax$scan(f = decode_step_cached, 
                         init = list(xt_running, kv_cache, insert_pos), 
                         xs = jnp$arange(start = 0L, stop = GEN_CAP - 
                           1L))
-                      y_tail <- scan_out2[[2]]
+                      decoder_scan_out2 <- scan_out2[[2]]
+                      y_tail <- decoder_scan_out2$logits
+                      head_tail <- decoder_scan_out2$decoder_head_input
                       count_i32 <- jnp$astype(GEN_CAP - 1L, jnp$int32)
-                      K <- scan_out2[[2]]$shape[[1]]
+                      K <- y_tail$shape[[1]]
                       idxK <- jnp$arange(K, dtype = jnp$int32)
                       keep_tail <- jnp$less(idxK, count_i32)
                       masked_tail <- jnp$where(jnp$expand_dims(keep_tail, 
-                        1L), scan_out2[[2]], jnp$zeros_like(scan_out2[[2]]))
+                        1L), y_tail, jnp$zeros_like(y_tail))
+                      masked_head_tail <- jnp$where(jnp$expand_dims(keep_tail, 
+                        1L), head_tail, jnp$zeros_like(head_tail))
                       y_all <- jnp$concatenate(list(jnp$expand_dims(y_first, 
                         0L), masked_tail), 0L)
+                      decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last, 
+                        0L), masked_head_tail), 0L)
                       y_mean <- jax$nn$softplus(y_all)
                       y_sigma <- jnp$ones_like(y_mean)
+                      TemporalLatents <- list(decoder_head_input = decoder_head_input_all)
                       KL_TERM <- jnp$array(0)
                       ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
                       diff_eq_sol <- NULL
@@ -3852,7 +3863,8 @@
                   }
                 }
                 return_v <- list(list(y_mu = y_mean, y_sigma = y_sigma, 
-                  KL_TERM = KL_TERM, ODEParamsSampList = c(ODEParamsSampList_args, 
+                  KL_TERM = KL_TERM, TemporalLatents = TemporalLatents, 
+                  ODEParamsSampList = c(ODEParamsSampList_args, 
                     ODEParamsSampList_y0, center_param = y_mean, 
                     scale_param = y_sigma, diff_eq_sol_ts = diff_eq_sol$ts, 
                     diff_eq_sol_ys = diff_eq_sol$ys)), state)
