@@ -20,7 +20,7 @@ ndm_latent_matrix(latents, source = "decoder_head_input", features = NULL)
 \item{x}{Either an `ndm_model`, an `ndm_trained_model`, or a prepared runtime
 environment that already contains the required runtime objects.}
 
-\item{batch}{Optional prediction batch passed through to \code{\link[=ndm_predict]{ndm_predict()}}.}
+\item{batch}{Optional prediction batch passed through to [ndm_predict()].}
 
 \item{seed}{Integer seed used to derive the per-example JAX RNG keys.}
 
@@ -30,25 +30,25 @@ path or training prediction path should be used.}
 \item{update_state}{Logical scalar indicating whether the runtime `state`
 object should be updated with the returned state.}
 
-\item{as_r}{Logical scalar. When \code{TRUE}, JAX arrays are copied to R arrays.}
+\item{as_r}{Logical scalar. When `TRUE`, JAX arrays are copied to R arrays.}
 
-\item{latents}{An object returned by \code{ndm_extract_temporal_latents()}.}
+\item{latents}{An object returned by `ndm_extract_temporal_latents()`.}
 
 \item{source}{Representation to flatten. Supported values include
-\code{"decoder_head_input"}, \code{"ode_local_hidden"}, \code{"ode_global_hidden"},
-\code{"ode_local_features"}, \code{"ode_global_features"}, and \code{"ode_states"}.}
+`"decoder_head_input"`, `"ode_local_hidden"`, `"ode_global_hidden"`,
+`"ode_local_features"`, `"ode_global_features"`, and `"ode_states"`.}
 
 \item{features}{Optional feature names or integer feature positions.}
 }
 \value{
-\code{ndm_extract_temporal_latents()} returns an
-  \code{ndm_temporal_latents} list. \code{ndm_latent_matrix()} returns a numeric matrix
+`ndm_extract_temporal_latents()` returns an
+  `ndm_temporal_latents` list. `ndm_latent_matrix()` returns a numeric matrix
   with rows ordered by batch within time.
 }
 \description{
-\code{ndm_extract_temporal_latents()} runs the existing prediction path and
+`ndm_extract_temporal_latents()` runs the existing prediction path and
 returns aligned temporal representations for decoder-only and NeuralODE
-models. \code{ndm_latent_matrix()} flattens one extracted representation to a
+models. `ndm_latent_matrix()` flattens one extracted representation to a
 two-dimensional matrix suitable for external analyses such as CCA.
 }
 \examples{
