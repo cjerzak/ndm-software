@@ -11261,6 +11261,12 @@
                   }
                 }
             }
+            post_training_hook <- get0("analysis2_multidisease_post_training_hook", 
+                inherits = TRUE, ifnotfound = NULL)
+            if (is.function(post_training_hook) && exists("ModelList", 
+                inherits = FALSE)) {
+                post_training_hook(environment())
+            }
             print2(sprintf("DONE with outer iteration sequence %s...", 
                 OUTER_ITERATION))
         }
