@@ -1249,7 +1249,7 @@ ndm_latent_matrix <- function(latents,
   if (is.null(x)) {
     stop("The requested latent source is not available.", call. = FALSE)
   }
-  if (is.list(x) && !is.null(names(x)) && !is.data.frame(x)) {
+  if (is.list(x) && !is.data.frame(x)) {
     x <- .ndm_feature_list_to_array(x, features = features)
   } else {
     x <- .ndm_array_select_features(x, features = features)

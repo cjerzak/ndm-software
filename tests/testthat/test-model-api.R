@@ -212,6 +212,52 @@ test_that("temporal latent extraction maps NeuralODE hidden and interpretable fe
   expect_equal(as.numeric(state_matrix[, 1]), as.numeric(s_state))
 })
 
+test_that("empty NeuralODE feature lists are unavailable rather than zero-row matrices", {
+  env <- ndm_test_runtime_env()
+  env$ModelType <- "NeuralODE"
+  env$ModelDims <- 4L
+  env$nOutcomes <- 1L
+  env$LocalNeuralEmbedDim <- 2L
+  env$GlobalNeuralEmbedDim <- 2L
+  env$uq_encneural_vec <- "beta_l"
+  env$uq_globalneural_vec <- character()
+
+  local_state <- array(seq(-3, 20), dim = c(2, 3, 4))
+  global_state <- array(seq_len(12), dim = c(2, 3, 2))
+  env$GetPred_inference <- function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed) {
+    list(
+      list(
+        y_mu = array(1, dim = c(2, 3, 1)),
+        y_sigma = array(1, dim = c(2, 3, 1)),
+        ODEParamsSampList = list(
+          "diff_eq_sol_ts" = 0:2,
+          "diff_eq_sol_ys.Neural1" = local_state,
+          "diff_eq_sol_ys.Neural2" = global_state,
+          center_param = array(1, dim = c(2, 3, 1)),
+          scale_param = array(1, dim = c(2, 3, 1))
+        )
+      ),
+      list(stage = "predicted")
+    )
+  }
+  trained <- structure(list(env = env, model_type = "NeuralODE"), class = "ndm_trained_model")
+
+  latents <- ndm_extract_temporal_latents(
+    trained,
+    batch = ndm_test_named_batch(),
+    update_state = FALSE
+  )
+
+  local_features <- ndm_latent_matrix(latents, "ode_local_features")
+  global_hidden <- ndm_latent_matrix(latents, "ode_global_hidden")
+  expect_equal(dim(local_features), c(6L, 1L))
+  expect_equal(dim(global_hidden), c(6L, 2L))
+  expect_error(
+    ndm_latent_matrix(latents, "ode_global_features"),
+    "No features are available for this latent source"
+  )
+})
+
 test_that("prediction and loss surface missing runtime bindings clearly", {
   env <- ndm_new_runtime_env()
   env$ModelList <- list(model = TRUE)
