@@ -1,5 +1,0 @@
-"label","error"
-"tb_d","ValueError: axis 0 is out of bounds for array of dimension 0
---------------------
-For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
-Run `reticulate::py_last_error()` for details."

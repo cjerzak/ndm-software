@@ -212,3 +212,25 @@ Reports/
 /Meta/
 /tmp/
 /Tmp/
+
+# macOS
+.DS_Store
+
+# R / RStudio local state
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# R package build/check artifacts
+*.Rcheck/
+..Rcheck/
+*.Rout
+*.Rout.fail
+*.Rout.save
+ndm_*.tar.gz
+
+# Project-generated outputs
+/reports/
+/SavedModels/
+/SavedResults/
