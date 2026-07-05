@@ -64,7 +64,13 @@ TB presets use `dynamics_variant = "balanced_incidence"` by default to
 keep the original progression topology while adding demographic renewal,
 active-disease exit back to susceptibility, and incidence-flow
 observations. Set `dynamics_variant = "progression"` for legacy one-way
-depletion dynamics. Balanced TB specs require incidence observations.}
+depletion dynamics. Set `dynamics_variant = "seir"` for the SEIR-style form
+of `reports/TBModels/TBDiseaseTypes_v2.md`: mass-action incidence
+`beta * S * I / N` replaces the constant force of infection `lambda`, an
+explicit removed compartment `r_l` is added with active-disease removal
+`gamma` (I to R), and demographic renewal `mu` keeps incidence sustained
+(endemic) for fitting. Both `balanced_incidence` and `seir` require
+incidence observations.}
 
 \item{path}{Path to a `.tex` model specification file on disk.}
 

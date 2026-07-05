@@ -84,6 +84,39 @@ active TB. Their default observation is the incidence flow into `i_l`; use
 `family_args = list(observation_target = "cumulative")` only when the data target
 is cumulative progression risk rather than incident active TB.
 
+### Dynamics variants
+
+Every `tb_*` family can be expanded under one of three `dynamics_variant`
+settings passed via `family_args`:
+
+- `"progression"` — the raw one-way depletion equations from
+  `reports/TBModels/TBDiseaseTypes.md` (constant per-capita force of infection
+  `lambda * s_l`, no removed compartment).
+- `"balanced_incidence"` (default) — the progression topology plus demographic
+  renewal (`mu`), active-disease exit back to susceptibility (`gamma_i`), and
+  latent mortality, so incidence stays sustained for fitting real panels.
+- `"seir"` — the SEIR-style form of
+  `reports/TBModels/TBDiseaseTypes_v2.md`. The constant force of infection is
+  replaced by mass-action incidence `beta * i_l / N` (the parameter `lambda` is
+  renamed to `beta`); an explicit removed compartment `r_l` is added with
+  active-disease removal `gamma` (I to R); and demographic renewal `mu` keeps
+  the epidemic endemic rather than a single burn-out wave. The observation
+  remains the gross active-TB incidence inflow (recorded before removal), so for
+  most structures it is unchanged, while the degenerate direct-progression
+  structure D and the direct-progression fractions of E and G observe the
+  mass-action inflow itself.
+
+```{r seir-variant, eval = FALSE}
+seir_spec <- ndm_model_spec(
+  preset = "tb_a",
+  model_type = "NeuralODE",
+  family_args = list(dynamics_variant = "seir")
+)
+seir_spec$state_terms                     # s_l, l_l, i_l, r_l
+seir_spec$execution_spec$equations[["r_l"]]  # "gamma * i_l - mu * r_l"
+seir_spec$execution_spec$observations     # "c * l_l" (gross incidence inflow)
+```
+
 ## Structured declarations
 
 `ndm_model_spec_from_structure()` accepts either:

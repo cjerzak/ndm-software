@@ -324,6 +324,124 @@ test_that("structured TB balanced incidence variant is population balanced", {
   }
 })
 
+test_that("structured TB seir variant produces sustained SEIR dynamics", {
+  tb_presets <- sprintf("tb_%s", letters[1:12])
+
+  for (preset in tb_presets) {
+    legacy_spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset, dynamics_variant = "progression")
+    )
+    spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset, dynamics_variant = "seir")
+    )
+
+    # New removed compartment, added exactly once.
+    expect_true("r_l" %in% spec$state_terms, info = preset)
+    expect_equal(length(spec$state_terms), length(legacy_spec$state_terms) + 1L, info = preset)
+    expect_equal(spec$execution_spec$equations[["r_l"]], "gamma * i_l - mu * r_l", info = preset)
+
+    # Parameter set: lambda replaced by beta; gamma + mu added; no balanced gamma_i.
+    expect_true(all(c("beta", "gamma", "mu") %in% spec$parameter_terms), info = preset)
+    expect_false("lambda" %in% spec$parameter_terms, info = preset)
+    expect_false("gamma_i" %in% spec$parameter_terms, info = preset)
+
+    # Mass-action force of infection + demographic renewal on S.
+    expect_true(grepl("(beta * i_l / N) * s_l", spec$execution_spec$equations[["s_l"]], fixed = TRUE), info = preset)
+    expect_true(grepl("mu * N", spec$execution_spec$equations[["s_l"]], fixed = TRUE), info = preset)
+    # Active-disease removal (into r_l) plus latent mortality on I.
+    expect_true(grepl("- gamma * i_l - mu * i_l", spec$execution_spec$equations[["i_l"]], fixed = TRUE), info = preset)
+    for (state in setdiff(spec$state_terms, c("s_l", "i_l", "r_l"))) {
+      expect_true(
+        grepl(paste0("- mu * ", state), spec$execution_spec$equations[[state]], fixed = TRUE),
+        info = paste(preset, state)
+      )
+    }
+
+    # Observation is the FOI-substituted gross incidence inflow (not the net i_l stock).
+    expected_obs <- ndm:::.ndm_compact_text(
+      gsub(
+        "(?<![[:alnum:]_])lambda(?![[:alnum:]_])",
+        "(beta * i_l / N)",
+        unname(legacy_spec$execution_spec$equations[["i_l"]]),
+        perl = TRUE
+      )
+    )
+    expect_equal(unname(spec$execution_spec$observations), expected_obs, info = preset)
+    expect_false(identical(
+      unname(spec$execution_spec$observations),
+      unname(spec$execution_spec$equations[["i_l"]])
+    ), info = preset)
+    expect_false(identical(spec$execution_spec$observations, "i_l"), info = preset)
+    # NOTE: unlike balanced, the seir observation MAY reference i_l via the FOI
+    # (structures D/E/G), so we intentionally do not assert its absence.
+
+    expect_equal(spec$family_args$dynamics_variant, "seir", info = preset)
+    expect_equal(spec$execution_spec$constants[["N"]], 1, info = preset)
+    # i_l init prior seeded above the disease-free equilibrium: initial_incidence/(gamma+mu).
+    expect_equal(
+      spec$execution_spec$state_init_priors[["i_l"]]$prior_mean,
+      0.08 / 1.02,
+      tolerance = 1e-12,
+      info = preset
+    )
+  }
+
+  expect_error(
+    ndm_model_spec(
+      preset = "tb_a",
+      model_type = "NeuralODE",
+      family_args = list(dynamics_variant = "seir", observation_target = "cumulative")
+    ),
+    "SEIR TB specs require"
+  )
+})
+
+test_that("structured TB seir variant is population balanced", {
+  tb_presets <- sprintf("tb_%s", letters[1:12])
+
+  for (preset in tb_presets) {
+    spec <- ndm_model_spec(
+      preset = preset,
+      model_type = "NeuralODE",
+      family_args = tb_family_args(preset, dynamics_variant = "seir")
+    )
+    env <- tb_numeric_equation_env(spec)
+    derivatives <- vapply(
+      spec$state_terms,
+      function(state) tb_eval_expression(spec$execution_spec$equations[[state]], env),
+      numeric(1L)
+    )
+    total_state <- sum(vapply(spec$state_terms, get, numeric(1L), envir = env))
+    expected <- get("mu", envir = env) * (get("N", envir = env) - total_state)
+
+    expect_equal(sum(derivatives), expected, tolerance = 1e-12, info = preset)
+  }
+})
+
+test_that("structured TB seir variant roundtrips through TeX metadata", {
+  spec <- ndm_model_spec(
+    preset = "tb_c",
+    model_type = "NeuralODE",
+    family_args = list(dynamics_variant = "seir")
+  )
+  tex_path <- tempfile(fileext = ".tex")
+  on.exit(unlink(tex_path), add = TRUE)
+
+  ndm_model_spec_to_tex(spec, path = tex_path)
+  roundtrip <- ndm_model_spec_from_tex(tex_path, model_type = "NeuralODE")
+
+  expect_equal(roundtrip$state_terms, spec$state_terms)
+  expect_true("r_l" %in% roundtrip$state_terms)
+  expect_equal(roundtrip$init_state_terms, spec$init_state_terms)
+  expect_equal(roundtrip$parameter_terms, spec$parameter_terms)
+  expect_equal(roundtrip$family_args$dynamics_variant, "seir")
+  expect_true(grepl("\\Evolve{r_l} = gamma * i_l - mu * r_l", roundtrip$tex_text, fixed = TRUE))
+})
+
 test_that("structured model specs roundtrip through TeX metadata", {
   spec <- ndm_model_spec(
     preset = "tb_k",

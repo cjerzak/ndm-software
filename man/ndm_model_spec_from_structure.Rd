@@ -24,7 +24,12 @@ preserving the original active-progression flow while adding normalized
 at-risk renewal (`N = 1`), active-disease exit back to susceptibility,
 latent mortality, and incidence-flow observations. Set
 `dynamics_variant = "progression"` for legacy one-way depletion dynamics.
-Balanced TB specs require incidence observations.}
+Set `dynamics_variant = "seir"` for the SEIR-style form of
+`reports/TBModels/TBDiseaseTypes_v2.md`: the constant force of infection
+`lambda` is replaced by mass-action incidence `beta * i_l / N`, an explicit
+removed compartment `r_l` is added with active-disease removal `gamma`, and
+demographic renewal `mu` sustains endemic incidence. Both
+`balanced_incidence` and `seir` require incidence observations.}
 }
 \value{
 An object of class `ndm_model_spec`.

@@ -206,14 +206,18 @@
   )
 }
 
+.ndm_replace_token <- function(expr, token, replacement) {
+  pattern <- sprintf("(?<![[:alnum:]_])%s(?![[:alnum:]_])", token)
+  gsub(pattern, replacement, expr, perl = TRUE)
+}
+
 .ndm_inline_auxiliary_expr <- function(expr, auxiliary) {
   expr <- .ndm_compact_text(expr)
   if (length(auxiliary) == 0L) {
     return(expr)
   }
   for (name in names(auxiliary)) {
-    pattern <- sprintf("(?<![[:alnum:]_])%s(?![[:alnum:]_])", name)
-    expr <- gsub(pattern, sprintf("(%s)", auxiliary[[name]]), expr, perl = TRUE)
+    expr <- .ndm_replace_token(expr, name, sprintf("(%s)", auxiliary[[name]]))
   }
   expr
 }
@@ -548,9 +552,9 @@
 .ndm_tb_dynamics_variant <- function(family_args) {
   variant <- family_args$dynamics_variant %||% "balanced_incidence"
   variant <- as.character(variant)
-  if (length(variant) != 1L || is.na(variant) || !variant %in% c("progression", "balanced_incidence")) {
+  if (length(variant) != 1L || is.na(variant) || !variant %in% c("progression", "balanced_incidence", "seir")) {
     stop(
-      "`family_args$dynamics_variant` must be either \"progression\" or \"balanced_incidence\".",
+      "`family_args$dynamics_variant` must be one of \"progression\", \"balanced_incidence\", or \"seir\".",
       call. = FALSE
     )
   }
@@ -642,6 +646,87 @@
   )
 }
 
+.ndm_tb_seir_parameters <- function(parameters, family_args) {
+  if (!"lambda" %in% names(parameters)) {
+    stop("SEIR TB specs require a `lambda` force-of-infection parameter to substitute.", call. = FALSE)
+  }
+  if (any(c("beta", "gamma", "mu") %in% names(parameters))) {
+    stop("SEIR TB specs reserve parameter names `beta`, `gamma`, and `mu`.", call. = FALSE)
+  }
+  rest <- parameters[setdiff(names(parameters), "lambda")]
+  c(
+    list(beta = .ndm_tb_positive_rate(
+      .ndm_tb_family_numeric_arg(family_args, "seir_beta_mean", 2.0),
+      .ndm_tb_family_numeric_arg(family_args, "seir_beta_sd", 0.5)
+    )),
+    rest,
+    list(
+      gamma = .ndm_tb_positive_rate(
+        .ndm_tb_family_numeric_arg(family_args, "seir_gamma_mean", 1.0),
+        .ndm_tb_family_numeric_arg(family_args, "seir_gamma_sd", 0.35)
+      ),
+      mu = .ndm_tb_positive_rate(
+        .ndm_tb_family_numeric_arg(family_args, "seir_mu_mean", 0.02),
+        .ndm_tb_family_numeric_arg(family_args, "seir_mu_sd", 0.05)
+      )
+    )
+  )
+}
+
+.ndm_tb_seir_state_init_priors <- function(states, family_args) {
+  priors <- stats::setNames(
+    replicate(length(states), .ndm_state_init_prior_spec(), simplify = FALSE),
+    states
+  )
+  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "seir_initial_incidence_mean", 0.08, positive = FALSE)
+  gamma <- .ndm_tb_family_numeric_arg(family_args, "seir_gamma_mean", 1.0)
+  mu <- .ndm_tb_family_numeric_arg(family_args, "seir_mu_mean", 0.02)
+  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "seir_i0_prior_sd", 0.1)
+  if ("i_l" %in% names(priors)) {
+    priors[["i_l"]] <- .ndm_state_init_prior_spec(
+      prior_mean = initial_incidence / (gamma + mu),
+      prior_sd = i0_sd
+    )
+  }
+  priors
+}
+
+.ndm_tb_seir_equations <- function(states, parameters, equations, family_args) {
+  incidence_source <- .ndm_compact_text(equations[["i_l"]] %||% "")
+  if (!nzchar(incidence_source)) {
+    stop("TB structures must define an `i_l` progression equation.", call. = FALSE)
+  }
+  if ("r_l" %in% states) {
+    stop("SEIR TB specs reserve the state name `r_l`.", call. = FALSE)
+  }
+  foi_replacement <- "(beta * i_l / N)"
+  seir_equations <- stats::setNames(
+    vapply(
+      equations,
+      function(expr) .ndm_compact_text(.ndm_replace_token(expr, "lambda", foi_replacement)),
+      character(1L)
+    ),
+    names(equations)
+  )
+  incidence_expr <- .ndm_compact_text(seir_equations[["i_l"]])
+  susceptible_outflow <- .ndm_tb_susceptible_infection_outflow(seir_equations)
+  latent_states <- setdiff(states, c("s_l", "i_l"))
+  seir_equations[["s_l"]] <- sprintf("mu * N - (%s) - mu * s_l", susceptible_outflow)
+  for (state in latent_states) {
+    seir_equations[[state]] <- sprintf("(%s) - mu * %s", seir_equations[[state]], state)
+  }
+  seir_equations[["i_l"]] <- sprintf("(%s) - gamma * i_l - mu * i_l", incidence_expr)
+  seir_equations[["r_l"]] <- "gamma * i_l - mu * r_l"
+  seir_states <- c(states, "r_l")
+  list(
+    states = seir_states,
+    parameters = .ndm_tb_seir_parameters(parameters, family_args),
+    equations = seir_equations,
+    incidence_expr = incidence_expr,
+    state_init_priors = .ndm_tb_seir_state_init_priors(seir_states, family_args)
+  )
+}
+
 .ndm_tb_observations_from_equations <- function(equations, observation_target, incidence_expr = NULL) {
   if (identical(observation_target, "cumulative")) {
     return("i_l")
@@ -672,6 +757,21 @@
     args$equations <- balanced$equations
     args$state_init_priors <- args$state_init_priors %||% balanced$state_init_priors
     incidence_expr <- balanced$incidence_expr
+  } else if (identical(dynamics_variant, "seir")) {
+    if (identical(observation_target, "cumulative")) {
+      stop("SEIR TB specs require `observation_target = \"incidence\"`.", call. = FALSE)
+    }
+    seir <- .ndm_tb_seir_equations(
+      states = args$states,
+      parameters = args$parameters,
+      equations = args$equations,
+      family_args = family_args
+    )
+    args$states <- seir$states
+    args$parameters <- seir$parameters
+    args$equations <- seir$equations
+    args$state_init_priors <- args$state_init_priors %||% seir$state_init_priors
+    incidence_expr <- seir$incidence_expr
   }
   args$observations <- .ndm_tb_observations_from_equations(
     equations = args$equations,
@@ -1130,7 +1230,12 @@
 #'   at-risk renewal (`N = 1`), active-disease exit back to susceptibility,
 #'   latent mortality, and incidence-flow observations. Set
 #'   `dynamics_variant = "progression"` for legacy one-way depletion dynamics.
-#'   Balanced TB specs require incidence observations.
+#'   Set `dynamics_variant = "seir"` for the SEIR-style form of
+#'   `reports/TBModels/TBDiseaseTypes_v2.md`: the constant force of infection
+#'   `lambda` is replaced by mass-action incidence `beta * i_l / N`, an explicit
+#'   removed compartment `r_l` is added with active-disease removal `gamma`, and
+#'   demographic renewal `mu` sustains endemic incidence. Both
+#'   `balanced_incidence` and `seir` require incidence observations.
 #'
 #' @returns An object of class `ndm_model_spec`.
 #'
