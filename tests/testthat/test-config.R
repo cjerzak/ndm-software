@@ -24,7 +24,9 @@ test_that("configuration objects preserve requested modeling defaults", {
       "neuralode_optim_dt0",
       "neuralode_optim_controller",
       "neuralode_optim_rtol",
-      "neuralode_optim_atol"
+      "neuralode_optim_atol",
+      "neuralode_variational",
+      "neuralode_kl_weight"
     )
   )
   expect_null(cfg$neuralode_local_latent_dim)
@@ -36,6 +38,8 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_equal(cfg$neuralode_optim_controller, "pid")
   expect_equal(cfg$neuralode_optim_rtol, 1e-5)
   expect_equal(cfg$neuralode_optim_atol, 1e-7)
+  expect_false(cfg$neuralode_variational)
+  expect_equal(cfg$neuralode_kl_weight, 1)
 })
 
 test_that("NeuralODE remains a supported model type", {
@@ -45,6 +49,21 @@ test_that("NeuralODE remains a supported model type", {
   )
 
   expect_equal(cfg$model_type, "NeuralODE")
+})
+
+test_that("NeuralODE variational config validates KL weight", {
+  cfg <- ndm_create_config(
+    model_type = "NeuralODE",
+    neuralode_variational = TRUE,
+    neuralode_kl_weight = 0.25
+  )
+
+  expect_true(cfg$neuralode_variational)
+  expect_equal(cfg$neuralode_kl_weight, 0.25)
+  expect_error(
+    ndm_create_config(model_type = "NeuralODE", neuralode_kl_weight = -1),
+    "non-negative"
+  )
 })
 
 test_that("default configs do not expose runtime-root fields", {

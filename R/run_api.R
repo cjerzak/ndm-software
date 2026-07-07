@@ -235,16 +235,12 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     grid_file <- NULL
     sim_grid <- as.data.frame(grid, stringsAsFactors = FALSE)
   } else {
-    if (!startsWith(grid_file, "/")) {
-      grid_file <- file.path(project_root, grid_file)
-    }
+    grid_file <- .ndm_path_join_if_relative(project_root, grid_file)
     grid_file <- .ndm_normalize_path(grid_file, must_work = TRUE)
     sim_grid <- as.data.frame(data.table::fread(grid_file), stringsAsFactors = FALSE)
   }
 
-  if (!startsWith(tfrecord_dir, "/")) {
-    tfrecord_dir <- file.path(project_root, tfrecord_dir)
-  }
+  tfrecord_dir <- .ndm_path_join_if_relative(project_root, tfrecord_dir)
   tfrecord_dir <- .ndm_normalize_path(tfrecord_dir, must_work = FALSE)
 
   api_env <- .ndm_legacy_run_env()
@@ -367,9 +363,7 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
   )
 
   if (!is.null(grid_file)) {
-    if (!startsWith(grid_file, "/")) {
-      grid_file <- file.path(config$project_root, grid_file)
-    }
+    grid_file <- .ndm_path_join_if_relative(config$project_root, grid_file)
     args <- c(args, sprintf("--grid_file=%s", grid_file))
   }
   if (!is.null(config$model_type) && nzchar(config$model_type)) {
@@ -377,16 +371,12 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
   }
   if (!is.null(config$tfrecord_dir) && nzchar(config$tfrecord_dir)) {
     tfrecord_dir <- config$tfrecord_dir
-    if (!startsWith(tfrecord_dir, "/")) {
-      tfrecord_dir <- file.path(config$project_root, tfrecord_dir)
-    }
+    tfrecord_dir <- .ndm_path_join_if_relative(config$project_root, tfrecord_dir)
     args <- c(args, sprintf("--tfrecord_dir=%s", tfrecord_dir))
   }
   if (!is.null(config$raw_data_dir) && nzchar(config$raw_data_dir)) {
     raw_data_dir <- config$raw_data_dir
-    if (!startsWith(raw_data_dir, "/")) {
-      raw_data_dir <- file.path(config$project_root, raw_data_dir)
-    }
+    raw_data_dir <- .ndm_path_join_if_relative(config$project_root, raw_data_dir)
     args <- c(args, sprintf("--raw_data_dir=%s", raw_data_dir))
   }
   if (!is.null(config$outcome_metric) && nzchar(config$outcome_metric)) {
@@ -492,6 +482,10 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     analysis2_small_run_n_obs_inference <- .ndm_run_env_get(env, "analysis2_small_run_n_obs_inference")
     analysis2_model_type <- .ndm_run_env_get(env, "analysis2_model_type")
 
+    old_error <- getOption("error")
+    old_wd <- getwd()
+    on.exit(options(error = old_error), add = TRUE)
+    on.exit(setwd(old_wd), add = TRUE)
     options(error = NULL)
     analysis2_log("Starting package-native multidisease runner")
     spec <- analysis2_build_run_spec("multidisease", args)
@@ -548,7 +542,15 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
       chdir = FALSE
     )
 
-    invisible(get0("analysis2_multidisease_result", envir = driver_env, inherits = FALSE, ifnotfound = TRUE))
+    if (!exists("analysis2_multidisease_result", envir = driver_env, inherits = FALSE)) {
+      stop("Legacy multidisease driver completed without assigning `analysis2_multidisease_result`.", call. = FALSE)
+    }
+    result <- get("analysis2_multidisease_result", envir = driver_env, inherits = FALSE)
+    if (!isTRUE(result)) {
+      stop("Legacy multidisease driver did not report successful completion.", call. = FALSE)
+    }
+
+    invisible(result)
   }
   assign("analysis2_run_real_multidisease", run_real_multidisease, envir = env)
 

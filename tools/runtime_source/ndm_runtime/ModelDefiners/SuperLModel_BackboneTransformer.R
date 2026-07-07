@@ -1,14 +1,18 @@
 # Content of SuperLModel_BackboneTransformer.R
 print("Done with SuperLModel_BackboneTransformer.R")
 if(backbonePath == "initialize"){
+  backbone_runtime_lookup_env <- environment()
+  backbone_runtime_get0 <- function(name, ifnotfound = NULL) {
+    get0(name, envir = backbone_runtime_lookup_env, inherits = FALSE, ifnotfound = ifnotfound)
+  }
   TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), function(d) d$device_kind))), error = function(e) FALSE)
-  EnableKVCaching <- get0("EnableKVCaching", ifnotfound = (ModelType == "DecoderOnly"))
+  EnableKVCaching <- backbone_runtime_get0("EnableKVCaching", ifnotfound = (ModelType == "DecoderOnly"))
   EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType == "DecoderOnly")
   # Full attention residuals are now the default transformer residual path.
   # Set UseFullAttentionResiduals = FALSE in runtime globals to opt back into
   # the legacy additive residual implementation for compatibility testing.
-  UseFullAttentionResiduals <- isTRUE(get0("UseFullAttentionResiduals", ifnotfound = TRUE))
-  FullAttentionResidualEps <- as.numeric(get0("FullAttentionResidualEps", ifnotfound = 1e-6))
+  UseFullAttentionResiduals <- isTRUE(backbone_runtime_get0("UseFullAttentionResiduals", ifnotfound = TRUE))
+  FullAttentionResidualEps <- as.numeric(backbone_runtime_get0("FullAttentionResidualEps", ifnotfound = 1e-6))
   num_heads <- TransformerHeads
   num_kv_heads <- TransformerKVHeads
   head_dim <- TransformerHeadDim
@@ -1019,7 +1023,7 @@ if(backbonePath == "initialize"){
                                             "WtResidPath"=jnp$squeeze(oryx$Normal(loc = WtResidPathInit_inv,
                                                                  scale =  0.0000001)$sample( list(ModelDims), seed = 4001L+key)$astype(jaxFloatType),1L))
     TransformerList[[l_]]$ResidCon2 <-  list("WtSkipPath"=jnp$squeeze(oryx$Normal(loc = WtSkipPathInit_inv,
-                                                                 scale =  0.0000001)$sample( list(ModelDims), seed = 4002L+ key)$astype(jaxFloatType,1L)),
+                                                                 scale =  0.0000001)$sample( list(ModelDims), seed = 4002L+ key)$astype(jaxFloatType),1L),
                                             "WtResidPath"=jnp$squeeze(oryx$Normal(loc = WtResidPathInit_inv,
                                                                   scale =  0.0000001)$sample( list(ModelDims), seed =4003L+ key)$astype(jaxFloatType),1L))
   }

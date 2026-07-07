@@ -58,8 +58,11 @@ ndm_test_artifact_env <- function(include_opt_state = TRUE) {
   env$nTimesPast <- 8L
   env$nTimesLookahead <- 4L
   env$nBatch <- 2L
-  env$SIM_GLOBAL_SCALE_MEAN <- 0
-  env$SIM_GLOBAL_SCALE_SD <- 1
+  env$SIM_GLOBAL_SCALE_MEAN <- c(0, 1)
+  env$SIM_GLOBAL_SCALE_SD <- c(1, 2)
+  env$plain_runtime_scalar <- 42L
+  env$python_extra <- structure(list(value = TRUE), class = "python.builtin.object")
+  env$VI_diff_eq_solver_optim <- structure(list(value = TRUE), class = "python.builtin.object")
   env$in_loss_vec <- c(1, 0.5, NA_real_)
   env$grad_norm_vec <- c(0.8, 0.4, NA_real_)
   env$i_ <- 2L
@@ -146,12 +149,27 @@ test_that("ndm_save_model writes artifact metadata and filtered runtime globals"
   expect_true(inherits(metadata$config, "ndm_config"))
   expect_equal(metadata$data_generator, "sim")
   expect_equal(metadata$bundle_ref$train_file, normalizePath(train_file, winslash = "/", mustWork = TRUE))
+  expect_equal(metadata$scaler_values$mean, c(0, 1))
+  expect_equal(metadata$scaler_values$sd, c(1, 2))
   expect_false("ModelList" %in% names(runtime_globals))
   expect_false("state" %in% names(runtime_globals))
   expect_false("opt_state" %in% names(runtime_globals))
   expect_false("batch_l_cal" %in% names(runtime_globals))
   expect_false("TFDataset_train" %in% names(runtime_globals))
+  expect_false("python_extra" %in% names(runtime_globals))
+  expect_false("VI_diff_eq_solver_optim" %in% names(runtime_globals))
+  expect_equal(runtime_globals$plain_runtime_scalar, 42L)
   expect_equal(training_state$resume_iteration, 3L)
+})
+
+test_that("artifact globals reject unsupported restored runtime objects", {
+  globals_file <- tempfile(fileext = ".rds")
+  saveRDS(list(ok = 1L, bad_env = new.env(parent = emptyenv())), globals_file)
+
+  expect_error(
+    ndm:::.ndm_collect_artifact_globals(globals_file),
+    "unsupported runtime objects: bad_env"
+  )
 })
 
 test_that("ndm_load_model rebuilds the runtime and restores checkpoint payloads", {

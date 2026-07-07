@@ -42,9 +42,7 @@
   if (is.null(candidate) || !nzchar(candidate)) {
     return(NULL)
   }
-  if (!startsWith(candidate, "/")) {
-    candidate <- file.path(project_root, candidate)
-  }
+  candidate <- .ndm_path_join_if_relative(project_root, candidate)
   .ndm_normalize_path(candidate, must_work = FALSE)
 }
 

@@ -194,12 +194,41 @@ ndm_resume_training <- function(path,
     "py_gc", "tf", "oryx", "send2cpu", "send2gpu", "SoftPlus", "Sigmoid",
     "InvSoftPlus", "switch_filter_jit", "JaxKey", "jaxFloatType",
     "DefaultDtypeTf", "force2GPU", "ReSaveTfRecords", "NDM_INTERNAL_ANALYSIS_DIR",
+    "diff_eq_solver", "VI_diff_eq_solver", "VI_diff_eq_solver_optim",
+    "VI_diff_eq_solver_dgp", "stepsize_controller", "stepsize_controller_optim",
+    "stepsize_controller_dgp", "VI_SaveAt_ODE", "VI_SaveAt_ODE_sim",
+    "VI_SaveAt_ODE_optim", "diffraxInterpolator",
     "ModelList", "state", "opt_state", "PriorList", "PolicyList",
     "GetPredSaveAtInfo_default", "GetPred_inference", "GetPred_train_jit",
     "getLoss_train", "gradLoss_jax", "TFDataset_train", "TFDatasetIterator_train",
     "TFDataset_inference", "TFDatasetIterator_inference", "batch_l_cal",
     "jax_batchx", "jax_batchy", "ndm_tfrecord_bundle_ref", "SavedModelDir"
   )
+}
+
+.ndm_is_python_backed_object <- function(x) {
+  any(c(
+    "python.builtin.object",
+    "python.builtin.module",
+    "python.builtin.function",
+    "python.builtin.method",
+    "python.builtin.type"
+  ) %in% class(x))
+}
+
+.ndm_is_artifact_runtime_value <- function(x) {
+  if (is.function(x) || is.environment(x) || identical(typeof(x), "externalptr") ||
+      .ndm_is_python_backed_object(x)) {
+    return(FALSE)
+  }
+  if (is.null(x) || is.atomic(x) || is.data.frame(x) ||
+      inherits(x, "ndm_config") || inherits(x, "ndm_model_spec")) {
+    return(TRUE)
+  }
+  if (is.list(x)) {
+    return(all(vapply(x, .ndm_is_artifact_runtime_value, logical(1))))
+  }
+  FALSE
 }
 
 .ndm_artifact_training_state_names <- function() {
@@ -223,7 +252,7 @@ ndm_resume_training <- function(path,
   }
 
   values <- mget(keep, envir = runtime_env, inherits = FALSE)
-  values[!vapply(values, is.function, logical(1))]
+  values[vapply(values, .ndm_is_artifact_runtime_value, logical(1))]
 }
 
 .ndm_artifact_last_completed_iteration <- function(runtime_env) {
@@ -266,6 +295,14 @@ ndm_resume_training <- function(path,
                        ls(runtime_env, all.names = TRUE))
   has_aux_state <- any(c("ModelList_notshared_set", "sim_dat_norm_list") %in%
                          ls(runtime_env, all.names = TRUE))
+  scaler_values <- if (isTRUE(has_scalers)) {
+    list(
+      mean = get("SIM_GLOBAL_SCALE_MEAN", envir = runtime_env, inherits = FALSE),
+      sd = get("SIM_GLOBAL_SCALE_SD", envir = runtime_env, inherits = FALSE)
+    )
+  } else {
+    NULL
+  }
 
   list(
     version = .ndm_artifact_version(),
@@ -278,6 +315,7 @@ ndm_resume_training <- function(path,
     bundle_ref = bundle_ref,
     has_opt_state = isTRUE(has_opt_state),
     has_scalers = isTRUE(has_scalers),
+    scaler_values = scaler_values,
     has_aux_state = isTRUE(has_aux_state),
     has_training_state = isTRUE(has_training_state)
   )
@@ -287,7 +325,19 @@ ndm_resume_training <- function(path,
   if (!file.exists(path)) {
     return(list())
   }
-  readRDS(path)
+  globals <- readRDS(path)
+  if (!is.list(globals)) {
+    stop("Artifact runtime globals must be stored as a named list.", call. = FALSE)
+  }
+  invalid <- names(globals)[!vapply(globals, .ndm_is_artifact_runtime_value, logical(1))]
+  if (length(invalid) > 0L) {
+    stop(
+      "Artifact runtime snapshot contains unsupported runtime objects: ",
+      paste(invalid, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  globals
 }
 
 .ndm_write_artifact_checkpoint <- function(runtime_env, metadata, files) {
@@ -399,8 +449,17 @@ ndm_resume_training <- function(path,
     like[[length(like) + 1L]] <- get("opt_state", envir = runtime_env, inherits = FALSE)
   }
   if (isTRUE(metadata$has_scalers)) {
-    mean_like <- .ndm_runtime_get0(runtime_env, "SIM_GLOBAL_SCALE_MEAN", ifnotfound = 0)
-    sd_like <- .ndm_runtime_get0(runtime_env, "SIM_GLOBAL_SCALE_SD", ifnotfound = 1)
+    saved_scalers <- metadata$scaler_values %||% list()
+    mean_like <- .ndm_runtime_get0(
+      runtime_env,
+      "SIM_GLOBAL_SCALE_MEAN",
+      ifnotfound = saved_scalers$mean %||% 0
+    )
+    sd_like <- .ndm_runtime_get0(
+      runtime_env,
+      "SIM_GLOBAL_SCALE_SD",
+      ifnotfound = saved_scalers$sd %||% 1
+    )
     like[[length(like) + 1L]] <- jnp$array(list(mean_like, sd_like))
   }
 

@@ -395,12 +395,9 @@
                        "Context_mask" = c2a(0.),  # unused 
                        "location_id_numeric" = jnp$expand_dims(jnp$array(rep(0., times = nBatch)), 1L),
                        "time_id_numeric" = jnp$expand_dims(jnp$array(rep(0., times = nBatch)), 1L),
-                       "YTrue" = (YTrue_ <- jnp$concatenate(list(jnp$expand_dims(YTrue_d,2L),
-                                                      jnp$expand_dims(PolicyDat_all, 2L)), 2L)),
+                       "YTrue" = (YTrue_ <- jnp$expand_dims(YTrue_d,2L)),
                        "YTrue_mask" = jnp$ones_like(YTrue_),
-                       "YTrue_out" = (YTrue_out_ <- jnp$concatenate(list(
-                                       jnp$expand_dims(YTrue_d_out,2L),
-                                       jnp$expand_dims(PolicyDat_out,2L)),2L)), #4
+                       "YTrue_out" = (YTrue_out_ <- jnp$expand_dims(YTrue_d_out,2L)), #4
                        "YTrue_out_mask" = jnp$ones_like(YTrue_out_),
                        "inv_beta_true" = inv_beta_true, #5
                        "gamma_true" = c2a(SimEntry$gamma), #6

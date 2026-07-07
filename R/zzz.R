@@ -37,6 +37,20 @@ ndm_print <- function(text, quiet = FALSE) {
   normalizePath(path, winslash = "/", mustWork = must_work)
 }
 
+.ndm_is_absolute_path <- function(path) {
+  if (length(path) != 1L || is.na(path) || !nzchar(path)) {
+    return(FALSE)
+  }
+  grepl("^(/|[A-Za-z]:[/\\\\]|[/\\\\]{2})", path)
+}
+
+.ndm_path_join_if_relative <- function(root, path) {
+  if (.ndm_is_absolute_path(path) || startsWith(path, "~")) {
+    return(path)
+  }
+  file.path(root, path)
+}
+
 .ndm_package_root <- function() {
   pkg_root <- system.file(package = "ndm")
   if (nzchar(pkg_root)) {
@@ -199,6 +213,11 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   `neuralode_optim_controller = "pid"`.
 #' @param neuralode_optim_atol Absolute tolerance used when
 #'   `neuralode_optim_controller = "pid"`.
+#' @param neuralode_variational Logical scalar. When `FALSE`, NeuralODE
+#'   training uses deterministic posterior means instead of stochastic
+#'   variational samples.
+#' @param neuralode_kl_weight Non-negative scalar KL multiplier used only when
+#'   `neuralode_variational = TRUE`.
 #' @param ... Additional named values appended to the configuration object.
 #'
 #' @returns `ndm_create_config()` returns an object of class `ndm_config`.
@@ -223,6 +242,8 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_optim_controller = c("pid", "constant"),
                               neuralode_optim_rtol = 1e-5,
                               neuralode_optim_atol = 1e-7,
+                              neuralode_variational = FALSE,
+                              neuralode_kl_weight = 1.0,
                               ...) {
   model_type <- match.arg(model_type)
   float_type <- match.arg(float_type)
@@ -230,6 +251,10 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   neuralode_optim_controller <- match.arg(neuralode_optim_controller)
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
+  }
+  neuralode_kl_weight <- suppressWarnings(as.numeric(neuralode_kl_weight))
+  if (length(neuralode_kl_weight) != 1L || is.na(neuralode_kl_weight) || neuralode_kl_weight < 0) {
+    stop("`neuralode_kl_weight` must be a non-negative numeric scalar.", call. = FALSE)
   }
 
   extras <- list(...)
@@ -248,7 +273,9 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     neuralode_optim_dt0 = neuralode_optim_dt0,
     neuralode_optim_controller = neuralode_optim_controller,
     neuralode_optim_rtol = neuralode_optim_rtol,
-    neuralode_optim_atol = neuralode_optim_atol
+    neuralode_optim_atol = neuralode_optim_atol,
+    neuralode_variational = isTRUE(neuralode_variational),
+    neuralode_kl_weight = neuralode_kl_weight
   )
 
   config <- c(config, extras)

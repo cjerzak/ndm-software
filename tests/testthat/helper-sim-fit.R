@@ -125,9 +125,7 @@ ndm_test_fit_sim_case <- function(model_type,
     backbone = "transformer",
     float_type = "32",
     force_to_gpu = FALSE,
-    resave_tfrecords = TRUE,
-    neuralode_optim_dt0 = 1e0,
-    neuralode_optim_controller = "constant"
+    resave_tfrecords = TRUE
   )
   if (is.list(config_overrides) && length(config_overrides) > 0L) {
     config_defaults <- utils::modifyList(config_defaults, config_overrides)

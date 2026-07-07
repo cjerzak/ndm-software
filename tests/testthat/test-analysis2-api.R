@@ -697,6 +697,95 @@ test_that("run config helpers validate mutually exclusive grid inputs and outer 
   )
 })
 
+test_that("path helpers recognize POSIX, Windows, UNC, and relative paths", {
+  expect_true(ndm:::.ndm_is_absolute_path("/tmp/grid.csv"))
+  expect_true(ndm:::.ndm_is_absolute_path("C:\\tmp\\grid.csv"))
+  expect_true(ndm:::.ndm_is_absolute_path("//server/share/grid.csv"))
+  expect_false(ndm:::.ndm_is_absolute_path("Data/RunGrids/grid.csv"))
+
+  expect_equal(
+    ndm:::.ndm_path_join_if_relative("/project", "Data/RunGrids/grid.csv"),
+    file.path("/project", "Data/RunGrids/grid.csv")
+  )
+  expect_equal(
+    ndm:::.ndm_path_join_if_relative("/project", "C:\\tmp\\grid.csv"),
+    "C:\\tmp\\grid.csv"
+  )
+})
+
+ndm_test_fake_multidisease_env <- function(driver_text, project_root = tempfile("ndm-runner-project-")) {
+  dir.create(project_root, recursive = TRUE, showWarnings = FALSE)
+  analysis_root <- file.path(project_root, "Analysis")
+  driver_dir <- file.path(analysis_root, "SetupEnv")
+  dir.create(driver_dir, recursive = TRUE, showWarnings = FALSE)
+  writeLines(driver_text, file.path(driver_dir, "Analysis2_legacy_multidisease_driver.R"))
+
+  grid_file <- file.path(project_root, "grid.csv")
+  utils::write.csv(data.frame(BaseID = 1L, nSamplesTrain = 32L), grid_file, row.names = FALSE)
+
+  env <- new.env(parent = emptyenv())
+  env$analysis2_log <- function(...) invisible(NULL)
+  env$analysis2_build_run_spec <- function(mode, args) {
+    list(
+      help = FALSE,
+      dry_run = FALSE,
+      paths = list(project_root = project_root, analysis_root = analysis_root),
+      grid_file = grid_file,
+      project_root = project_root,
+      analysis_name = "FakeMultidisease",
+      outer = 1L
+    )
+  }
+  env$analysis2_print_usage <- function(...) "usage"
+  env$analysis2_order_grid <- function(grid, outer) grid
+  env$analysis2_validate_outer_iterations <- function(...) invisible(TRUE)
+  env$analysis2_dry_run_result <- function(...) list(dry_run = TRUE)
+  env$analysis2_prepare_output_roots <- function(...) invisible(TRUE)
+  env$analysis2_dir_create <- function(path) dir.create(path, recursive = TRUE, showWarnings = FALSE)
+  env$analysis2_as_int <- as.integer
+  env$analysis2_small_run_n_checkpoints <- function(...) 1L
+  env$analysis2_small_run_n_obs_inference <- function(...) 1L
+  env$analysis2_model_type <- function(...) "NeuralODE"
+  ndm:::.ndm_override_legacy_multidisease_runner(env)
+  env
+}
+
+test_that("multidisease runner restores cwd and error option", {
+  old_wd <- getwd()
+  old_error <- getOption("error")
+  sentinel_error <- quote(stop("sentinel"))
+  on.exit(setwd(old_wd), add = TRUE)
+  on.exit(options(error = old_error), add = TRUE)
+  options(error = sentinel_error)
+
+  project_root <- tempfile("ndm-runner-project-")
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  env <- ndm_test_fake_multidisease_env("analysis2_multidisease_result <- TRUE", project_root)
+  run_fun <- get("analysis2_run_real_multidisease", envir = env, inherits = FALSE)
+
+  result <- run_fun(character())
+
+  expect_true(isTRUE(result))
+  expect_identical(getwd(), old_wd)
+  expect_identical(getOption("error"), sentinel_error)
+})
+
+test_that("multidisease runner errors when legacy driver omits result", {
+  old_wd <- getwd()
+  on.exit(setwd(old_wd), add = TRUE)
+
+  project_root <- tempfile("ndm-runner-project-")
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  env <- ndm_test_fake_multidisease_env("invisible(TRUE)", project_root)
+  run_fun <- get("analysis2_run_real_multidisease", envir = env, inherits = FALSE)
+
+  expect_error(
+    run_fun(character()),
+    "without assigning `analysis2_multidisease_result`"
+  )
+  expect_identical(getwd(), old_wd)
+})
+
 test_that("multidisease run configs reject retired TFRecord regeneration", {
   expect_error(
     ndm_create_multidisease_run_config(

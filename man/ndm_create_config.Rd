@@ -21,6 +21,8 @@ ndm_create_config(
   neuralode_optim_controller = c("pid", "constant"),
   neuralode_optim_rtol = 1e-05,
   neuralode_optim_atol = 1e-07,
+  neuralode_variational = FALSE,
+  neuralode_kl_weight = 1,
   ...
 )
 
@@ -72,7 +74,15 @@ Use `"pid"` or `"constant"`.}
 \item{neuralode_optim_atol}{Absolute tolerance used when
 `neuralode_optim_controller = "pid"`.}
 
-\item{...}{Unused; included for S3 method compatibility.}
+\item{neuralode_variational}{Logical scalar. When `FALSE`, NeuralODE
+training uses deterministic posterior means instead of stochastic
+variational samples.}
+
+\item{neuralode_kl_weight}{Non-negative scalar KL multiplier used only when
+`neuralode_variational = TRUE`.}
+
+\item{...}{Additional named values appended to the configuration object.
+Unused by `print.ndm_config()`.}
 
 \item{x}{An `ndm_config` object.}
 }

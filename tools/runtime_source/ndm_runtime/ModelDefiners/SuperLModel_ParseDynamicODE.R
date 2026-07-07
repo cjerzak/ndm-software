@@ -68,12 +68,14 @@
       zer2_names <- gsub(zer2_names,pattern="\\{",replace="")
       zer2_names <- gsub(zer2_names,pattern="\\}",replace="")
       zer2_names_loc <- which(zer2_names == context_variables) - 1L # 0 indexed
-      zer2_names_loc <- paste(zer2_names_loc,'L',sep="")
+      if(length(zer2_names_loc) != 1L || is.na(zer2_names_loc)){
+        stop(sprintf("Context variable `%s` is not available.", zer2_names), call. = FALSE)
+      }
       if(grepl(zer2_names,pattern="_t")){
-        zer2 <- eval(sprintf("jnp$take(context_, jnp$array(%s), axis = 1L)",zer2_names_loc))
+        zer2 <- jnp$take(context_, jnp$array(as.integer(zer2_names_loc)), axis = 1L)
       }
       if(!grepl(zer2_names,pattern="_t")){
-        zer2 <- eval(sprintf("jnp$take(jnp$take(context_, jnp$array(%s), axis = 1L),0L,axis=0L)",zer2_names_loc))
+        zer2 <- jnp$take(jnp$take(context_, jnp$array(as.integer(zer2_names_loc)), axis = 1L),0L,axis=0L)
       }
       zer1[1] <- zer2
       zer1[2] <- gsub(zer1[2],pattern=" ",replace="")

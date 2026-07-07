@@ -154,3 +154,20 @@ test_that("generated embedded runtime sources stay in sync with runtime source f
     )
   }
 })
+
+test_that("runtime source keeps NeuralODE and transformer regression fixes", {
+  source_root <- runtime_registry_source_root()
+  build_ml <- runtime_source_text(source_root, "ModelDefiners/SuperLModel_BuildML.R")
+  sim_data <- runtime_source_text(source_root, "SetupData/SuperLModel_DataGenerator_Sim.R")
+  transformer <- runtime_source_text(source_root, "ModelDefiners/SuperLModel_BackboneTransformer.R")
+  parser <- runtime_source_text(source_root, "ModelDefiners/SuperLModel_ParseDynamicODE.R")
+  analysis2_api <- runtime_source_text(source_root, "SetupEnv/Analysis2_api.R")
+
+  expect_match(build_ml, "neuralode_variational", fixed = TRUE)
+  expect_match(build_ml, "jnp$mean(GetPred_output$KL_TERM)", fixed = TRUE)
+  expect_match(build_ml, "testWithoutSampling <- !isTRUE(neuralode_variational)", fixed = TRUE)
+  expect_match(sim_data, "\"YTrue_out\" = (YTrue_out_ <- jnp$expand_dims(YTrue_d_out,2L))", fixed = TRUE)
+  expect_false(grepl("astype\\(jaxFloatType,1L\\)", transformer))
+  expect_false(grepl("eval\\(sprintf", parser))
+  expect_match(analysis2_api, "ndm.analysis2.expose_runtime_env", fixed = TRUE)
+})

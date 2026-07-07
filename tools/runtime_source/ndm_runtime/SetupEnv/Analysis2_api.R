@@ -361,7 +361,8 @@ analysis2_path_from_project <- function(path, project_root, must_work = FALSE) {
   if (startsWith(value, "~")) {
     return(normalizePath(path.expand(value), winslash = "/", mustWork = must_work))
   }
-  if (!startsWith(value, "/")) {
+  is_absolute <- grepl("^(/|[A-Za-z]:[/\\\\]|[/\\\\]{2})", value)
+  if (!is_absolute) {
     value <- file.path(project_root, value)
   }
   normalizePath(value, winslash = "/", mustWork = must_work)
@@ -745,7 +746,21 @@ analysis2_prepare_runtime <- function(ndm_pkg, config) {
   analysis2_call(ndm_pkg, "ndm_prepare_runtime", config = config, runtime_env = runtime_env)
 }
 
-analysis2_expose_runtime_env <- function(runtime_env, target_env = globalenv()) {
+analysis2_runtime_global_exposure_enabled <- function() {
+  default <- getOption("ndm.analysis2.expose_runtime_env", TRUE)
+  flag <- get0(
+    "analysis2_expose_runtime_env_enabled",
+    envir = globalenv(),
+    inherits = FALSE,
+    ifnotfound = default
+  )
+  isTRUE(flag)
+}
+
+analysis2_expose_runtime_env <- function(runtime_env, target_env = globalenv(), force = FALSE) {
+  if (!isTRUE(force) && !analysis2_runtime_global_exposure_enabled()) {
+    return(invisible(runtime_env))
+  }
   names_all <- ls(runtime_env, all.names = TRUE)
   if (length(names_all) == 0L) {
     return(invisible(runtime_env))
@@ -2340,8 +2355,8 @@ analysis2_sim_runtime_globals <- function(row_values,
     VI_diff_eq_solver_dgp = diffrax$Tsit5(),
     dt0_init_dgp = 1e-3,
     stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-6, atol = 1e-7),
-    dt0_init_optim = 1e0,
-    stepsize_controller_optim = diffrax$ConstantStepSize(),
+    dt0_init_optim = 1e-3,
+    stepsize_controller_optim = diffrax$PIDController(rtol = 1e-5, atol = 1e-7),
     diffraxInterpolator = diffrax$LinearInterpolation,
     analysis2_sim_get_batch = get_batch,
     GetBatch = get_batch,
@@ -2374,6 +2389,10 @@ analysis2_dry_run_result <- function(spec,
 }
 
 analysis2_run_real <- function(args = commandArgs(TRUE)) {
+  old_error <- getOption("error")
+  old_wd <- getwd()
+  on.exit(options(error = old_error), add = TRUE)
+  on.exit(setwd(old_wd), add = TRUE)
   options(error = NULL)
   analysis2_log("Starting Analysis2 SuperLModel_MasterReal.R")
   spec <- analysis2_build_run_spec("real", args)
@@ -2609,6 +2628,10 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
 }
 
 analysis2_run_sim <- function(args = commandArgs(TRUE)) {
+  old_error <- getOption("error")
+  old_wd <- getwd()
+  on.exit(options(error = old_error), add = TRUE)
+  on.exit(setwd(old_wd), add = TRUE)
   options(error = NULL)
   analysis2_log("Starting Analysis2 SuperLModel_MasterSim.R")
   spec <- analysis2_build_run_spec("sim", args)
@@ -2825,6 +2848,10 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
 }
 
 analysis2_run_real_multidisease <- function(args = commandArgs(TRUE)) {
+  old_error <- getOption("error")
+  old_wd <- getwd()
+  on.exit(options(error = old_error), add = TRUE)
+  on.exit(setwd(old_wd), add = TRUE)
   options(error = NULL)
   analysis2_log("Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R")
   spec <- analysis2_build_run_spec("multidisease", args)
@@ -2859,5 +2886,13 @@ analysis2_run_real_multidisease <- function(args = commandArgs(TRUE)) {
     chdir = FALSE
   )
 
-  invisible(get0("analysis2_multidisease_result", envir = driver_env, inherits = FALSE, ifnotfound = TRUE))
+  if (!exists("analysis2_multidisease_result", envir = driver_env, inherits = FALSE)) {
+    stop("Legacy multidisease driver completed without assigning `analysis2_multidisease_result`.", call. = FALSE)
+  }
+  result <- get("analysis2_multidisease_result", envir = driver_env, inherits = FALSE)
+  if (!isTRUE(result)) {
+    stop("Legacy multidisease driver did not report successful completion.", call. = FALSE)
+  }
+
+  invisible(result)
 }

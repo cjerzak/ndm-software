@@ -1433,11 +1433,9 @@
                     1L))$astype(XPred$dtype), Context = c2a(0), 
                     Context_mask = c2a(0), location_id_numeric = jnp$expand_dims(jnp$array(rep(0, 
                       times = nBatch)), 1L), time_id_numeric = jnp$expand_dims(jnp$array(rep(0, 
-                      times = nBatch)), 1L), YTrue = (YTrue_ <- jnp$concatenate(list(jnp$expand_dims(YTrue_d, 
-                      2L), jnp$expand_dims(PolicyDat_all, 2L)), 
+                      times = nBatch)), 1L), YTrue = (YTrue_ <- jnp$expand_dims(YTrue_d, 
                       2L)), YTrue_mask = jnp$ones_like(YTrue_), 
-                    YTrue_out = (YTrue_out_ <- jnp$concatenate(list(jnp$expand_dims(YTrue_d_out, 
-                      2L), jnp$expand_dims(PolicyDat_out, 2L)), 
+                    YTrue_out = (YTrue_out_ <- jnp$expand_dims(YTrue_d_out, 
                       2L)), YTrue_out_mask = jnp$ones_like(YTrue_out_), 
                     inv_beta_true = inv_beta_true, gamma_true = c2a(SimEntry$gamma), 
                     sigma_true = c2a(SimEntry$sigma), xi_true = c2a(SimEntry$xi), 
@@ -2550,9 +2548,16 @@
         }
         return(ret_)
     }
+    ndm_runtime_lookup_env <- environment()
+    ndm_runtime_get0 <- function(name, ifnotfound = NULL) {
+        get0(name, envir = ndm_runtime_lookup_env, inherits = FALSE, 
+            ifnotfound = ifnotfound)
+    }
     doGeoInfo <- FALSE
-    AppendPlaceEmbeds <- isTRUE(get0("AppendPlaceEmbeds", ifnotfound = TRUE))
-    AppendTimeEmbeds <- isTRUE(get0("AppendTimeEmbeds", ifnotfound = TRUE))
+    AppendPlaceEmbeds <- isTRUE(ndm_runtime_get0("AppendPlaceEmbeds", 
+        ifnotfound = TRUE))
+    AppendTimeEmbeds <- isTRUE(ndm_runtime_get0("AppendTimeEmbeds", 
+        ifnotfound = TRUE))
     DecodingInNeuralODE <- FALSE
     UseLatentAttention <- FALSE
     LatentDim <- as.integer(ModelDims/4)
@@ -2642,9 +2647,10 @@
             list(num_query_heads = num_query_heads, num_kv_heads = num_kv_heads, 
                 head_dim = head_dim, kv_group_size = ai(num_query_heads%/%num_kv_heads))
         }
-        AttentionHeadDim <- max(1L, ai(get0("AttentionHeadDim", 
+        AttentionHeadDim <- max(1L, ai(ndm_runtime_get0("AttentionHeadDim", 
             ifnotfound = 64L)))
-        AttentionKVHeads <- get0("AttentionKVHeads", ifnotfound = NULL)
+        AttentionKVHeads <- ndm_runtime_get0("AttentionKVHeads", 
+            ifnotfound = NULL)
         if (!is.null(AttentionKVHeads)) {
             AttentionKVHeads <- ai(AttentionKVHeads)
         }
@@ -2655,8 +2661,16 @@
         TransformerHeadDim <- TransformerTopology$head_dim
         TransformerKVGroupSize <- TransformerTopology$kv_group_size
         DoPriorSamplingAutoDiff <- F
-        UseDiagonalLMatVCov <- isTRUE(get0("UseDiagonalLMatVCov", 
+        UseDiagonalLMatVCov <- isTRUE(ndm_runtime_get0("UseDiagonalLMatVCov", 
             ifnotfound = TRUE))
+        neuralode_variational <- isTRUE(ndm_runtime_get0("neuralode_variational", 
+            ifnotfound = FALSE))
+        neuralode_kl_weight <- suppressWarnings(as.numeric(ndm_runtime_get0("neuralode_kl_weight", 
+            ifnotfound = 1)))
+        if (length(neuralode_kl_weight) != 1L || is.na(neuralode_kl_weight) || 
+            neuralode_kl_weight < 0) {
+            stop("neuralode_kl_weight must be a non-negative scalar.")
+        }
         Constrained2Unconstrained <- function(target_mean_of_transformated_x, 
             transformation, sd) {
             ex_seq <- seq(-100, 100, length.out = 10000)
@@ -3280,7 +3294,7 @@
             args_samp_vec <- c(args_samp_vec, args_context_vec)
             names(args_samp_vec) <- paste(names(args_samp_vec), 
                 "_samp", sep = "")
-            uq_initcond_vec <- get0("InitStateTerms", inherits = TRUE, 
+            uq_initcond_vec <- ndm_runtime_get0("InitStateTerms", 
                 ifnotfound = uq_y_vec[!uq_y_vec %in% uq_allneural_vec])
             uq_initcond_vec <- as.character(uq_initcond_vec)
             init_state_supported_terms <- unique(uq_initcond_vec)
@@ -3292,12 +3306,11 @@
                 stop("NeuralODE init-state softmax requires unique `InitStateTerms`.", 
                   call. = FALSE)
             }
-            init_logit_param_names <- get0("InitStateLogitParamNames", 
-                inherits = TRUE, ifnotfound = paste0("InitStateLogit_", 
-                  uq_initcond_vec))
+            init_logit_param_names <- ndm_runtime_get0("InitStateLogitParamNames", 
+                ifnotfound = paste0("InitStateLogit_", uq_initcond_vec))
             init_logit_param_names <- as.character(init_logit_param_names)
-            init_scale_param_name <- as.character(get0("InitStateScaleParamName", 
-                inherits = TRUE, ifnotfound = "InitStateLogitScale"))
+            init_scale_param_name <- as.character(ndm_runtime_get0("InitStateScaleParamName", 
+                ifnotfound = "InitStateLogitScale"))
             init_param_indices <- match(init_logit_param_names, 
                 lDepParamsVec_)
             if (anyNA(init_param_indices)) {
@@ -3319,8 +3332,8 @@
                 if (length(init_logit_offset_default) > 0L) {
                   names(init_logit_offset_default) <- uq_initcond_vec
                 }
-                init_logit_offset_raw <- get0("InitStateLogitOffset", 
-                  inherits = TRUE, ifnotfound = init_logit_offset_default)
+                init_logit_offset_raw <- ndm_runtime_get0("InitStateLogitOffset", 
+                  ifnotfound = init_logit_offset_default)
                 init_logit_offset_names <- names(init_logit_offset_raw)
                 init_logit_offset <- as.numeric(init_logit_offset_raw)
                 if (length(init_logit_offset) == 1L) {
@@ -3346,8 +3359,8 @@
                   init_logit_offset <- init_logit_offset[uq_initcond_vec]
                 }
                 init_logit_offset <- jnp$array(as.numeric(init_logit_offset))$astype(init_m$dtype)
-                init_logit_scale_max <- suppressWarnings(as.numeric(get0("InitStateLogitScaleMax", 
-                  inherits = TRUE, ifnotfound = Inf)))
+                init_logit_scale_max <- suppressWarnings(as.numeric(ndm_runtime_get0("InitStateLogitScaleMax", 
+                  ifnotfound = Inf)))
                 if (length(init_logit_scale_max) == 0L) {
                   init_logit_scale_max <- Inf
                 }
@@ -3686,9 +3699,36 @@
                     }
                   }
                   KL_TERM <- jnp$array(0)
-                  testWithoutSampling <- isTRUE(get0("testWithoutSampling", 
+                  if (isTRUE(neuralode_variational) && !prior_sampling) {
+                    if (exists("localParamPrior_base", envir = ndm_runtime_lookup_env, 
+                      inherits = FALSE)) {
+                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD, 
+                        localParamPrior_base)))
+                    }
+                    if (exists("localParamPrior_neural", envir = ndm_runtime_lookup_env, 
+                      inherits = FALSE)) {
+                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD_neural, 
+                        localParamPrior_neural)))
+                    }
+                    if (length(ArgNoDeps) > 0 && nGlobalParams > 
+                      0L && exists("globalParamPrior_base", envir = ndm_runtime_lookup_env, 
+                      inherits = FALSE)) {
+                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(globalParamD, 
+                        globalParamPrior_base)))
+                    }
+                    if (nFixedLocal > 0 && exists("fixedLocalParamPrior_base", 
+                      envir = ndm_runtime_lookup_env, inherits = FALSE)) {
+                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(fixedLocalParamD, 
+                        fixedLocalParamPrior_base)))
+                    }
+                    KL_TERM <- jnp$multiply(jnp$array(as.numeric(neuralode_kl_weight)), 
+                      KL_TERM)
+                  }
+                  testWithoutSampling_requested <- isTRUE(ndm_runtime_get0("testWithoutSampling", 
                     ifnotfound = FALSE))
-                  if (testWithoutSampling) {
+                  testWithoutSampling <- !isTRUE(neuralode_variational) || 
+                    testWithoutSampling_requested
+                  if (testWithoutSampling_requested) {
                     warning("Testing with no sampling!")
                   }
                   if (!testWithoutSampling) {
@@ -3940,9 +3980,10 @@
                 {
                   likelihood_d <- jnp$negative((GetPred_output$ODEParamsSampList$center_param - 
                     y)^2)
-                  minThis <- jnp$negative(jnp$sum(likelihood_d * 
+                  mse_loss <- jnp$negative(jnp$sum(likelihood_d * 
                     y_mask$astype(likelihood_d$dtype))/(0.001 + 
                     jnp$sum(y_mask$astype(likelihood_d$dtype))))
+                  minThis <- jnp$add(mse_loss, jnp$mean(GetPred_output$KL_TERM))
                 }
                 return(list(minThis, state))
             }
@@ -3984,15 +4025,20 @@
 
 .ndm_stage_expr_ModelDefiners_SuperLModel_BackboneTransformer <- expression(print("Done with SuperLModel_BackboneTransformer.R"), 
     if (backbonePath == "initialize") {
+        backbone_runtime_lookup_env <- environment()
+        backbone_runtime_get0 <- function(name, ifnotfound = NULL) {
+            get0(name, envir = backbone_runtime_lookup_env, inherits = FALSE, 
+                ifnotfound = ifnotfound)
+        }
         TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), 
             function(d) d$device_kind))), error = function(e) FALSE)
-        EnableKVCaching <- get0("EnableKVCaching", ifnotfound = (ModelType == 
-            "DecoderOnly"))
+        EnableKVCaching <- backbone_runtime_get0("EnableKVCaching", 
+            ifnotfound = (ModelType == "DecoderOnly"))
         EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType == 
             "DecoderOnly")
-        UseFullAttentionResiduals <- isTRUE(get0("UseFullAttentionResiduals", 
+        UseFullAttentionResiduals <- isTRUE(backbone_runtime_get0("UseFullAttentionResiduals", 
             ifnotfound = TRUE))
-        FullAttentionResidualEps <- as.numeric(get0("FullAttentionResidualEps", 
+        FullAttentionResidualEps <- as.numeric(backbone_runtime_get0("FullAttentionResidualEps", 
             ifnotfound = 1e-06))
         num_heads <- TransformerHeads
         num_kv_heads <- TransformerKVHeads
@@ -4835,7 +4881,7 @@
                 key)$astype(jaxFloatType), 1L))
             TransformerList[[l_]]$ResidCon2 <- list(WtSkipPath = jnp$squeeze(oryx$Normal(loc = WtSkipPathInit_inv, 
                 scale = 1e-07)$sample(list(ModelDims), seed = 4002L + 
-                key)$astype(jaxFloatType, 1L)), WtResidPath = jnp$squeeze(oryx$Normal(loc = WtResidPathInit_inv, 
+                key)$astype(jaxFloatType), 1L), WtResidPath = jnp$squeeze(oryx$Normal(loc = WtResidPathInit_inv, 
                 scale = 1e-07)$sample(list(ModelDims), seed = 4003L + 
                 key)$astype(jaxFloatType), 1L))
         }
@@ -4928,14 +4974,17 @@
             zer2_names <- gsub(zer2_names, pattern = "\\}", replace = "")
             zer2_names_loc <- which(zer2_names == context_variables) - 
                 1L
-            zer2_names_loc <- paste(zer2_names_loc, "L", sep = "")
+            if (length(zer2_names_loc) != 1L || is.na(zer2_names_loc)) {
+                stop(sprintf("Context variable `%s` is not available.", 
+                  zer2_names), call. = FALSE)
+            }
             if (grepl(zer2_names, pattern = "_t")) {
-                zer2 <- eval(sprintf("jnp$take(context_, jnp$array(%s), axis = 1L)", 
-                  zer2_names_loc))
+                zer2 <- jnp$take(context_, jnp$array(as.integer(zer2_names_loc)), 
+                  axis = 1L)
             }
             if (!grepl(zer2_names, pattern = "_t")) {
-                zer2 <- eval(sprintf("jnp$take(jnp$take(context_, jnp$array(%s), axis = 1L),0L,axis=0L)", 
-                  zer2_names_loc))
+                zer2 <- jnp$take(jnp$take(context_, jnp$array(as.integer(zer2_names_loc)), 
+                  axis = 1L), 0L, axis = 0L)
             }
             zer1[1] <- zer2
             zer1[2] <- gsub(zer1[2], pattern = " ", replace = "")
@@ -9197,7 +9246,9 @@
         return(normalizePath(path.expand(value), winslash = "/", 
             mustWork = must_work))
     }
-    if (!startsWith(value, "/")) {
+    is_absolute <- grepl("^(/|[A-Za-z]:[/\\\\]|[/\\\\]{2})", 
+        value)
+    if (!is_absolute) {
         value <- file.path(project_root, value)
     }
     normalizePath(value, winslash = "/", mustWork = must_work)
@@ -9476,7 +9527,17 @@
         parent = globalenv())
     analysis2_call(ndm_pkg, "ndm_prepare_runtime", config = config, 
         runtime_env = runtime_env)
-}, analysis2_expose_runtime_env <- function(runtime_env, target_env = globalenv()) {
+}, analysis2_runtime_global_exposure_enabled <- function() {
+    default <- getOption("ndm.analysis2.expose_runtime_env", 
+        TRUE)
+    flag <- get0("analysis2_expose_runtime_env_enabled", envir = globalenv(), 
+        inherits = FALSE, ifnotfound = default)
+    isTRUE(flag)
+}, analysis2_expose_runtime_env <- function(runtime_env, target_env = globalenv(), 
+    force = FALSE) {
+    if (!isTRUE(force) && !analysis2_runtime_global_exposure_enabled()) {
+        return(invisible(runtime_env))
+    }
     names_all <- ls(runtime_env, all.names = TRUE)
     if (length(names_all) == 0L) {
         return(invisible(runtime_env))
@@ -10465,9 +10526,10 @@
             1L))), VI_diff_eq_solver_optim = diffrax$Tsit5(), 
         VI_diff_eq_solver_dgp = diffrax$Tsit5(), dt0_init_dgp = 0.001, 
         stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-06, 
-            atol = 1e-07), dt0_init_optim = 1, stepsize_controller_optim = diffrax$ConstantStepSize(), 
-        diffraxInterpolator = diffrax$LinearInterpolation, analysis2_sim_get_batch = get_batch, 
-        GetBatch = get_batch, GetBatch_sim = get_batch, GetBatch_base = get_batch, 
+            atol = 1e-07), dt0_init_optim = 0.001, stepsize_controller_optim = diffrax$PIDController(rtol = 1e-05, 
+            atol = 1e-07), diffraxInterpolator = diffrax$LinearInterpolation, 
+        analysis2_sim_get_batch = get_batch, GetBatch = get_batch, 
+        GetBatch_sim = get_batch, GetBatch_base = get_batch, 
         input_df_red_in = data.frame(dummy = 0), input_df_red_out = data.frame(dummy = 0), 
         input_df_red_full = data.frame(dummy = 0), SIM_GLOBAL_SCALE_MEAN = sim_scaler$mean, 
         SIM_GLOBAL_SCALE_SD = sim_scaler$sd, SIM_GLOBAL_OUTCOME_SD = sim_outcome_sd, 
@@ -10479,6 +10541,10 @@
         grid_rows = nrow(grid), outer_rows = spec$outer, grid_preview = preview, 
         training_schedule = nsgd_calibration))
 }, analysis2_run_real <- function(args = commandArgs(TRUE)) {
+    old_error <- getOption("error")
+    old_wd <- getwd()
+    on.exit(options(error = old_error), add = TRUE)
+    on.exit(setwd(old_wd), add = TRUE)
     options(error = NULL)
     analysis2_log("Starting Analysis2 SuperLModel_MasterReal.R")
     spec <- analysis2_build_run_spec("real", args)
@@ -10619,6 +10685,10 @@
     }
     invisible(TRUE)
 }, analysis2_run_sim <- function(args = commandArgs(TRUE)) {
+    old_error <- getOption("error")
+    old_wd <- getwd()
+    on.exit(options(error = old_error), add = TRUE)
+    on.exit(setwd(old_wd), add = TRUE)
     options(error = NULL)
     analysis2_log("Starting Analysis2 SuperLModel_MasterSim.R")
     spec <- analysis2_build_run_spec("sim", args)
@@ -10762,6 +10832,10 @@
     }
     invisible(TRUE)
 }, analysis2_run_real_multidisease <- function(args = commandArgs(TRUE)) {
+    old_error <- getOption("error")
+    old_wd <- getwd()
+    on.exit(options(error = old_error), add = TRUE)
+    on.exit(setwd(old_wd), add = TRUE)
     options(error = NULL)
     analysis2_log("Starting Analysis2 SuperLModel_MasterReal_MultiDisease.R")
     spec <- analysis2_build_run_spec("multidisease", args)
@@ -10792,8 +10866,18 @@
     driver_env$analysis2_multidisease_grid <- real_grid
     source(file.path(paths$analysis_root, "SetupEnv", "Analysis2_legacy_multidisease_driver.R"), 
         local = driver_env, chdir = FALSE)
-    invisible(get0("analysis2_multidisease_result", envir = driver_env, 
-        inherits = FALSE, ifnotfound = TRUE))
+    if (!exists("analysis2_multidisease_result", envir = driver_env, 
+        inherits = FALSE)) {
+        stop("Legacy multidisease driver completed without assigning `analysis2_multidisease_result`.", 
+            call. = FALSE)
+    }
+    result <- get("analysis2_multidisease_result", envir = driver_env, 
+        inherits = FALSE)
+    if (!isTRUE(result)) {
+        stop("Legacy multidisease driver did not report successful completion.", 
+            call. = FALSE)
+    }
+    invisible(result)
 })
 
 .ndm_multidisease_driver_expr <- expression({

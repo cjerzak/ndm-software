@@ -2,11 +2,15 @@
 {
 print("Starting SuperLModel_BuildML.R")
 DisappList <- function(.){ret_<-.;if(is.list(.)){if(length(unlist(.))==0){ret_ <- NULL}};return(ret_)}
+ndm_runtime_lookup_env <- environment()
+ndm_runtime_get0 <- function(name, ifnotfound = NULL) {
+  get0(name, envir = ndm_runtime_lookup_env, inherits = FALSE, ifnotfound = ifnotfound)
+}
 
 # Special tokens config 
 doGeoInfo <- FALSE
-AppendPlaceEmbeds <- isTRUE(get0("AppendPlaceEmbeds", ifnotfound = TRUE))
-AppendTimeEmbeds <- isTRUE(get0("AppendTimeEmbeds", ifnotfound = TRUE))
+AppendPlaceEmbeds <- isTRUE(ndm_runtime_get0("AppendPlaceEmbeds", ifnotfound = TRUE))
+AppendTimeEmbeds <- isTRUE(ndm_runtime_get0("AppendTimeEmbeds", ifnotfound = TRUE))
 
 # Latent Attention config
 DecodingInNeuralODE <- FALSE
@@ -104,8 +108,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       "kv_group_size" = ai(num_query_heads %/% num_kv_heads)
     )
   }
-  AttentionHeadDim <- max(1L, ai(get0("AttentionHeadDim", ifnotfound = 64L)))
-  AttentionKVHeads <- get0("AttentionKVHeads", ifnotfound = NULL)
+  AttentionHeadDim <- max(1L, ai(ndm_runtime_get0("AttentionHeadDim", ifnotfound = 64L)))
+  AttentionKVHeads <- ndm_runtime_get0("AttentionKVHeads", ifnotfound = NULL)
   if (!is.null(AttentionKVHeads)) {
     AttentionKVHeads <- ai(AttentionKVHeads)
   }
@@ -121,7 +125,12 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
 
   #BackboneType <- "mamba"; StateSize <- 4L
   DoPriorSamplingAutoDiff <- F
-  UseDiagonalLMatVCov <- isTRUE(get0("UseDiagonalLMatVCov", ifnotfound = TRUE))
+  UseDiagonalLMatVCov <- isTRUE(ndm_runtime_get0("UseDiagonalLMatVCov", ifnotfound = TRUE))
+  neuralode_variational <- isTRUE(ndm_runtime_get0("neuralode_variational", ifnotfound = FALSE))
+  neuralode_kl_weight <- suppressWarnings(as.numeric(ndm_runtime_get0("neuralode_kl_weight", ifnotfound = 1.0)))
+  if(length(neuralode_kl_weight) != 1L || is.na(neuralode_kl_weight) || neuralode_kl_weight < 0){
+    stop("neuralode_kl_weight must be a non-negative scalar.")
+  }
 
   # define model architecture via input
   Constrained2Unconstrained <- function(target_mean_of_transformated_x, transformation, sd){
@@ -826,9 +835,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     names(args_samp_vec) <- paste(names(args_samp_vec),"_samp",sep="")
 
     # select initial conditions
-    uq_initcond_vec <- get0(
+    uq_initcond_vec <- ndm_runtime_get0(
       "InitStateTerms",
-      inherits = TRUE,
       ifnotfound = uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
     )
     uq_initcond_vec <- as.character(uq_initcond_vec)
@@ -842,14 +850,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     if (length(init_state_supported_terms) != length(uq_initcond_vec)) {
       stop("NeuralODE init-state softmax requires unique `InitStateTerms`.", call. = FALSE)
     }
-    init_logit_param_names <- get0(
+    init_logit_param_names <- ndm_runtime_get0(
       "InitStateLogitParamNames",
-      inherits = TRUE,
       ifnotfound = paste0("InitStateLogit_", uq_initcond_vec)
     )
     init_logit_param_names <- as.character(init_logit_param_names)
     init_scale_param_name <- as.character(
-      get0("InitStateScaleParamName", inherits = TRUE, ifnotfound = "InitStateLogitScale")
+      ndm_runtime_get0("InitStateScaleParamName", ifnotfound = "InitStateLogitScale")
     )
     init_param_indices <- match(init_logit_param_names, lDepParamsVec_)
     if (anyNA(init_param_indices)) {
@@ -875,9 +882,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       if (length(init_logit_offset_default) > 0L) {
         names(init_logit_offset_default) <- uq_initcond_vec
       }
-      init_logit_offset_raw <- get0(
+      init_logit_offset_raw <- ndm_runtime_get0(
         "InitStateLogitOffset",
-        inherits = TRUE,
         ifnotfound = init_logit_offset_default
       )
       init_logit_offset_names <- names(init_logit_offset_raw)
@@ -910,7 +916,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         init_logit_offset <- init_logit_offset[uq_initcond_vec]
       }
       init_logit_offset <- jnp$array(as.numeric(init_logit_offset))$astype(init_m$dtype)
-      init_logit_scale_max <- suppressWarnings(as.numeric(get0("InitStateLogitScaleMax", inherits = TRUE, ifnotfound = Inf)))
+      init_logit_scale_max <- suppressWarnings(as.numeric(ndm_runtime_get0("InitStateLogitScaleMax", ifnotfound = Inf)))
       if(length(init_logit_scale_max) == 0L){ init_logit_scale_max <- Inf }
       if(length(init_logit_scale_max) != 1L){
         stop("InitStateLogitScaleMax must be scalar.")
@@ -1392,14 +1398,26 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         }
       }
   
-      # KL divergences -- set to 0 for now
       KL_TERM <- jnp$array(0.)
-      #KL_TERM <- oryx$kl_divergence(localParamD, localParamPrior_base)
-      #KL_TERM <- jnp$add(KL_TERM, jnp$divide(oryx$kl_divergence(globalParamD,globalParamPrior_base), jnp$array(as.numeric(nBatch ))))
-      # for KL, must specify separately for l + non-l-dep params
-  
-      testWithoutSampling <- isTRUE(get0("testWithoutSampling", ifnotfound = FALSE))
-      if(testWithoutSampling){ warning("Testing with no sampling!")}
+      if(isTRUE(neuralode_variational) && !prior_sampling){
+        if(exists("localParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE)){
+          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD, localParamPrior_base)))
+        }
+        if(exists("localParamPrior_neural", envir = ndm_runtime_lookup_env, inherits = FALSE)){
+          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD_neural, localParamPrior_neural)))
+        }
+        if(length(ArgNoDeps) > 0 && nGlobalParams > 0L && exists("globalParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE)){
+          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(globalParamD, globalParamPrior_base)))
+        }
+        if(nFixedLocal > 0 && exists("fixedLocalParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE)){
+          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(fixedLocalParamD, fixedLocalParamPrior_base)))
+        }
+        KL_TERM <- jnp$multiply(jnp$array(as.numeric(neuralode_kl_weight)), KL_TERM)
+      }
+
+      testWithoutSampling_requested <- isTRUE(ndm_runtime_get0("testWithoutSampling", ifnotfound = FALSE))
+      testWithoutSampling <- !isTRUE(neuralode_variational) || testWithoutSampling_requested
+      if(testWithoutSampling_requested){ warning("Testing with no sampling!")}
   
       # sample local
       if(!testWithoutSampling){ local_x_base_params_samp <- localParamD$sample(seed = jnp$add(seed, jnp$array(25L))) }
@@ -1713,8 +1731,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
 
           # which(is.na(rowMeans(np$array(likelihood_d))))
           # minThis <- jnp$add(jnp$negative(jnp$sum(likelihood_d)), KL_div)
-          minThis <- jnp$negative( jnp$sum(likelihood_d*y_mask$astype(likelihood_d$dtype)) /
+          mse_loss <- jnp$negative( jnp$sum(likelihood_d*y_mask$astype(likelihood_d$dtype)) /
                                      (0.001+jnp$sum(y_mask$astype(likelihood_d$dtype)) ) )
+          minThis <- jnp$add(mse_loss, jnp$mean(GetPred_output$KL_TERM))
         }
         return( list(minThis, state)  )
       }
