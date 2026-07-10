@@ -35,7 +35,11 @@ COMMAND_ARG_INPUT <- if (length(analysis2_multidisease_spec$outer) == 1L) {
 OUTER_ITERATION_SEQUENCE <- as.integer(analysis2_multidisease_spec$outer)
 setwd(analysis2_multidisease_spec$project_root)
 print(sprintf("wd is: {%s}", getwd()))
-set.seed(theInitialSeed <- 12L)
+configured_run_seed <- analysis2_multidisease_spec$run_seed
+if (!is.null(configured_run_seed)) {
+  configured_run_seed <- analysis2_as_int(configured_run_seed)
+}
+set.seed(theInitialSeed <- if (is.null(configured_run_seed)) 12L else configured_run_seed)
 
 # Maintainer note:
 # This driver still uses sourced globals for the actual training loop. Only the
@@ -149,7 +153,11 @@ if (is.null(nsgd_calibration)) {
   )
 }
 nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
+nSGD_DefiningLRSeq <- nSGD_model <- if (ReSaveTfRecords) {
+  0L
+} else {
+  as.integer(nsgd_calibration$resolved_n_sgd)
+}
 nSGD_posttrain <- nSGD_model
 nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, nSGD_model, nCheckpointsDefault)
 nSGDPolicy <- as.character(nsgd_calibration$policy)
@@ -186,7 +194,8 @@ if( !ReSaveTfRecords ){
 for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   print2(sprintf("STARTING outer iteration sequence %s...", OUTER_ITERATION))
   {
-  set.seed( SEED_ <- ai(OUTER_ITERATION) )
+  SEED_ <- if (is.null(configured_run_seed)) ai(OUTER_ITERATION) else configured_run_seed
+  set.seed(SEED_)
     
   # process grid entry 
   RealEntry <- RealGrid[OUTER_ITERATION,]
@@ -199,7 +208,11 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   if(exists("nSamplesTrain") && !is.na(nSamplesTrain) && nSamplesTrain > 0){
     nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
     nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-    nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
+    nSGD_DefiningLRSeq <- nSGD_model <- if (ReSaveTfRecords) {
+      0L
+    } else {
+      as.integer(nsgd_calibration$resolved_n_sgd)
+    }
     nSGD_posttrain <- nSGD_model
     nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, nSGD_model, nCheckpointsDefault)
     nObsInference <- analysis2_small_run_n_obs_inference(
@@ -236,8 +249,14 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   ModelType <- analysis2_model_type(analysis2_multidisease_spec, RealEntry$ModelType, default = "DecoderOnly")
   print(sprintf("Using model type: %s", ModelType))
   
-   # setup master ODE solution parameters
-   ndm_source_extracted("SetupEnv/SuperLModel_MasterImports.R")
+  # setup master ODE solution parameters
+  ndm_source_extracted("SetupEnv/SuperLModel_MasterImports.R")
+  if (exists("tf", inherits = FALSE) && !is.null(tf$random$set_seed)) {
+    tf$random$set_seed(as.integer(SEED_))
+  }
+  if (exists("np", inherits = FALSE) && !is.null(np$random$seed)) {
+    np$random$seed(as.integer(SEED_))
+  }
   
    # setup some parameters
    {
@@ -350,14 +369,35 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   
   ## obtain test set given evaluation design
   {
-    # sapply(evaluation_seq,function(e_){round(quantile(sort( unique( truth_df_red$time_id )),prob = e_/(max(evaluation_seq)+1)))})
-    in_out_cutpoint <- round(quantile(sort( unique( truth_df_red$time_id )),
-                                      prob = evaluationTime/(max(evaluation_seq)+1)))
-    #times_out <- times_out # if just one prospective time
-    #times_out <- c(in_out_cutpoint+1, (in_out_cutpoint+nTimesLookahead*c(1/4,2/4,3/4,4/4))) # look at four times into the future 
-    times_out <- in_out_cutpoint+1
-    times_out <- times_out[times_out<=max(truth_df_red$time_id)]
-    times_in <- 0L:(in_out_cutpoint)
+    explicit_origin_time_id <- suppressWarnings(as.integer(get0(
+      "evaluationOriginTimeID",
+      inherits = TRUE,
+      ifnotfound = NA_integer_
+    )))
+    if (!is.na(explicit_origin_time_id)) {
+      available_times <- sort(unique(as.integer(truth_df_red$time_id)))
+      if (!explicit_origin_time_id %in% available_times || explicit_origin_time_id < 1L) {
+        stop(sprintf(
+          "evaluationOriginTimeID=%s is not a valid non-initial observation time.",
+          explicit_origin_time_id
+        ))
+      }
+      in_out_cutpoint <- explicit_origin_time_id - 1L
+      times_out <- explicit_origin_time_id
+      times_in <- 0L:in_out_cutpoint
+      print2(sprintf(
+        "Using explicit forecast origin time_id=%s (training through time_id=%s).",
+        explicit_origin_time_id,
+        in_out_cutpoint
+      ))
+    } else {
+      # Legacy quantile-based split retained when no explicit origin is supplied.
+      in_out_cutpoint <- round(quantile(sort(unique(truth_df_red$time_id)),
+                                        prob = evaluationTime/(max(evaluation_seq)+1)))
+      times_out <- in_out_cutpoint + 1L
+      times_out <- times_out[times_out <= max(truth_df_red$time_id)]
+      times_in <- 0L:in_out_cutpoint
+    }
   }
   
   # some normalization factors

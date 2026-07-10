@@ -177,6 +177,7 @@ analysis2_supported_flags <- function(mode) {
     "analysis_name",
     "grid_file",
     "outer",
+    "run_seed",
     "model_type",
     "respect_grid_model_type",
     "resave_tfrecords",
@@ -274,6 +275,7 @@ analysis2_mode_defaults <- function(mode) {
       analysis_name = "RealApril15",
       grid_file = NULL,
       outer = 3L,
+      run_seed = NULL,
       model_type = NULL,
       respect_grid_model_type = FALSE,
       resave_tfrecords = FALSE,
@@ -293,6 +295,7 @@ analysis2_mode_defaults <- function(mode) {
       analysis_name = "BigSimsLatest",
       grid_file = NULL,
       outer = 1L,
+      run_seed = NULL,
       model_type = NULL,
       respect_grid_model_type = FALSE,
       resave_tfrecords = TRUE,
@@ -312,6 +315,7 @@ analysis2_mode_defaults <- function(mode) {
       analysis_name = "RealLatest",
       grid_file = NULL,
       outer = 1L,
+      run_seed = NULL,
       model_type = NULL,
       respect_grid_model_type = FALSE,
       resave_tfrecords = FALSE,
@@ -404,6 +408,10 @@ analysis2_cli_overrides <- function(opts, mode) {
     overrides[[field]] <- analysis2_normalize_string(opts[[field]])
   }
 
+  if ("run_seed" %in% names(opts)) {
+    overrides$run_seed <- opts$run_seed
+  }
+
   if (!is.null(opts$outer) || length(opts$positional) > 0L) {
     overrides$outer <- analysis2_resolve_outer_iterations(opts, default = integer())
   }
@@ -459,6 +467,15 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
   spec$data_format <- analysis2_normalize_string(spec$data_format)
   spec$disease_names <- analysis2_parse_csv(spec$disease_names %||% defaults$disease_names)
   spec$outer <- analysis2_normalize_outer(spec$outer, default = defaults$outer)
+  if (!is.null(spec$run_seed)) {
+    run_seed_numeric <- suppressWarnings(as.numeric(spec$run_seed))
+    if (length(run_seed_numeric) != 1L || !is.finite(run_seed_numeric) ||
+        run_seed_numeric < 0 || run_seed_numeric > .Machine$integer.max ||
+        run_seed_numeric != floor(run_seed_numeric)) {
+      stop("`run_seed` must be NULL or one non-negative integer.", call. = FALSE)
+    }
+    spec$run_seed <- as.integer(run_seed_numeric)
+  }
 
   spec$grid_file <- analysis2_path_from_project(
     spec$grid_file %||% analysis2_mode_default_grid_file(mode, spec$project_root, spec$analysis_name),
@@ -551,6 +568,7 @@ analysis2_usage <- function(mode, paths = analysis2_paths()) {
       "  --analysis_name=NAME",
       "  --grid_file=PATH",
       "  --outer=1,2,3",
+      "  --run_seed=INTEGER",
       "  --model_type=DecoderOnly|NeuralODE",
       "  --respect_grid_model_type=TRUE|FALSE",
       "  --resave_tfrecords=TRUE|FALSE",

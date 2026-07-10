@@ -15,6 +15,7 @@ ndm_create_real_run_config(
   grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_\%s.csv",
     analysis_name)),
   outer = 3L,
+  run_seed = NULL,
   model_type = NULL,
   respect_grid_model_type = FALSE,
   resave_tfrecords = FALSE,
@@ -33,6 +34,7 @@ ndm_create_sim_run_config(
   grid_file = file.path("Data", "RunGrids", "SimGrids", sprintf("SimGrid_\%s.csv",
     analysis_name)),
   outer = 1L,
+  run_seed = NULL,
   model_type = NULL,
   respect_grid_model_type = FALSE,
   resave_tfrecords = TRUE,
@@ -48,6 +50,7 @@ ndm_create_multidisease_run_config(
   grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_\%s.csv",
     analysis_name)),
   outer = 1L,
+  run_seed = NULL,
   model_type = NULL,
   respect_grid_model_type = FALSE,
   resave_tfrecords = FALSE,
@@ -76,6 +79,10 @@ ndm_run_multidisease(config = ndm_create_multidisease_run_config())
 \item{grid_file}{Optional CSV path for the run grid.}
 
 \item{outer}{Integer vector of outer-iteration rows to execute.}
+
+\item{run_seed}{Optional non-negative integer used for model initialization,
+training Monte Carlo keys, and inference randomness. When \code{NULL}, the
+legacy outer-row-derived seed is retained.}
 
 \item{model_type}{Optional model family override.}
 

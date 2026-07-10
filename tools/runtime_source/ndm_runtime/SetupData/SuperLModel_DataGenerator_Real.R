@@ -639,6 +639,67 @@
       tfrecord_file_inference <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "inference", as.character(RealEntry$BaseID)) 
       nObsInference <- as.integer(get0("nObsInference", inherits = TRUE, ifnotfound = 1024L))
       nTimesLookValidation <- nTimesLookValidationInference
+      inference_sampling <- tolower(trimws(as.character(get0(
+        "inferenceSampling",
+        inherits = TRUE,
+        ifnotfound = "random"
+      ))))
+      if (!inference_sampling %in% c("random", "complete_locations")) {
+        stop(sprintf(
+          "Unknown inferenceSampling='%s'. Expected 'random' or 'complete_locations'.",
+          inference_sampling
+        ))
+      }
+      evaluation_locations <- NULL
+      if (identical(inference_sampling, "complete_locations")) {
+        evaluation_horizon <- suppressWarnings(as.integer(get0(
+          "evaluationHorizon",
+          inherits = TRUE,
+          ifnotfound = nTimesLookValidationInference
+        )))
+        if (is.na(evaluation_horizon) || evaluation_horizon < 1L ||
+            evaluation_horizon > nTimesLookValidationInference) {
+          stop("evaluationHorizon must be between 1 and nTimesLookValidationInference.")
+        }
+        origin_time <- as.integer(times_out[[1L]])
+        required_times <- unique(c(
+          seq.int(origin_time - abs(maxTimesPast) + 1L, origin_time),
+          seq.int(origin_time + 1L, origin_time + evaluation_horizon)
+        ))
+        location_ids <- sort(unique(as.character(input_df_red_full$location_id)))
+        support_rows <- lapply(location_ids, function(location_id) {
+          observed_times <- sort(unique(as.integer(
+            truth_df_red$time_id[truth_df_red$location_id == location_id]
+          )))
+          missing_times <- setdiff(required_times, observed_times)
+          data.frame(
+            location_id = location_id,
+            eligible = length(missing_times) == 0L,
+            missing_time_ids = paste(missing_times, collapse = "|"),
+            stringsAsFactors = FALSE
+          )
+        })
+        support <- do.call(rbind, support_rows)
+        support$origin_time_id <- origin_time
+        support$evaluation_horizon <- evaluation_horizon
+        support$context_length <- abs(maxTimesPast)
+        support_path <- file.path(
+          TfRecordDir,
+          sprintf("inference_support_%s.csv", as.character(RealEntry$BaseID))
+        )
+        utils::write.csv(support, support_path, row.names = FALSE)
+        evaluation_locations <- support$location_id[support$eligible]
+        if (length(evaluation_locations) == 0L) {
+          stop("complete_locations inference found no locations with complete context and outcomes.")
+        }
+        nObsInference <- length(evaluation_locations)
+        print2(sprintf(
+          "Complete-location inference: %s eligible of %s locations; support=%s",
+          length(evaluation_locations),
+          nrow(support),
+          support_path
+        ))
+      }
       
       # resave runs 
       # nSamples_max <- 100; 
@@ -675,14 +736,32 @@
             }
             if(type_ == "inference"){
               ok_ctr_ <- 0; ok_ <- F; while(ok_ == F){ 
-              ok_ctr_ <- ok_ctr_ + 1; if(ok_ctr_ == 10000){ stop("ok_ctr_ > 10000 in DataGenerator_Real.R [at 'inference']") }
+              ok_ctr_ <- ok_ctr_ + 1
+              max_inference_attempts <- if (identical(inference_sampling, "complete_locations")) 1L else 10000L
+              if(ok_ctr_ > max_inference_attempts){
+                stop(sprintf(
+                  "Inference batch generation failed for BaseID=%s record=%s sampling=%s.",
+                  RealEntry$BaseID,
+                  b_,
+                  inference_sampling
+                ))
+              }
               # partial sample
               #input_df_red_out$location_id_numeric
-              place_pool <- sample(as.character(unique(input_df_red_out$location_id)), 1)
+              place_pool <- if (identical(inference_sampling, "complete_locations")) {
+                evaluation_locations[[b_]]
+              } else {
+                sample(as.character(unique(input_df_red_out$location_id)), 1)
+              }
               sl_dat <- c(); place_counter__ <- 0; for(loc_id in place_pool){
                 time_counter__ <- 0;
                 # out of sample targets - how to  gen the input data for the base learners?
-                for(time_iter in sample(as.character(times_out), 1)){
+                time_pool <- if (identical(inference_sampling, "complete_locations")) {
+                  as.character(times_out[[1L]])
+                } else {
+                  sample(as.character(times_out), 1)
+                }
+                for(time_iter in time_pool){
                   #for(time_iter in time_iter_pool <- times_in){ print2("DOING IN SAMPLE TEST")
                   # check this - why not right dimensions?
                   # max( input_df_red_in$time_id ); times_out

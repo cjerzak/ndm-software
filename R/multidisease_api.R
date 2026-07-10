@@ -752,14 +752,19 @@
 
   evaluation_seq <- as.integer(.ndm_runtime_get0(runtime_env, "evaluation_seq", ifnotfound = c(1L, 2L, 3L, 4L)))
   evaluation_time <- as.integer(.ndm_runtime_get0(runtime_env, "evaluationTime"))
-  in_out_cutpoint <- round(stats::quantile(
-    sort(unique(truth_df_red$time_id)),
-    probs = evaluation_time / (max(evaluation_seq) + 1L),
-    names = FALSE
-  ))
-  times_out <- in_out_cutpoint + 1L
-  times_out <- times_out[times_out <= max(truth_df_red$time_id)]
-  times_in <- 0L:in_out_cutpoint
+  evaluation_origin_time_id <- .ndm_runtime_get0(
+    runtime_env,
+    "evaluationOriginTimeID",
+    ifnotfound = NULL
+  )
+  time_split <- .ndm_multidisease_time_split(
+    time_ids = truth_df_red$time_id,
+    evaluation_time = evaluation_time,
+    evaluation_seq = evaluation_seq,
+    evaluation_origin_time_id = evaluation_origin_time_id
+  )
+  times_in <- time_split$times_in
+  times_out <- time_split$times_out
 
   ndm_set_runtime_globals(
     runtime_env,
@@ -779,6 +784,55 @@
   )
 
   invisible(runtime_env)
+}
+
+.ndm_multidisease_time_split <- function(time_ids,
+                                         evaluation_time,
+                                         evaluation_seq,
+                                         evaluation_origin_time_id = NULL) {
+  available_times <- sort(unique(as.integer(time_ids)))
+  if (length(available_times) == 0L || anyNA(available_times)) {
+    stop("`time_ids` must contain at least one finite integer value.", call. = FALSE)
+  }
+
+  if (!is.null(evaluation_origin_time_id)) {
+    evaluation_origin_time_id <- as.integer(evaluation_origin_time_id)
+    if (length(evaluation_origin_time_id) != 1L ||
+        is.na(evaluation_origin_time_id) ||
+        evaluation_origin_time_id < 1L ||
+        !evaluation_origin_time_id %in% available_times) {
+      stop(
+        "`evaluation_origin_time_id` must be one available non-initial time ID.",
+        call. = FALSE
+      )
+    }
+    in_out_cutpoint <- evaluation_origin_time_id - 1L
+  } else {
+    evaluation_time <- as.integer(evaluation_time)
+    evaluation_seq <- as.integer(evaluation_seq)
+    if (length(evaluation_time) != 1L || is.na(evaluation_time) ||
+        length(evaluation_seq) == 0L || anyNA(evaluation_seq)) {
+      stop("Legacy evaluation fields must contain finite integer values.", call. = FALSE)
+    }
+    in_out_cutpoint <- round(stats::quantile(
+      available_times,
+      probs = evaluation_time / (max(evaluation_seq) + 1L),
+      names = FALSE
+    ))
+  }
+
+  times_out <- as.integer(in_out_cutpoint + 1L)
+  times_out <- times_out[times_out <= max(available_times)]
+  if (length(times_out) != 1L) {
+    stop("The requested evaluation split has no available forecast origin.", call. = FALSE)
+  }
+
+  list(
+    in_out_cutpoint = as.integer(in_out_cutpoint),
+    times_in = seq.int(0L, as.integer(in_out_cutpoint)),
+    times_out = times_out,
+    explicit_origin = !is.null(evaluation_origin_time_id)
+  )
 }
 
 .ndm_runtime_project_root <- function(env) {

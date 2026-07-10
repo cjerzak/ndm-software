@@ -36,6 +36,9 @@
 #'   must be `NULL`.
 #' @param grid_file Optional CSV path for the run grid.
 #' @param outer Integer vector of outer-iteration rows to execute.
+#' @param run_seed Optional integer scalar used to seed model initialization,
+#'   training, and inference. When `NULL`, legacy outer-row-derived seeding is
+#'   retained for backward compatibility.
 #' @param model_type Optional model family override.
 #' @param respect_grid_model_type Logical scalar indicating whether grid rows
 #'   should be allowed to override the requested model type.
@@ -85,6 +88,7 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        grid = NULL,
                                        grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_%s.csv", analysis_name)),
                                        outer = 3L,
+                                       run_seed = NULL,
                                        model_type = NULL,
                                        respect_grid_model_type = FALSE,
                                        resave_tfrecords = FALSE,
@@ -103,6 +107,7 @@ ndm_create_real_run_config <- function(project_root = getwd(),
     grid = grid,
     grid_file = grid_file,
     outer = outer,
+    run_seed = run_seed,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -121,6 +126,7 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       grid = NULL,
                                       grid_file = file.path("Data", "RunGrids", "SimGrids", sprintf("SimGrid_%s.csv", analysis_name)),
                                       outer = 1L,
+                                      run_seed = NULL,
                                       model_type = NULL,
                                       respect_grid_model_type = FALSE,
                                       resave_tfrecords = TRUE,
@@ -136,6 +142,7 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
     grid = grid,
     grid_file = grid_file,
     outer = outer,
+    run_seed = run_seed,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -151,6 +158,7 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                grid = NULL,
                                                grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_%s.csv", analysis_name)),
                                                outer = 1L,
+                                               run_seed = NULL,
                                                model_type = NULL,
                                                respect_grid_model_type = FALSE,
                                                resave_tfrecords = FALSE,
@@ -170,6 +178,7 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     grid = grid,
     grid_file = grid_file,
     outer = outer,
+    run_seed = run_seed,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -277,6 +286,7 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
                                  grid = NULL,
                                  grid_file = NULL,
                                  outer,
+                                 run_seed = NULL,
                                  model_type = NULL,
                                  respect_grid_model_type = FALSE,
                                  resave_tfrecords = FALSE,
@@ -300,6 +310,15 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
   if (length(outer) == 0L || anyNA(outer)) {
     stop("`outer` must contain at least one integer row index.", call. = FALSE)
   }
+  if (!is.null(run_seed)) {
+    run_seed_numeric <- suppressWarnings(as.numeric(run_seed))
+    if (length(run_seed_numeric) != 1L || !is.finite(run_seed_numeric) ||
+        run_seed_numeric < 0 || run_seed_numeric > .Machine$integer.max ||
+        run_seed_numeric != floor(run_seed_numeric)) {
+      stop("`run_seed` must be NULL or one non-negative integer.", call. = FALSE)
+    }
+    run_seed <- as.integer(run_seed_numeric)
+  }
   .ndm_validate_resave_tfrecords(mode, resave_tfrecords)
 
   class_name <- switch(
@@ -318,6 +337,7 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
       grid = grid,
       grid_file = grid_file,
       outer = outer,
+      run_seed = run_seed,
       model_type = model_type,
       respect_grid_model_type = isTRUE(respect_grid_model_type),
       resave_tfrecords = isTRUE(resave_tfrecords),
@@ -361,6 +381,10 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     "--run_figures=FALSE",
     sprintf("--dry_run=%s", toupper(as.character(isTRUE(config$dry_run))))
   )
+
+  if (!is.null(config$run_seed)) {
+    args <- c(args, sprintf("--run_seed=%s", as.integer(config$run_seed)))
+  }
 
   if (!is.null(grid_file)) {
     grid_file <- .ndm_path_join_if_relative(config$project_root, grid_file)

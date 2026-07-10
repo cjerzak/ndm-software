@@ -81,8 +81,7 @@ variational samples.}
 \item{neuralode_kl_weight}{Non-negative scalar KL multiplier used only when
 `neuralode_variational = TRUE`.}
 
-\item{...}{Additional named values appended to the configuration object.
-Unused by `print.ndm_config()`.}
+\item{...}{Unused; included for S3 method compatibility.}
 
 \item{x}{An `ndm_config` object.}
 }

@@ -273,7 +273,10 @@ for(i in i_:nSGD_model){
   {
     gd_timer <- Sys.time()
     if( i == 1 ){ print2( "At first gradLoss_jax()" ) }
-    keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(ai(i)),nBatch))
+    iteration_seed <- as.integer((
+      as.double(i) + 104729 * as.double(get0("SEED_", inherits = TRUE, ifnotfound = 0L))
+    ) %% .Machine$integer.max)
+    keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(iteration_seed),nBatch))
     batch_pkg <- batch2package(dat_)
     GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info", inherits = TRUE)) {
       ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)

@@ -2209,6 +2209,49 @@
         nObsInference <- as.integer(get0("nObsInference", inherits = TRUE, 
             ifnotfound = 1024L))
         nTimesLookValidation <- nTimesLookValidationInference
+        inference_sampling <- tolower(trimws(as.character(get0("inferenceSampling", 
+            inherits = TRUE, ifnotfound = "random"))))
+        if (!inference_sampling %in% c("random", "complete_locations")) {
+            stop(sprintf("Unknown inferenceSampling='%s'. Expected 'random' or 'complete_locations'.", 
+                inference_sampling))
+        }
+        evaluation_locations <- NULL
+        if (identical(inference_sampling, "complete_locations")) {
+            evaluation_horizon <- suppressWarnings(as.integer(get0("evaluationHorizon", 
+                inherits = TRUE, ifnotfound = nTimesLookValidationInference)))
+            if (is.na(evaluation_horizon) || evaluation_horizon < 
+                1L || evaluation_horizon > nTimesLookValidationInference) {
+                stop("evaluationHorizon must be between 1 and nTimesLookValidationInference.")
+            }
+            origin_time <- as.integer(times_out[[1L]])
+            required_times <- unique(c(seq.int(origin_time - 
+                abs(maxTimesPast) + 1L, origin_time), seq.int(origin_time + 
+                1L, origin_time + evaluation_horizon)))
+            location_ids <- sort(unique(as.character(input_df_red_full$location_id)))
+            support_rows <- lapply(location_ids, function(location_id) {
+                observed_times <- sort(unique(as.integer(truth_df_red$time_id[truth_df_red$location_id == 
+                  location_id])))
+                missing_times <- setdiff(required_times, observed_times)
+                data.frame(location_id = location_id, eligible = length(missing_times) == 
+                  0L, missing_time_ids = paste(missing_times, 
+                  collapse = "|"), stringsAsFactors = FALSE)
+            })
+            support <- do.call(rbind, support_rows)
+            support$origin_time_id <- origin_time
+            support$evaluation_horizon <- evaluation_horizon
+            support$context_length <- abs(maxTimesPast)
+            support_path <- file.path(TfRecordDir, sprintf("inference_support_%s.csv", 
+                as.character(RealEntry$BaseID)))
+            utils::write.csv(support, support_path, row.names = FALSE)
+            evaluation_locations <- support$location_id[support$eligible]
+            if (length(evaluation_locations) == 0L) {
+                stop("complete_locations inference found no locations with complete context and outcomes.")
+            }
+            nObsInference <- length(evaluation_locations)
+            print2(sprintf("Complete-location inference: %s eligible of %s locations; support=%s", 
+                length(evaluation_locations), nrow(support), 
+                support_path))
+        }
         if (RealEntry$nSamplesTrain == nSamples_max & ReSaveTfRecords & 
             (RealEntry$ResaveThisTFRecord == 1)) {
             for (type_ in c("train", "inference")) {
@@ -2255,17 +2298,34 @@
                     ok_ <- F
                     while (ok_ == F) {
                       ok_ctr_ <- ok_ctr_ + 1
-                      if (ok_ctr_ == 10000) {
-                        stop("ok_ctr_ > 10000 in DataGenerator_Real.R [at 'inference']")
+                      max_inference_attempts <- if (identical(inference_sampling, 
+                        "complete_locations")) 
+                        1L
+                      else 10000L
+                      if (ok_ctr_ > max_inference_attempts) {
+                        stop(sprintf("Inference batch generation failed for BaseID=%s record=%s sampling=%s.", 
+                          RealEntry$BaseID, b_, inference_sampling))
                       }
-                      place_pool <- sample(as.character(unique(input_df_red_out$location_id)), 
-                        1)
+                      place_pool <- if (identical(inference_sampling, 
+                        "complete_locations")) {
+                        evaluation_locations[[b_]]
+                      }
+                      else {
+                        sample(as.character(unique(input_df_red_out$location_id)), 
+                          1)
+                      }
                       sl_dat <- c()
                       place_counter__ <- 0
                       for (loc_id in place_pool) {
                         time_counter__ <- 0
-                        for (time_iter in sample(as.character(times_out), 
-                          1)) {
+                        time_pool <- if (identical(inference_sampling, 
+                          "complete_locations")) {
+                          as.character(times_out[[1L]])
+                        }
+                        else {
+                          sample(as.character(times_out), 1)
+                        }
+                        for (time_iter in time_pool) {
                           batch_l <- try(GetBatch(training = F, 
                             finalGenLocID = loc_id, finalGenTimeID = f2n(time_iter), 
                             INPUT_REF_DAT = input_df_red_full, 
@@ -6149,7 +6209,10 @@
                 if (i == 1) {
                   print2("At first gradLoss_jax()")
                 }
-                keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(ai(i)), 
+                iteration_seed <- as.integer((as.double(i) + 
+                  104729 * as.double(get0("SEED_", inherits = TRUE, 
+                    ifnotfound = 0L)))%%.Machine$integer.max)
+                keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(iteration_seed), 
                   nBatch))
                 batch_pkg <- batch2package(dat_)
                 GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info", 
@@ -9145,8 +9208,9 @@
     analysis2_parse_bool(x)
 }, analysis2_supported_flags <- function(mode) {
     base <- c("config", "project_root", "analysis_name", "grid_file", 
-        "outer", "model_type", "respect_grid_model_type", "resave_tfrecords", 
-        "run_figures", "tfrecord_dir", "dry_run", "help")
+        "outer", "run_seed", "model_type", "respect_grid_model_type", 
+        "resave_tfrecords", "run_figures", "tfrecord_dir", "dry_run", 
+        "help")
     extras <- switch(mode, real = c("raw_data_dir", "outcome_metric", 
         "data_subset"), sim = character(), multidisease = c("outcome_metric", 
         "data_subset", "disease_names", "data_format"), stop("Unsupported Analysis2 mode: ", 
@@ -9199,24 +9263,25 @@
     as.list(config)
 }, analysis2_mode_defaults <- function(mode) {
     switch(mode, real = list(mode = "real", analysis_name = "RealApril15", 
-        grid_file = NULL, outer = 3L, model_type = NULL, respect_grid_model_type = FALSE, 
-        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL, 
-        raw_data_dir = "Data/MainData", tfrecord_dir = NULL, 
-        outcome_metric = "inc_death", data_subset = "high_income", 
+        grid_file = NULL, outer = 3L, run_seed = NULL, model_type = NULL, 
+        respect_grid_model_type = FALSE, resave_tfrecords = FALSE, 
+        run_figures = FALSE, project_root = NULL, raw_data_dir = "Data/MainData", 
+        tfrecord_dir = NULL, outcome_metric = "inc_death", data_subset = "high_income", 
         disease_names = NULL, data_format = NULL, dry_run = FALSE, 
         help = FALSE), sim = list(mode = "sim", analysis_name = "BigSimsLatest", 
-        grid_file = NULL, outer = 1L, model_type = NULL, respect_grid_model_type = FALSE, 
-        resave_tfrecords = TRUE, run_figures = FALSE, project_root = NULL, 
-        raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = NULL, 
-        data_subset = NULL, disease_names = NULL, data_format = NULL, 
-        dry_run = FALSE, help = FALSE), multidisease = list(mode = "multidisease", 
-        analysis_name = "RealLatest", grid_file = NULL, outer = 1L, 
-        model_type = NULL, respect_grid_model_type = FALSE, resave_tfrecords = FALSE, 
+        grid_file = NULL, outer = 1L, run_seed = NULL, model_type = NULL, 
+        respect_grid_model_type = FALSE, resave_tfrecords = TRUE, 
         run_figures = FALSE, project_root = NULL, raw_data_dir = NULL, 
-        tfrecord_dir = NULL, outcome_metric = "CountValue", data_subset = "all", 
-        disease_names = c("Covid", "Flu"), data_format = "IHME", 
-        dry_run = FALSE, help = FALSE), stop("Unsupported Analysis2 mode: ", 
-        mode, call. = FALSE))
+        tfrecord_dir = NULL, outcome_metric = NULL, data_subset = NULL, 
+        disease_names = NULL, data_format = NULL, dry_run = FALSE, 
+        help = FALSE), multidisease = list(mode = "multidisease", 
+        analysis_name = "RealLatest", grid_file = NULL, outer = 1L, 
+        run_seed = NULL, model_type = NULL, respect_grid_model_type = FALSE, 
+        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL, 
+        raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = "CountValue", 
+        data_subset = "all", disease_names = c("Covid", "Flu"), 
+        data_format = "IHME", dry_run = FALSE, help = FALSE), 
+        stop("Unsupported Analysis2 mode: ", mode, call. = FALSE))
 }, analysis2_mode_default_grid_file <- function(mode, project_root, 
     analysis_name) {
     path <- switch(mode, real = file.path(project_root, "Data", 
@@ -9271,6 +9336,9 @@
         "outcome_metric", "data_subset", "data_format"), names(opts))
     for (field in scalar_fields) {
         overrides[[field]] <- analysis2_normalize_string(opts[[field]])
+    }
+    if ("run_seed" %in% names(opts)) {
+        overrides$run_seed <- opts$run_seed
     }
     if (!is.null(opts$outer) || length(opts$positional) > 0L) {
         overrides$outer <- analysis2_resolve_outer_iterations(opts, 
@@ -9327,6 +9395,16 @@
     spec$disease_names <- analysis2_parse_csv(spec$disease_names %||% 
         defaults$disease_names)
     spec$outer <- analysis2_normalize_outer(spec$outer, default = defaults$outer)
+    if (!is.null(spec$run_seed)) {
+        run_seed_numeric <- suppressWarnings(as.numeric(spec$run_seed))
+        if (length(run_seed_numeric) != 1L || !is.finite(run_seed_numeric) || 
+            run_seed_numeric < 0 || run_seed_numeric > .Machine$integer.max || 
+            run_seed_numeric != floor(run_seed_numeric)) {
+            stop("`run_seed` must be NULL or one non-negative integer.", 
+                call. = FALSE)
+        }
+        spec$run_seed <- as.integer(run_seed_numeric)
+    }
     spec$grid_file <- analysis2_path_from_project(spec$grid_file %||% 
         analysis2_mode_default_grid_file(mode, spec$project_root, 
             spec$analysis_name), project_root = spec$project_root, 
@@ -9385,11 +9463,12 @@
     paste(c(sprintf("Analysis2 %s runner", mode_title), "", "Supported precedence: CLI > config manifest > grid row > code defaults", 
         sprintf("Default config: %s", config_default), "", "Core flags:", 
         "  --config=PATH", "  --project_root=PATH", "  --analysis_name=NAME", 
-        "  --grid_file=PATH", "  --outer=1,2,3", "  --model_type=DecoderOnly|NeuralODE", 
-        "  --respect_grid_model_type=TRUE|FALSE", "  --resave_tfrecords=TRUE|FALSE", 
-        "  --run_figures=TRUE|FALSE", "  --tfrecord_dir=PATH", 
-        "  --dry_run=TRUE", "  --help", extra_flags, "", "Examples:", 
-        paste0("  ", default_example)), collapse = "\n")
+        "  --grid_file=PATH", "  --outer=1,2,3", "  --run_seed=INTEGER", 
+        "  --model_type=DecoderOnly|NeuralODE", "  --respect_grid_model_type=TRUE|FALSE", 
+        "  --resave_tfrecords=TRUE|FALSE", "  --run_figures=TRUE|FALSE", 
+        "  --tfrecord_dir=PATH", "  --dry_run=TRUE", "  --help", 
+        extra_flags, "", "Examples:", paste0("  ", default_example)), 
+        collapse = "\n")
 }, analysis2_print_usage <- function(mode, paths = analysis2_paths()) {
     cat(analysis2_usage(mode, paths = paths), "\n")
     invisible(TRUE)
@@ -10909,7 +10988,13 @@
         OUTER_ITERATION_SEQUENCE <- as.integer(analysis2_multidisease_spec$outer)
         setwd(analysis2_multidisease_spec$project_root)
         print(sprintf("wd is: {%s}", getwd()))
-        set.seed(theInitialSeed <- 12L)
+        configured_run_seed <- analysis2_multidisease_spec$run_seed
+        if (!is.null(configured_run_seed)) {
+            configured_run_seed <- analysis2_as_int(configured_run_seed)
+        }
+        set.seed(theInitialSeed <- if (is.null(configured_run_seed)) 
+            12L
+        else configured_run_seed)
         ReSaveTfRecords <- isTRUE(analysis2_multidisease_spec$resave_tfrecords)
         force2GPU <- TRUE
         nRealGridSeed <- 128L
@@ -10993,7 +11078,12 @@
                 fallback_n_samples_train = nSamples_max)
         }
         nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-        nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
+        nSGD_DefiningLRSeq <- nSGD_model <- if (ReSaveTfRecords) {
+            0L
+        }
+        else {
+            as.integer(nsgd_calibration$resolved_n_sgd)
+        }
         nSGD_posttrain <- nSGD_model
         nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, 
             nSGD_model, nCheckpointsDefault)
@@ -11023,7 +11113,10 @@
             print2(sprintf("STARTING outer iteration sequence %s...", 
                 OUTER_ITERATION))
             {
-                set.seed(SEED_ <- ai(OUTER_ITERATION))
+                SEED_ <- if (is.null(configured_run_seed)) 
+                  ai(OUTER_ITERATION)
+                else configured_run_seed
+                set.seed(SEED_)
                 RealEntry <- RealGrid[OUTER_ITERATION, ]
                 for (e_ in names(RealEntry)) {
                   eval(parse(text = sprintf("tmp_ <- f2n(RealEntry['%s'])", 
@@ -11040,7 +11133,12 @@
                   nSamplesTrain > 0) {
                   nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
                   nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-                  nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
+                  nSGD_DefiningLRSeq <- nSGD_model <- if (ReSaveTfRecords) {
+                    0L
+                  }
+                  else {
+                    as.integer(nsgd_calibration$resolved_n_sgd)
+                  }
                   nSGD_posttrain <- nSGD_model
                   nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, 
                     nSGD_model, nCheckpointsDefault)
@@ -11069,6 +11167,12 @@
                   RealEntry$ModelType, default = "DecoderOnly")
                 print(sprintf("Using model type: %s", ModelType))
                 ndm_source_extracted("SetupEnv/SuperLModel_MasterImports.R")
+                if (exists("tf", inherits = FALSE) && !is.null(tf$random$set_seed)) {
+                  tf$random$set_seed(as.integer(SEED_))
+                }
+                if (exists("np", inherits = FALSE) && !is.null(np$random$seed)) {
+                  np$random$seed(as.integer(SEED_))
+                }
                 {
                   maxTimesPast <- ContextLength
                   nTimesTotal <- nTimesLookahead + maxTimesPast
@@ -11175,12 +11279,30 @@
                 }
                 nModelTimesThres <- 2
                 {
-                  in_out_cutpoint <- round(quantile(sort(unique(truth_df_red$time_id)), 
-                    prob = evaluationTime/(max(evaluation_seq) + 
-                      1)))
-                  times_out <- in_out_cutpoint + 1
-                  times_out <- times_out[times_out <= max(truth_df_red$time_id)]
-                  times_in <- 0L:(in_out_cutpoint)
+                  explicit_origin_time_id <- suppressWarnings(as.integer(get0("evaluationOriginTimeID", 
+                    inherits = TRUE, ifnotfound = NA_integer_)))
+                  if (!is.na(explicit_origin_time_id)) {
+                    available_times <- sort(unique(as.integer(truth_df_red$time_id)))
+                    if (!explicit_origin_time_id %in% available_times || 
+                      explicit_origin_time_id < 1L) {
+                      stop(sprintf("evaluationOriginTimeID=%s is not a valid non-initial observation time.", 
+                        explicit_origin_time_id))
+                    }
+                    in_out_cutpoint <- explicit_origin_time_id - 
+                      1L
+                    times_out <- explicit_origin_time_id
+                    times_in <- 0L:in_out_cutpoint
+                    print2(sprintf("Using explicit forecast origin time_id=%s (training through time_id=%s).", 
+                      explicit_origin_time_id, in_out_cutpoint))
+                  }
+                  else {
+                    in_out_cutpoint <- round(quantile(sort(unique(truth_df_red$time_id)), 
+                      prob = evaluationTime/(max(evaluation_seq) + 
+                        1)))
+                    times_out <- in_out_cutpoint + 1L
+                    times_out <- times_out[times_out <= max(truth_df_red$time_id)]
+                    times_in <- 0L:in_out_cutpoint
+                  }
                 }
                 AVERAGE_TRUTH <- apply(as.matrix(truth_df_red[, 
                   outcome_metric]), 2, function(x) {
