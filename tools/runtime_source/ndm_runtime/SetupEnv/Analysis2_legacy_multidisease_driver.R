@@ -48,11 +48,11 @@ set.seed(theInitialSeed <- if (is.null(configured_run_seed)) 12L else configured
 
 # critical hyperparameters
 ReSaveTfRecords <- isTRUE(analysis2_multidisease_spec$resave_tfrecords)
-force2GPU <- TRUE
+force2GPU <- isTRUE(analysis2_multidisease_spec$force_to_gpu)
 nRealGridSeed <- 128L
 nExamplesPerCell <- 10L
 nRealGrid <- 704
-GPU_MEM_FRAC <- NULL
+GPU_MEM_FRAC <- analysis2_multidisease_spec$gpu_mem_frac
 UseShortOutcomes <- TRUE
 
 nTimesLookahead <- (4L * 3L)
@@ -247,6 +247,8 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   # print( sprintf("Forcing float: %s", floatType <- "32" ))
   # print( sprintf("Forcing padding method: %s", paddingMethod <- "right" ))
   ModelType <- analysis2_model_type(analysis2_multidisease_spec, RealEntry$ModelType, default = "DecoderOnly")
+  neuralode_variational <- identical(ModelType, "NeuralODE")
+  neuralode_kl_weight <- analysis2_multidisease_spec$neuralode_kl_weight
   print(sprintf("Using model type: %s", ModelType))
   
   # setup master ODE solution parameters

@@ -26,10 +26,16 @@
     # load csvs
     print2("---Loading in csv's---")
     library(future.apply); plan(multisession(workers = 10L)) # plan() is needed to set up multicore use 
+    result_csv_files <- list.files(
+      resultsFolder,
+      pattern = "\\.csv$",
+      full.names = TRUE,
+      recursive = TRUE
+    )
     dt_list <- future.apply::future_lapply(
-                    grep(list.files(resultsFolder), pattern="\\.csv",value=T), 
-                          function(csv_file_){ 
-                        data.table::fread(sprintf("%s/%s", resultsFolder, csv_file_))})
+      result_csv_files,
+      function(csv_file_) data.table::fread(csv_file_)
+    )
     future::plan(sequential)   # go back to a single process
     res_mat <- data.table::rbindlist(dt_list, fill = TRUE)
     dim(res_mat <- as.data.frame( res_mat ))

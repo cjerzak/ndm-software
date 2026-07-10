@@ -38,7 +38,7 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_equal(cfg$neuralode_optim_controller, "pid")
   expect_equal(cfg$neuralode_optim_rtol, 1e-5)
   expect_equal(cfg$neuralode_optim_atol, 1e-7)
-  expect_false(cfg$neuralode_variational)
+  expect_true(cfg$neuralode_variational)
   expect_equal(cfg$neuralode_kl_weight, 1)
 })
 
@@ -64,10 +64,21 @@ test_that("NeuralODE variational config validates KL weight", {
     ndm_create_config(model_type = "NeuralODE", neuralode_kl_weight = -1),
     "non-negative"
   )
+  expect_error(
+    ndm_create_config(model_type = "NeuralODE", neuralode_kl_weight = Inf),
+    "finite"
+  )
 })
 
 test_that("default configs do not expose runtime-root fields", {
   cfg <- ndm_create_config()
 
   expect_false("analysis_root" %in% names(cfg))
+})
+
+test_that("backend resource controls reject ambiguous values", {
+  expect_error(ndm_create_config(force_to_gpu = NA), "non-missing logical")
+  expect_error(ndm_create_config(gpu_mem_frac = 0), "in \\(0, 1\\]")
+  expect_error(ndm_create_config(gpu_mem_frac = Inf), "finite")
+  expect_equal(ndm_create_config(gpu_mem_frac = 0.25)$gpu_mem_frac, 0.25)
 })

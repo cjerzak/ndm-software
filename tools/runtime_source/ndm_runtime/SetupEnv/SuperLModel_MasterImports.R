@@ -28,6 +28,7 @@
   )
 
   jax <- backend$jax
+  ndm:::.ndm_assert_gpu_available(jax, force_to_gpu = force2GPU)
   jnp <- backend$jnp
   np <- backend$np
   optax <- backend$optax

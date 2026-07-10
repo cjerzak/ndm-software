@@ -559,6 +559,7 @@
     backend <- ndm::ndm_initialize_backend(conda_env = backend_conda_env, 
         float_type = as.character(floatType), import_tensorflow = TRUE)
     jax <- backend$jax
+    ndm:::.ndm_assert_gpu_available(jax, force_to_gpu = force2GPU)
     jnp <- backend$jnp
     np <- backend$np
     optax <- backend$optax
@@ -2724,12 +2725,12 @@
         UseDiagonalLMatVCov <- isTRUE(ndm_runtime_get0("UseDiagonalLMatVCov", 
             ifnotfound = TRUE))
         neuralode_variational <- isTRUE(ndm_runtime_get0("neuralode_variational", 
-            ifnotfound = FALSE))
+            ifnotfound = TRUE))
         neuralode_kl_weight <- suppressWarnings(as.numeric(ndm_runtime_get0("neuralode_kl_weight", 
             ifnotfound = 1)))
-        if (length(neuralode_kl_weight) != 1L || is.na(neuralode_kl_weight) || 
+        if (length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) || 
             neuralode_kl_weight < 0) {
-            stop("neuralode_kl_weight must be a non-negative scalar.")
+            stop("neuralode_kl_weight must be one finite non-negative scalar.")
         }
         Constrained2Unconstrained <- function(target_mean_of_transformated_x, 
             transformation, sd) {
@@ -2996,8 +2997,9 @@
     print2("Setting up scale list...")
     ScaleList <- list(ScaleBayes = {
         list(VarInit = InvSoftPlus(jnp$array(rep(1, times = nOutcomes))), 
-            DirichletScale1 = InvSoftPlus(jnp$array(c(1, 1, 1, 
-                1))), DirichletScale2 = InvSoftPlus(jnp$array(rep(1, 
+            DecoderObservationScale = InvSoftPlus(jnp$array(rep(1, 
+                times = nOutcomes))), DirichletScale1 = InvSoftPlus(jnp$array(c(1, 
+                1, 1, 1))), DirichletScale2 = InvSoftPlus(jnp$array(rep(1, 
                 times = 4))), LmatLocalDiagScaler = InvSoftPlusLargeInputApprox(LMat_DiagScale <- 100), 
             LmatGlobalScaler = InvSoftPlus(1/LMat_DiagScale * 
                 1e-04), globalLmatDiagScaler = InvSoftPlusLargeInputApprox(LMat_DiagScale_g <- 100), 
@@ -3453,6 +3455,24 @@
         PolicyList <- list(diffrax$LinearInterpolation(jnp$array(as.numeric(0:(nTimesTotal - 
             1L))), jnp$array(rep(0, nTimesTotal))), diffrax$LinearInterpolation(jnp$array(as.numeric(0:NTimeSteps_SIM)), 
             jnp$array(rep(-0.1, times = NTimeSteps_SIM + 1))))
+        local_prior_definitions_matched <- NeuralDefinitions_jax_STOCHASTIC[, 
+            as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep", 
+                ]), drop = FALSE]
+        local_prior_definitions_matched <- local_prior_definitions_matched[, 
+            !local_prior_definitions_matched["DefClean", ] %in% 
+                FixedLocalParams_defns, drop = FALSE]
+        local_neural_prior_mask_matched <- as.logical(local_prior_definitions_matched["TDep", 
+            ])
+        if (sum(local_neural_prior_mask_matched) != nParams_DiagMat_neural) {
+            stop(sprintf("Matched local neural prior has %s terms, but the posterior has %s terms.", 
+                sum(local_neural_prior_mask_matched), nParams_DiagMat_neural))
+        }
+        localParamPrior_neural_matched <- NULL
+        if (any(local_neural_prior_mask_matched)) {
+            localParamPrior_neural_matched <- oryx$Normal(loc = jnp$array(f2n(local_prior_definitions_matched["PriorMean", 
+                local_neural_prior_mask_matched])), scale = jnp$array(f2n(local_prior_definitions_matched["PriorSD", 
+                local_neural_prior_mask_matched])))
+        }
         GetPred <- function(ModelList, x, state, inference, PriorList, 
             PolicyList, GetPredSaveAtInfo, seed) {
             context <- x[[2]][[1]]
@@ -3461,6 +3481,7 @@
             x <- x[[1]]
             return_v <- {
                 state <- jnp$array(1)
+                KL_LOCAL <- KL_GLOBAL <- KL_PLACE <- jnp$array(0)
                 x <- ProcessEncoderInput(InitProcessList = ModelList$InitProcessList, 
                   TSList = ModelList$TSList, xt = x, time = time_indices, 
                   place = loc_indices, BNList = ModelList$BNList, 
@@ -3502,9 +3523,9 @@
                         init = xt_running, xs = NULL, length = K_static)
                       decoder_scan_out <- scan_out[[2]]
                       y_mean <- jax$nn$softplus(decoder_scan_out$logits)
-                      y_sigma <- jnp$ones_like(y_mean)
+                      y_sigma <- jnp$ones_like(y_mean) * (0.001 + 
+                        SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale))
                       TemporalLatents <- list(decoder_head_input = decoder_scan_out$decoder_head_input)
-                      KL_TERM <- jnp$array(0)
                       ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
                       diff_eq_sol <- NULL
                       diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
@@ -3568,9 +3589,9 @@
                       decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last, 
                         0L), masked_head_tail), 0L)
                       y_mean <- jax$nn$softplus(y_all)
-                      y_sigma <- jnp$ones_like(y_mean)
+                      y_sigma <- jnp$ones_like(y_mean) * (0.001 + 
+                        SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale))
                       TemporalLatents <- list(decoder_head_input = decoder_head_input_all)
-                      KL_TERM <- jnp$array(0)
                       ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
                       diff_eq_sol <- NULL
                       diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
@@ -3616,8 +3637,8 @@
                         stop = GetPredSaveAtInfo[[1]] + 1))
                     xt_running_final <- scan_out[[1]]
                     y_mean <- jax$nn$softplus(scan_out[[2]])
-                    y_sigma <- jnp$ones_like(y_mean)
-                    KL_TERM <- jnp$array(0)
+                    y_sigma <- jnp$ones_like(y_mean) * (0.001 + 
+                      SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale))
                     ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
                     diff_eq_sol <- NULL
                     diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
@@ -3732,6 +3753,8 @@
                         loc_indices, 0L))
                       fixedLocalParamD <- oryx$Normal(loc = fixedLocal_means, 
                         scale = fixedLocal_sds)
+                      fixedLocalParamD_all <- oryx$Normal(loc = ModelList$FixedLocalTerms[[1]], 
+                        scale = SoftPlus(ModelList$FixedLocalTerms[[2]]))
                     }
                     global_x_params_samp <- jnp$array(0)
                     if (length(ArgNoDeps) > 0 && nGlobalParams > 
@@ -3758,31 +3781,28 @@
                         covariance_matrix = globalSigmaMat)
                     }
                   }
-                  KL_TERM <- jnp$array(0)
-                  if (isTRUE(neuralode_variational) && !prior_sampling) {
+                  if (isTRUE(neuralode_variational) && neuralode_kl_weight > 
+                    0 && !prior_sampling) {
                     if (exists("localParamPrior_base", envir = ndm_runtime_lookup_env, 
                       inherits = FALSE)) {
-                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD, 
+                      KL_LOCAL <- jnp$add(KL_LOCAL, jnp$sum(oryx$kl_divergence(localParamD, 
                         localParamPrior_base)))
                     }
-                    if (exists("localParamPrior_neural", envir = ndm_runtime_lookup_env, 
-                      inherits = FALSE)) {
-                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD_neural, 
-                        localParamPrior_neural)))
+                    if (!is.null(localParamPrior_neural_matched)) {
+                      KL_LOCAL <- jnp$add(KL_LOCAL, jnp$sum(oryx$kl_divergence(localParamD_neural, 
+                        localParamPrior_neural_matched)))
                     }
                     if (length(ArgNoDeps) > 0 && nGlobalParams > 
                       0L && exists("globalParamPrior_base", envir = ndm_runtime_lookup_env, 
                       inherits = FALSE)) {
-                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(globalParamD, 
+                      KL_GLOBAL <- jnp$add(KL_GLOBAL, jnp$sum(oryx$kl_divergence(globalParamD, 
                         globalParamPrior_base)))
                     }
                     if (nFixedLocal > 0 && exists("fixedLocalParamPrior_base", 
                       envir = ndm_runtime_lookup_env, inherits = FALSE)) {
-                      KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(fixedLocalParamD, 
+                      KL_PLACE <- jnp$add(KL_PLACE, jnp$sum(oryx$kl_divergence(fixedLocalParamD_all, 
                         fixedLocalParamPrior_base)))
                     }
-                    KL_TERM <- jnp$multiply(jnp$array(as.numeric(neuralode_kl_weight)), 
-                      KL_TERM)
                   }
                   testWithoutSampling_requested <- isTRUE(ndm_runtime_get0("testWithoutSampling", 
                     ifnotfound = FALSE))
@@ -3963,7 +3983,9 @@
                   }
                 }
                 return_v <- list(list(y_mu = y_mean, y_sigma = y_sigma, 
-                  KL_TERM = KL_TERM, TemporalLatents = TemporalLatents, 
+                  KL_TERM = KL_LOCAL + KL_GLOBAL + KL_PLACE, 
+                  KL_LOCAL = KL_LOCAL, KL_GLOBAL = KL_GLOBAL, 
+                  KL_PLACE = KL_PLACE, TemporalLatents = TemporalLatents, 
                   ODEParamsSampList = c(ODEParamsSampList_args, 
                     ODEParamsSampList_y0, center_param = y_mean, 
                     scale_param = y_sigma, diff_eq_sol_ts = diff_eq_sol$ts, 
@@ -4038,12 +4060,27 @@
                 state <- GetPred_output[[2]]
                 GetPred_output <- GetPred_output[[1]]
                 {
-                  likelihood_d <- jnp$negative((GetPred_output$ODEParamsSampList$center_param - 
-                    y)^2)
-                  mse_loss <- jnp$negative(jnp$sum(likelihood_d * 
-                    y_mask$astype(likelihood_d$dtype))/(0.001 + 
-                    jnp$sum(y_mask$astype(likelihood_d$dtype))))
-                  minThis <- jnp$add(mse_loss, jnp$mean(GetPred_output$KL_TERM))
+                  student_t_loss <- ndm_student_t_masked_nll(jax = jax, 
+                    jnp = jnp, y = y, location = GetPred_output$y_mu, 
+                    scale = GetPred_output$y_sigma, mask = y_mask, 
+                    df = 4, scale_floor = 0.001)
+                  likelihood_loss <- student_t_loss$loss
+                  local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
+                  persistent_kl_values <- GetPred_output$KL_GLOBAL + 
+                    GetPred_output$KL_PLACE
+                  persistent_kl_first <- jnp$take(persistent_kl_values, 
+                    0L, axis = 0L)
+                  persistent_kl_spread <- jnp$max(jnp$abs(persistent_kl_values - 
+                    persistent_kl_first))
+                  persistent_kl <- jnp$where(persistent_kl_spread <= 
+                    jnp$array(1e-06, dtype = GetPred_output$y_mu$dtype), 
+                    persistent_kl_first/jnp$array(as.numeric(nSamplesTrain), 
+                      dtype = GetPred_output$y_mu$dtype), jnp$array(jnp$nan, 
+                      dtype = GetPred_output$y_mu$dtype))
+                  weighted_kl <- jnp$array(as.numeric(neuralode_kl_weight), 
+                    dtype = GetPred_output$y_mu$dtype) * (local_kl + 
+                    persistent_kl)
+                  minThis <- likelihood_loss + weighted_kl
                 }
                 return(list(minThis, state))
             }
@@ -5969,12 +6006,13 @@
     i_ <- 1, grad_norm_mat <- c(), LastOutCor <- Skill8SanityCheck <- NA, 
     te_total <- te_grads <- 0, st0 <- Sys.time(), plottingSeq_counter <- ExecuteUpdateCounter <- 0, 
     GradNorm_jit <- jax$jit(optax$global_norm), crossIterCor_vec <- c(), 
-    SavedModelDir <- sprintf("./SavedModels/%s/Model_%s_%s", 
-        ifelse(grepl(tolower(AnalysisName), pattern = "sim"), 
-            yes = "FromSim", no = "FromReal"), AnalysisName, 
-        AnalysisDate), if (dir.exists(SavedModelDir)) {
-        SavedModelDir <- sprintf("%s_%s", SavedModelDir, format(Sys.time(), 
-            "%H-%M-%S"))
+    saved_model_run_id <- get0("RUN_ID", inherits = TRUE, ifnotfound = paste0("legacy_outer", 
+        get0("OUTER_ITERATION", inherits = TRUE, ifnotfound = "unknown"))), 
+    SavedModelDir <- file.path("./SavedModels", ifelse(isTRUE(SimMode), 
+        "FromSim", "FromReal"), sprintf("Model_%s_%s", AnalysisName, 
+        saved_model_run_id)), if (dir.exists(SavedModelDir)) {
+        SavedModelDir <- sprintf("%s_retry_%s_%s", SavedModelDir, 
+            format(Sys.time(), "%Y%m%dT%H%M%S"), Sys.getpid())
     }, dir.create(SavedModelDir, recursive = TRUE, showWarnings = FALSE), 
     print2(sprintf("Total trainable parameter count: %s", nParams <- sum(unlist(lapply(jax$tree$leaves(eq$partition(ModelList, 
         eq$is_array)[[1]]), function(zer) {
@@ -5982,9 +6020,10 @@
     }))))), print("Done with SuperLModel_TrainDefine.R"))
 
 .ndm_stage_expr_ModelTrainers_SuperLModel_TrainDo <- expression(print("Sarting SuperLModel_TrainDo.R"), SavedModelDir <- get0("SavedModelDir", 
-    ifnotfound = sprintf("./SavedModels/%s/Model_%s_%s", ifelse(grepl(tolower(AnalysisName), 
-        pattern = "sim"), yes = "FromSim", no = "FromReal"), 
-        AnalysisName, AnalysisDate)), checkpoint_file <- function(prefix, 
+    ifnotfound = file.path("./SavedModels", ifelse(isTRUE(SimMode), 
+        "FromSim", "FromReal"), sprintf("Model_%s_%s", AnalysisName, 
+        get0("RUN_ID", inherits = TRUE, ifnotfound = paste0("legacy_outer", 
+            OUTER_ITERATION))))), checkpoint_file <- function(prefix, 
     step) {
     file.path(SavedModelDir, sprintf("%s_i%s_%s_%s.eqx", prefix, 
         step, AnalysisName, AnalysisDate))
@@ -6204,6 +6243,21 @@
         }
         if (nSGD_pretrain > 0L | nSGD_posttrain > 0) {
             dat_ <- next_train_batch()
+            observation_mask_host <- as.array(np$array(dat_$YTrue_out_mask))
+            if (length(dim(observation_mask_host)) == 0L) {
+                observation_mask_host <- array(observation_mask_host, 
+                  dim = c(length(observation_mask_host), 1L))
+            }
+            observation_mask_matrix <- matrix(as.numeric(observation_mask_host), 
+                nrow = dim(observation_mask_host)[[1L]])
+            invalid_mask_examples <- which(!apply(is.finite(observation_mask_matrix), 
+                1L, all) | rowSums(observation_mask_matrix != 
+                0) == 0)
+            if (length(invalid_mask_examples) > 0L) {
+                stop(sprintf("Training batch contains non-finite or all-zero observation masks for example(s): %s.", 
+                  paste(invalid_mask_examples, collapse = ", ")), 
+                  call. = FALSE)
+            }
             {
                 gd_timer <- Sys.time()
                 if (i == 1) {
@@ -7028,11 +7082,10 @@
         print2("---Loading in csv's---")
         library(future.apply)
         plan(multisession(workers = 10L))
-        dt_list <- future.apply::future_lapply(grep(list.files(resultsFolder), 
-            pattern = "\\.csv", value = T), function(csv_file_) {
-            data.table::fread(sprintf("%s/%s", resultsFolder, 
-                csv_file_))
-        })
+        result_csv_files <- list.files(resultsFolder, pattern = "\\.csv$", 
+            full.names = TRUE, recursive = TRUE)
+        dt_list <- future.apply::future_lapply(result_csv_files, 
+            function(csv_file_) data.table::fread(csv_file_))
         future::plan(sequential)
         res_mat <- data.table::rbindlist(dt_list, fill = TRUE)
         dim(res_mat <- as.data.frame(res_mat))
@@ -9172,7 +9225,7 @@
         out[[key]] <- value
     }
     for (name in c("dry_run", "run_figures", "respect_grid_model_type", 
-        "resave_tfrecords", "help")) {
+        "resave_tfrecords", "force_to_gpu", "help")) {
         if (!is.null(out[[name]])) {
             out[[name]] <- analysis2_parse_bool(out[[name]])
         }
@@ -9208,7 +9261,8 @@
     analysis2_parse_bool(x)
 }, analysis2_supported_flags <- function(mode) {
     base <- c("config", "project_root", "analysis_name", "grid_file", 
-        "outer", "run_seed", "model_type", "respect_grid_model_type", 
+        "outer", "run_seed", "force_to_gpu", "gpu_mem_frac", 
+        "neuralode_kl_weight", "model_type", "respect_grid_model_type", 
         "resave_tfrecords", "run_figures", "tfrecord_dir", "dry_run", 
         "help")
     extras <- switch(mode, real = c("raw_data_dir", "outcome_metric", 
@@ -9263,20 +9317,23 @@
     as.list(config)
 }, analysis2_mode_defaults <- function(mode) {
     switch(mode, real = list(mode = "real", analysis_name = "RealApril15", 
-        grid_file = NULL, outer = 3L, run_seed = NULL, model_type = NULL, 
-        respect_grid_model_type = FALSE, resave_tfrecords = FALSE, 
+        grid_file = NULL, outer = 3L, run_seed = NULL, force_to_gpu = TRUE, 
+        gpu_mem_frac = NULL, neuralode_kl_weight = 1, model_type = NULL, 
+        respect_grid_model_type = TRUE, resave_tfrecords = FALSE, 
         run_figures = FALSE, project_root = NULL, raw_data_dir = "Data/MainData", 
         tfrecord_dir = NULL, outcome_metric = "inc_death", data_subset = "high_income", 
         disease_names = NULL, data_format = NULL, dry_run = FALSE, 
         help = FALSE), sim = list(mode = "sim", analysis_name = "BigSimsLatest", 
-        grid_file = NULL, outer = 1L, run_seed = NULL, model_type = NULL, 
-        respect_grid_model_type = FALSE, resave_tfrecords = TRUE, 
+        grid_file = NULL, outer = 1L, run_seed = NULL, force_to_gpu = TRUE, 
+        gpu_mem_frac = NULL, neuralode_kl_weight = 1, model_type = NULL, 
+        respect_grid_model_type = TRUE, resave_tfrecords = TRUE, 
         run_figures = FALSE, project_root = NULL, raw_data_dir = NULL, 
         tfrecord_dir = NULL, outcome_metric = NULL, data_subset = NULL, 
         disease_names = NULL, data_format = NULL, dry_run = FALSE, 
         help = FALSE), multidisease = list(mode = "multidisease", 
         analysis_name = "RealLatest", grid_file = NULL, outer = 1L, 
-        run_seed = NULL, model_type = NULL, respect_grid_model_type = FALSE, 
+        run_seed = NULL, force_to_gpu = TRUE, gpu_mem_frac = NULL, 
+        neuralode_kl_weight = 1, model_type = NULL, respect_grid_model_type = TRUE, 
         resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL, 
         raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = "CountValue", 
         data_subset = "all", disease_names = c("Covid", "Flu"), 
@@ -9340,6 +9397,10 @@
     if ("run_seed" %in% names(opts)) {
         overrides$run_seed <- opts$run_seed
     }
+    for (field in intersect(c("gpu_mem_frac", "neuralode_kl_weight"), 
+        names(opts))) {
+        overrides[[field]] <- opts[[field]]
+    }
     if (!is.null(opts$outer) || length(opts$positional) > 0L) {
         overrides$outer <- analysis2_resolve_outer_iterations(opts, 
             default = integer())
@@ -9348,7 +9409,7 @@
         overrides$disease_names <- analysis2_parse_csv(opts$disease_names)
     }
     for (field in c("respect_grid_model_type", "resave_tfrecords", 
-        "run_figures", "dry_run", "help")) {
+        "run_figures", "force_to_gpu", "dry_run", "help")) {
         if (!is.null(opts[[field]])) {
             overrides[[field]] <- analysis2_as_flag(opts[[field]])
         }
@@ -9383,7 +9444,8 @@
         defaults$analysis_name)
     spec$model_type <- analysis2_normalize_string(spec$model_type)
     spec$respect_grid_model_type <- isTRUE(spec$respect_grid_model_type %||% 
-        FALSE)
+        defaults$respect_grid_model_type)
+    spec$force_to_gpu <- isTRUE(spec$force_to_gpu %||% defaults$force_to_gpu)
     spec$resave_tfrecords <- isTRUE(spec$resave_tfrecords %||% 
         defaults$resave_tfrecords)
     spec$run_figures <- isTRUE(spec$run_figures %||% FALSE)
@@ -9404,6 +9466,21 @@
                 call. = FALSE)
         }
         spec$run_seed <- as.integer(run_seed_numeric)
+    }
+    if (!is.null(spec$gpu_mem_frac)) {
+        spec$gpu_mem_frac <- suppressWarnings(as.numeric(spec$gpu_mem_frac))
+        if (length(spec$gpu_mem_frac) != 1L || !is.finite(spec$gpu_mem_frac) || 
+            spec$gpu_mem_frac <= 0 || spec$gpu_mem_frac > 1) {
+            stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", 
+                call. = FALSE)
+        }
+    }
+    spec$neuralode_kl_weight <- suppressWarnings(as.numeric(spec$neuralode_kl_weight %||% 
+        defaults$neuralode_kl_weight))
+    if (length(spec$neuralode_kl_weight) != 1L || !is.finite(spec$neuralode_kl_weight) || 
+        spec$neuralode_kl_weight < 0) {
+        stop("`neuralode_kl_weight` must be one finite non-negative value.", 
+            call. = FALSE)
     }
     spec$grid_file <- analysis2_path_from_project(spec$grid_file %||% 
         analysis2_mode_default_grid_file(mode, spec$project_root, 
@@ -9464,11 +9541,12 @@
         sprintf("Default config: %s", config_default), "", "Core flags:", 
         "  --config=PATH", "  --project_root=PATH", "  --analysis_name=NAME", 
         "  --grid_file=PATH", "  --outer=1,2,3", "  --run_seed=INTEGER", 
-        "  --model_type=DecoderOnly|NeuralODE", "  --respect_grid_model_type=TRUE|FALSE", 
-        "  --resave_tfrecords=TRUE|FALSE", "  --run_figures=TRUE|FALSE", 
-        "  --tfrecord_dir=PATH", "  --dry_run=TRUE", "  --help", 
-        extra_flags, "", "Examples:", paste0("  ", default_example)), 
-        collapse = "\n")
+        "  --force_to_gpu=TRUE|FALSE", "  --gpu_mem_frac=NUMBER", 
+        "  --neuralode_kl_weight=NUMBER", "  --model_type=DecoderOnly|NeuralODE", 
+        "  --respect_grid_model_type=TRUE|FALSE", "  --resave_tfrecords=TRUE|FALSE", 
+        "  --run_figures=TRUE|FALSE", "  --tfrecord_dir=PATH", 
+        "  --dry_run=TRUE", "  --help", extra_flags, "", "Examples:", 
+        paste0("  ", default_example)), collapse = "\n")
 }, analysis2_print_usage <- function(mode, paths = analysis2_paths()) {
     cat(analysis2_usage(mode, paths = paths), "\n")
     invisible(TRUE)
@@ -9530,25 +9608,13 @@
 }, analysis2_scalar_df <- function(values) {
     as.data.frame(values, stringsAsFactors = FALSE, check.names = FALSE)
 }, analysis2_order_grid <- function(grid, outer_iterations) {
-    grid <- grid[order(grid$BaseID), , drop = FALSE]
-    if (nrow(grid) == 0L || length(outer_iterations) == 0L) {
-        return(grid)
+    if ("row_id" %in% names(grid)) {
+        row_ids <- trimws(as.character(grid$row_id))
+        if (anyNA(grid$row_id) || any(!nzchar(row_ids)) || anyDuplicated(row_ids)) {
+            stop("Grid `row_id` values must be non-missing and unique.", 
+                call. = FALSE)
+        }
     }
-    first_outer <- outer_iterations[[1]]
-    if (is.na(first_outer) || first_outer < 1L || first_outer > 
-        nrow(grid)) {
-        return(grid)
-    }
-    if (!isTRUE(grid$BaseID[[first_outer]]%%2 == 0)) {
-        return(grid)
-    }
-    even_rows <- grid$BaseID%%2 == 0
-    if (!any(even_rows)) {
-        return(grid)
-    }
-    grid[even_rows, ] <- grid[even_rows, ][order(apply(grid[even_rows, 
-        , drop = FALSE], 1, function(zr) rlang::hash(paste(zr, 
-        collapse = "_")))), , drop = FALSE]
     grid
 }, analysis2_validate_outer_iterations <- function(grid, outer_iterations, 
     grid_file) {
@@ -9655,12 +9721,14 @@
 }, analysis2_unique_preserve_order <- function(x) {
     x[!duplicated(x)]
 }, analysis2_canonical_variation_fields <- function(mode) {
-    switch(mode, real = c("ModelType", "ModelDepth", "ModelDims", 
-        "nSamplesTrain", "nObsInference", "floatType", "model_spec_name", 
-        "model_tex_loc", "ResaveThisTFRecord"), sim = c("ModelType", 
-        "ModelDepth", "ModelDims", "nSamplesTrain", "floatType", 
-        "model_spec_name", "model_tex_loc", "ResaveThisTFRecord"), 
-        stop("Unsupported Analysis2 mode for canonical TFRecord validation: ", 
+    switch(mode, real = c("row_id", "ModelType", "ModelDepth", 
+        "ModelDims", "nSamplesTrain", "nObsInference", "floatType", 
+        "model_spec_name", "model_tex_loc", "run_seed", "force_to_gpu", 
+        "gpu_mem_frac", "neuralode_kl_weight", "ResaveThisTFRecord"), 
+        sim = c("row_id", "ModelType", "ModelDepth", "ModelDims", 
+            "nSamplesTrain", "floatType", "model_spec_name", 
+            "model_tex_loc", "run_seed", "force_to_gpu", "gpu_mem_frac", 
+            "neuralode_kl_weight", "ResaveThisTFRecord"), stop("Unsupported Analysis2 mode for canonical TFRecord validation: ", 
             mode, call. = FALSE))
 }, analysis2_scalar_equal <- function(x, y) {
     if (is.null(x) || is.null(y)) {
@@ -9755,7 +9823,7 @@
     }
     grid_base_ids <- suppressWarnings(as.integer(grid$BaseID))
     if (length(grid_base_ids) != nrow(grid) || anyNA(grid_base_ids)) {
-        stop("Simulation TFRecord bootstrap requires every grid row to contain an integer `BaseID`.", 
+        stop("TFRecord bootstrap requires every grid row to contain an integer `BaseID`.", 
             call. = FALSE)
     }
     if (is.null(base_ids)) {
@@ -9768,7 +9836,7 @@
     }
     missing_base_ids <- setdiff(requested_base_ids, analysis2_unique_preserve_order(grid_base_ids))
     if (length(missing_base_ids) > 0L) {
-        stop("Requested BaseID(s) are missing from the simulation grid: ", 
+        stop("Requested BaseID(s) are missing from the grid: ", 
             paste(missing_base_ids, collapse = ", "), ".", call. = FALSE)
     }
     unlist(lapply(requested_base_ids, function(base_id) which(grid_base_ids == 
@@ -9780,22 +9848,9 @@
     any(file.exists(analysis2_canonical_tfrecord_artifact_paths(paths)))
 }, analysis2_has_incomplete_tfrecord_artifacts <- function(paths) {
     analysis2_has_any_tfrecord_artifacts(paths) && !analysis2_has_canonical_tfrecords(paths)
-}, analysis2_bootstrap_lock_dir <- function(output_dir, base_id) {
-    file.path(output_dir, sprintf(".bootstrap_lock_%s", base_id))
-}, analysis2_wait_for_canonical_tfrecords <- function(paths, 
-    timeout_seconds = 30, poll_seconds = 0.2) {
-    deadline <- Sys.time() + as.difftime(timeout_seconds, units = "secs")
-    repeat {
-        if (analysis2_has_canonical_tfrecords(paths)) {
-            return(TRUE)
-        }
-        if (Sys.time() >= deadline) {
-            return(FALSE)
-        }
-        Sys.sleep(poll_seconds)
-    }
 }, analysis2_build_base_id_tfrecord_plan <- function(mode, grid, 
     base_ids = NULL, tfrecord_dir = NULL) {
+    grid <- analysis2_order_grid(grid, integer())
     selected_rows <- analysis2_bootstrap_base_id_rows(grid = grid, 
         base_ids = base_ids)
     plan <- analysis2_build_canonical_tfrecord_plan(mode = mode, 
@@ -9825,64 +9880,29 @@
             base_id, " under ", output_dir, ". Remove them or rerun with `overwrite = TRUE` before bootstrapping canonical TFRecords.", 
             call. = FALSE)
     }
-    if (!isTRUE(overwrite) && analysis2_has_canonical_tfrecords(paths)) {
-        return("skipped_existing")
-    }
     "planned"
 }, analysis2_bootstrap_write_sim_tfrecord <- function(base_id, 
     canonical_row, artifact_n_samples_train, row_values, tfrecord_dir, 
-    resolve_backend, overwrite = FALSE) {
+    ndmdatasets_pkg, resolve_backend, overwrite = FALSE) {
     paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
-    if (!isTRUE(overwrite) && analysis2_has_incomplete_tfrecord_artifacts(paths)) {
-        stop("Found incomplete TFRecord artifacts for BaseID ", 
-            base_id, " under ", tfrecord_dir, ". Remove them or rerun with `overwrite = TRUE` before bootstrapping canonical TFRecords.", 
-            call. = FALSE)
-    }
-    if (!isTRUE(overwrite) && analysis2_has_canonical_tfrecords(paths)) {
-        analysis2_log(sprintf("Skipping canonical sim TFRecords for BaseID %s because canonical artifacts already exist", 
-            base_id))
-        return("skipped_existing")
-    }
-    lock_dir <- analysis2_bootstrap_lock_dir(tfrecord_dir, base_id)
-    acquired_lock <- dir.create(lock_dir, recursive = FALSE, 
-        showWarnings = FALSE)
-    if (!isTRUE(acquired_lock)) {
-        if (!isTRUE(overwrite) && analysis2_wait_for_canonical_tfrecords(paths)) {
-            analysis2_log(sprintf("Skipping canonical sim TFRecords for BaseID %s because another worker materialized them first", 
-                base_id))
-            return("skipped_locked_existing")
-        }
-        stop("Could not acquire the canonical TFRecord bootstrap lock for BaseID ", 
-            base_id, " under ", tfrecord_dir, ". Another worker may still be writing this BaseID or a stale lock remains at ", 
-            lock_dir, ".", call. = FALSE)
-    }
-    on.exit(unlink(lock_dir, recursive = TRUE, force = TRUE), 
-        add = TRUE)
-    if (!isTRUE(overwrite) && analysis2_has_incomplete_tfrecord_artifacts(paths)) {
-        stop("Found incomplete TFRecord artifacts for BaseID ", 
-            base_id, " under ", tfrecord_dir, " after acquiring the bootstrap lock. Remove them or rerun with `overwrite = TRUE`.", 
-            call. = FALSE)
-    }
-    if (!isTRUE(overwrite) && analysis2_has_canonical_tfrecords(paths)) {
-        analysis2_log(sprintf("Skipping canonical sim TFRecords for BaseID %s because canonical artifacts were written before lock acquisition completed", 
-            base_id))
-        return("skipped_existing")
-    }
-    backend <- resolve_backend()
     model_type <- analysis2_model_type(opts = list(model_type = NULL, 
         respect_grid_model_type = TRUE), grid_model_type = row_values$ModelType, 
         default = "DecoderOnly")
-    dataset_spec <- analysis2_sim_dataset_spec(backend$ndmdatasets_pkg, 
+    dataset_spec <- analysis2_sim_dataset_spec(ndmdatasets_pkg, 
         row_values)
-    training_spec <- analysis2_sim_training_spec(backend$ndmdatasets_pkg, 
+    training_spec <- analysis2_sim_training_spec(ndmdatasets_pkg, 
         row_values, model_type = model_type)
     training_spec$n_samples_train <- as.integer(artifact_n_samples_train)
+    backend <- resolve_backend()
     analysis2_log(sprintf("Regenerating canonical sim TFRecords for BaseID %s from row %s with nSamplesTrain %s", 
         base_id, canonical_row, artifact_n_samples_train))
-    analysis2_write_sim_tfrecords(ndmdatasets_pkg = backend$ndmdatasets_pkg, 
-        dataset_spec = dataset_spec, training_spec = training_spec, 
-        output_dir = tfrecord_dir, tensorflow = backend$tensorflow)
-    "written"
+    result <- analysis2_call(backend$ndmdatasets_pkg, "ndm_sim_bootstrap_tfrecords", 
+        dataset_spec = dataset_spec, output_dir = tfrecord_dir, 
+        training_spec = training_spec, batch_size = 128L, seed = 0L, 
+        overwrite = isTRUE(overwrite), verify_readable = FALSE, 
+        lock_timeout_seconds = 3600, lock_poll_seconds = 0.1, 
+        tensorflow = backend$tensorflow, quiet = TRUE)
+    as.character(result$status %||% "written")
 }, analysis2_bootstrap_sim_tfrecords <- function(project_root, 
     analysis_name = "BigSimsLatest", grid, base_ids = NULL, tfrecord_dir, 
     overwrite = FALSE, dry_run = FALSE) {
@@ -9913,13 +9933,10 @@
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
     analysis2_dir_create(tfrecord_dir)
-    ndmdatasets_pkg <- NULL
+    ndmdatasets_pkg <- analysis2_require_ndmdatasets()
     ndm_pkg <- NULL
     tensorflow <- NULL
     resolve_backend <- function() {
-        if (is.null(ndmdatasets_pkg)) {
-            ndmdatasets_pkg <<- analysis2_require_ndmdatasets()
-        }
         if (is.null(ndm_pkg)) {
             ndm_pkg <<- analysis2_require_ndm()
         }
@@ -9936,7 +9953,97 @@
         statuses[[plan_idx]] <- analysis2_bootstrap_write_sim_tfrecord(base_id = analysis2_as_int(write_plan$BaseID[[plan_idx]]), 
             canonical_row = canonical_row, artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]], 
             row_values = row_values, tfrecord_dir = tfrecord_dir, 
-            resolve_backend = resolve_backend, overwrite = overwrite)
+            ndmdatasets_pkg = ndmdatasets_pkg, resolve_backend = resolve_backend, 
+            overwrite = overwrite)
+    }
+    write_plan$status <- statuses
+    write_plan
+}, analysis2_bootstrap_write_real_tfrecord <- function(base_id, 
+    canonical_row, artifact_n_samples_train, row_values, tfrecord_dir, 
+    outcome_metric, data_subset, ndmdatasets_pkg, resolve_backend, 
+    overwrite = FALSE) {
+    paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
+    model_type <- analysis2_model_type(opts = list(model_type = NULL, 
+        respect_grid_model_type = TRUE), grid_model_type = row_values$ModelType, 
+        default = "DecoderOnly")
+    dataset_spec <- analysis2_real_dataset_spec(ndmdatasets_pkg = ndmdatasets_pkg, 
+        row_values = row_values, outcome_metric = outcome_metric, 
+        data_subset = data_subset)
+    training_spec <- analysis2_real_training_spec(ndmdatasets_pkg, 
+        row_values, model_type = model_type)
+    training_spec$n_samples_train <- as.integer(artifact_n_samples_train)
+    backend <- resolve_backend()
+    analysis2_log(sprintf("Regenerating canonical real TFRecords for BaseID %s from row %s with nSamplesTrain %s", 
+        base_id, canonical_row, artifact_n_samples_train))
+    result <- analysis2_call(backend$ndmdatasets_pkg, "ndm_real_bootstrap_tfrecords", 
+        table_bundle = backend$bundle, dataset_spec = dataset_spec, 
+        output_dir = tfrecord_dir, training_spec = training_spec, 
+        batch_size = 64L, seed = 0L, overwrite = isTRUE(overwrite), 
+        verify_readable = FALSE, lock_timeout_seconds = 3600, 
+        lock_poll_seconds = 0.1, tensorflow = backend$tensorflow, 
+        quiet = TRUE)
+    as.character(result$status %||% "written")
+}, analysis2_bootstrap_real_tfrecords <- function(project_root, 
+    analysis_name = "RealApril15", grid, base_ids = NULL, tfrecord_dir, 
+    raw_data_dir, outcome_metric = "inc_death", data_subset = "high_income", 
+    overwrite = FALSE, dry_run = FALSE) {
+    stopifnot(is.data.frame(grid))
+    project_root <- normalizePath(project_root, winslash = "/", 
+        mustWork = TRUE)
+    paths <- analysis2_paths(project_root = project_root)
+    tfrecord_dir <- normalizePath(tfrecord_dir, winslash = "/", 
+        mustWork = FALSE)
+    raw_data_dir <- normalizePath(raw_data_dir, winslash = "/", 
+        mustWork = !isTRUE(dry_run))
+    write_plan <- analysis2_build_base_id_tfrecord_plan(mode = "real", 
+        grid = grid, base_ids = base_ids, tfrecord_dir = tfrecord_dir)
+    if (nrow(write_plan) == 0L) {
+        write_plan$status <- character()
+        return(write_plan)
+    }
+    if (isTRUE(dry_run)) {
+        write_plan$status <- vapply(write_plan$BaseID, function(base_id) analysis2_bootstrap_dry_run_status(paths = analysis2_tfrecord_paths(tfrecord_dir, 
+            base_id), base_id = base_id, output_dir = tfrecord_dir, 
+            overwrite = overwrite), character(1))
+        return(write_plan)
+    }
+    old_wd <- tryCatch(getwd(), error = function(e) NULL)
+    if (!is.null(old_wd) && nzchar(old_wd)) {
+        on.exit(setwd(old_wd), add = TRUE)
+    }
+    setwd(paths$project_root)
+    analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
+    analysis2_dir_create(tfrecord_dir)
+    ndmdatasets_pkg <- analysis2_require_ndmdatasets()
+    ndm_pkg <- NULL
+    tensorflow <- NULL
+    bundle <- NULL
+    resolve_backend <- function() {
+        if (is.null(ndm_pkg)) {
+            ndm_pkg <<- analysis2_require_ndm()
+        }
+        if (is.null(tensorflow)) {
+            tensorflow <<- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
+        }
+        if (is.null(bundle)) {
+            bundle <<- analysis2_call(ndmdatasets_pkg, "ndm_real_build_tables", 
+                raw_data_dir = raw_data_dir, outcome_metric = outcome_metric, 
+                quiet = TRUE)
+        }
+        list(ndmdatasets_pkg = ndmdatasets_pkg, tensorflow = tensorflow, 
+            bundle = bundle)
+    }
+    statuses <- character(nrow(write_plan))
+    for (plan_idx in seq_len(nrow(write_plan))) {
+        canonical_row <- write_plan$canonical_row[[plan_idx]]
+        row_values <- analysis2_normalize_row_values(analysis2_row_to_list(grid[canonical_row, 
+            , drop = FALSE]))
+        statuses[[plan_idx]] <- analysis2_bootstrap_write_real_tfrecord(base_id = analysis2_as_int(write_plan$BaseID[[plan_idx]]), 
+            canonical_row = canonical_row, artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]], 
+            row_values = row_values, tfrecord_dir = tfrecord_dir, 
+            outcome_metric = outcome_metric, data_subset = data_subset, 
+            ndmdatasets_pkg = ndmdatasets_pkg, resolve_backend = resolve_backend, 
+            overwrite = overwrite)
     }
     write_plan$status <- statuses
     write_plan
@@ -9981,6 +10088,32 @@
         return(as.character(grid_model_type))
     }
     default
+}, analysis2_resolved_run_seed <- function(mode, run_seed, outer_iteration) {
+    if (!is.null(run_seed)) {
+        return(analysis2_as_int(run_seed))
+    }
+    switch(mode, real = analysis2_as_int(outer_iteration), sim = 100L + 
+        analysis2_as_int(outer_iteration), multidisease = analysis2_as_int(outer_iteration), 
+        stop("Unsupported Analysis2 mode: ", mode, call. = FALSE))
+}, analysis2_run_identity <- function(mode, outer_iteration, 
+    base_id, model_type, run_seed, row_id = NULL) {
+    clean <- function(x) gsub("[^A-Za-z0-9_.-]+", "-", as.character(x))
+    row_component <- if (!is.null(row_id) && length(row_id) == 
+        1L && !is.na(row_id) && nzchar(trimws(as.character(row_id)))) {
+        paste0("row", clean(row_id))
+    }
+    else {
+        paste0("outer", sprintf("%06d", analysis2_as_int(outer_iteration)))
+    }
+    paste0(clean(mode), "_", row_component, "_base", clean(base_id), 
+        "_model", clean(model_type), "_seed", clean(run_seed))
+}, analysis2_seed_backends <- function(runtime_env, run_seed) {
+    set.seed(analysis2_as_int(run_seed))
+    try(runtime_env$np$random$seed(analysis2_as_int(run_seed)), 
+        silent = TRUE)
+    try(runtime_env$tf$random$set_seed(analysis2_as_int(run_seed)), 
+        silent = TRUE)
+    invisible(runtime_env)
 }, analysis2_real_dataset_spec <- function(ndmdatasets_pkg, row_values, 
     outcome_metric = "inc_death", data_subset = "high_income") {
     analysis2_call(ndmdatasets_pkg, "ndm_datasets_dataset_spec", 
@@ -10023,7 +10156,12 @@
         i0_b = analysis2_f2n(row_values$i0_b), r0_a = analysis2_f2n(row_values$r0_a), 
         r0_b = analysis2_f2n(row_values$r0_b), betat_init = analysis2_f2n(row_values$betat_init), 
         invbetat_sd = analysis2_f2n(row_values$invbetat_sd), 
-        c_endogeneous = analysis2_f2n(row_values$c_endogeneous), 
+        beta_restore_rate = if ("beta_restore_rate" %in% names(row_values)) {
+            analysis2_f2n(row_values$beta_restore_rate)
+        }
+        else {
+            0.25
+        }, c_endogeneous = analysis2_f2n(row_values$c_endogeneous), 
         policy_responsiveness = analysis2_f2n(row_values$policy_responsiveness), 
         policy_effectiveness = analysis2_f2n(row_values$policy_effectiveness), 
         policy_decay = analysis2_f2n(row_values$policy_decay), 
@@ -10320,7 +10458,7 @@
         YTrue_out_pure = sim$YTrue_out_pure, PolicyDat_all = sim$PolicyDat_all, 
         initial_shift = sim$initial_shift)
 }, analysis2_sim_scaler <- function(ndmdatasets_pkg, dataset_spec, 
-    seed = 1L) {
+    seed = NULL) {
     analysis2_call(ndmdatasets_pkg, "ndm_sim_compute_scaler", 
         dataset_spec = dataset_spec, seed = seed)
 }, analysis2_sim_outcome_sd <- function(ndmdatasets_pkg, dataset_spec, 
@@ -10416,9 +10554,78 @@
             call. = FALSE)
     }
     invisible(TRUE)
+}, analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg, 
+    paths, schema_kind, dataset_spec, n_train, n_inference, source_sha256 = NULL) {
+    train_manifest <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_validate_tfrecord_artifact", 
+        file = paths$train_file, schema = schema_kind, expected_n_examples = as.integer(n_train), 
+        expected_dataset_spec = dataset_spec, expected_split = "train", 
+        expected_seed = 0L, verify_checksum = TRUE, verify_readable = FALSE)
+    inference_manifest <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_validate_tfrecord_artifact", 
+        file = paths$inference_file, schema = schema_kind, expected_n_examples = as.integer(n_inference), 
+        expected_dataset_spec = dataset_spec, expected_split = "inference", 
+        expected_seed = 0L, verify_checksum = TRUE, verify_readable = FALSE)
+    if (!identical(train_manifest$scaler_sha256, inference_manifest$scaler_sha256)) {
+        stop("Canonical train and inference TFRecords were built with different scalers.", 
+            call. = FALSE)
+    }
+    if (!is.null(source_sha256)) {
+        train_source <- train_manifest$metadata$source_sha256 %||% 
+            NULL
+        inference_source <- inference_manifest$metadata$source_sha256 %||% 
+            NULL
+        if (!identical(train_source, source_sha256) || !identical(inference_source, 
+            source_sha256)) {
+            stop("Canonical real TFRecords were built from different source tables.", 
+                call. = FALSE)
+        }
+    }
+    invisible(list(paths = paths, train = train_manifest, inference = inference_manifest))
+}, analysis2_preflight_expected_tfrecords <- function(mode, write_plan, 
+    grid, tfrecord_dir, ndmdatasets_pkg, outcome_metric = "inc_death", 
+    data_subset = "high_income", real_bundle = NULL) {
+    source_sha256 <- if (identical(mode, "real") && !is.null(real_bundle)) {
+        analysis2_call(ndmdatasets_pkg, "ndm_real_source_sha256", 
+            real_bundle)
+    }
+    else {
+        NULL
+    }
+    validated_pairs <- list()
+    for (plan_idx in seq_len(nrow(write_plan))) {
+        canonical_row <- write_plan$canonical_row[[plan_idx]]
+        row_values <- analysis2_normalize_row_values(analysis2_row_to_list(grid[canonical_row, 
+            , drop = FALSE]))
+        dataset_spec <- if (identical(mode, "real")) {
+            analysis2_real_dataset_spec(ndmdatasets_pkg, row_values, 
+                outcome_metric = outcome_metric, data_subset = data_subset)
+        }
+        else {
+            analysis2_sim_dataset_spec(ndmdatasets_pkg, row_values)
+        }
+        n_inference <- if (identical(mode, "real")) {
+            analysis2_as_int(dataset_spec$n_inference_samples)
+        }
+        else {
+            analysis2_as_int(dataset_spec$n_inference_batches) * 
+                128L
+        }
+        paths <- analysis2_tfrecord_paths(tfrecord_dir, write_plan$BaseID[[plan_idx]])
+        validated_pair <- tryCatch(analysis2_validate_canonical_tfrecord_pair(ndmdatasets_pkg = ndmdatasets_pkg, 
+            paths = paths, schema_kind = mode, dataset_spec = dataset_spec, 
+            n_train = write_plan$artifact_n_samples_train[[plan_idx]], 
+            n_inference = n_inference, source_sha256 = source_sha256), 
+            error = function(e) {
+                stop("Canonical ", mode, " TFRecord preflight failed for BaseID ", 
+                  write_plan$BaseID[[plan_idx]], ": ", conditionMessage(e), 
+                  ". Regenerate this artifact before fitting.", 
+                  call. = FALSE)
+            })
+        validated_pairs[[as.character(write_plan$BaseID[[plan_idx]])]] <- validated_pair
+    }
+    invisible(validated_pairs)
 }, analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg, 
     runtime_env, train_file, inference_file, schema_kind, batch_size, 
-    shuffle_train = FALSE) {
+    shuffle_train = FALSE, run_seed = NULL) {
     tf <- runtime_env$tf %||% analysis2_import_tensorflow()
     max_train_examples <- get0("nSamplesTrain", envir = runtime_env, 
         inherits = TRUE, ifnotfound = NULL)
@@ -10426,14 +10633,15 @@
         inherits = TRUE, ifnotfound = NULL)
     train_dataset <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_read_tfrecord_dataset", 
         file = train_file, batch_size = batch_size, schema = schema_kind, 
-        max_examples = max_train_examples, shuffle = FALSE, tensorflow = tf)
-    if (isTRUE(shuffle_train)) {
-        train_dataset <- train_dataset$shuffle(buffer_size = tf$constant(as.integer(10L * 
-            batch_size), dtype = tf$int64), reshuffle_each_iteration = TRUE)
-    }
+        max_examples = max_train_examples, shuffle = isTRUE(shuffle_train), 
+        shuffle_seed = if (is.null(run_seed)) 
+            NULL
+        else analysis2_as_int(run_seed), reshuffle_each_iteration = isTRUE(shuffle_train), 
+        tensorflow = tf)
     inference_dataset <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_read_tfrecord_dataset", 
         file = inference_file, batch_size = batch_size, schema = schema_kind, 
         max_examples = max_inference_examples, shuffle = FALSE, 
+        shuffle_seed = NULL, reshuffle_each_iteration = FALSE, 
         tensorflow = tf)
     assign("TFDataset_train", train_dataset, envir = runtime_env)
     assign("TFDatasetIterator_train", reticulate::as_iterator(train_dataset), 
@@ -10466,8 +10674,9 @@
         training_spec = training_spec, batch_size = 128L, tensorflow = tensorflow, 
         quiet = TRUE)
 }, analysis2_real_runtime_globals <- function(row_values, dataset_spec, 
-    training_spec, state, runtime_env, analysis_name, analysis_date, 
-    outer_iteration, holder_folder, tfrecord_dir, nsgd_calibration) {
+    training_spec, state, runtime_env, model_type, run_seed, 
+    gpu_mem_frac = NULL, analysis_name, analysis_date, outer_iteration, 
+    holder_folder, tfrecord_dir, nsgd_calibration) {
     n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
     n_batch <- min(32L, n_samples_train)
     n_sgd <- analysis2_as_int(nsgd_calibration$resolved_n_sgd)
@@ -10493,11 +10702,19 @@
     n_obs_inference <- analysis2_small_run_n_obs_inference(n_samples_train = n_samples_train, 
         n_batch = n_batch, configured = row_values$nObsInference %||% 
             NULL)
+    run_id <- analysis2_run_identity(mode = "real", outer_iteration = outer_iteration, 
+        base_id = row_values$BaseID, model_type = model_type, 
+        run_seed = run_seed, row_id = row_values$row_id %||% 
+            NULL)
+    entry_values <- row_values
+    entry_values$EffectiveModelType <- model_type
+    entry_values$RunSeed <- run_seed
+    entry_values$RunID <- run_id
     globals <- list(AnalysisName = analysis_name, AnalysisDate = analysis_date, 
-        BaseID = analysis2_as_int(row_values$BaseID), RealEntry = analysis2_scalar_df(row_values), 
-        modelingStrategyNameKey = paste(c("RealMode", paste(names(row_values), 
-            unlist(row_values, use.names = FALSE), sep = "_")), 
-            collapse = "__"), ContextLength = max_times_past, 
+        BaseID = analysis2_as_int(row_values$BaseID), RealEntry = analysis2_scalar_df(entry_values), 
+        RUN_ID = run_id, modelingStrategyNameKey = paste(c(run_id, 
+            paste(names(row_values), unlist(row_values, use.names = FALSE), 
+                sep = "_")), collapse = "__"), ContextLength = max_times_past, 
         evaluationMethod = as.character(row_values$evaluationMethod), 
         evaluationTime = analysis2_as_int(row_values$evaluationTime), 
         initialTransform = as.character(row_values$initialTransform), 
@@ -10513,7 +10730,7 @@
         LEARNING_RATE_MAX_pretrain = 1e-05, UseShortOutcomes = TRUE, 
         SimMode = FALSE, PreTrain = FALSE, IsPretraining = FALSE, 
         OUTER_ITERATION = analysis2_as_int(outer_iteration), 
-        SEED_ = analysis2_as_int(outer_iteration), COMMAND_ARG_INPUT = "test", 
+        SEED_ = analysis2_as_int(run_seed), COMMAND_ARG_INPUT = "test", 
         HolderFolder = holder_folder, TfRecordDir = tfrecord_dir, 
         maxTimesPast = max_times_past, nTimesLookahead = n_times_lookahead, 
         nTimesLookValidationInference = n_times_lookahead, nObsInference = n_obs_inference, 
@@ -10527,7 +10744,7 @@
         nPlaces = length(unique(state$truth_df_red$location_id)), 
         MaxTimeIndex = max_time_index, useLSTM = FALSE, doGrid = TRUE, 
         nRealGridSeed = 128L, nExamplesPerCell = 10L, nRealGrid = nrow(state$truth_df_red), 
-        GPU_MEM_FRAC = NULL, AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita, 
+        GPU_MEM_FRAC = gpu_mem_frac, AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita, 
             na.rm = TRUE), VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$array(1L:vi_total_times)), 
         diff_eq_solver = diffrax$Dopri8(), VI_diff_eq_solver = diffrax$Dopri8(), 
         stepsize_controller = diffrax$PIDController(rtol = 1e-07, 
@@ -10556,9 +10773,10 @@
     }
     globals
 }, analysis2_sim_runtime_globals <- function(row_values, dataset_spec, 
-    training_spec, runtime_env, analysis_name, analysis_date, 
-    outer_iteration, holder_folder, tfrecord_dir, sim_scaler, 
-    sim_outcome_sd, sim_covariates, get_batch, nsgd_calibration) {
+    training_spec, runtime_env, model_type, run_seed, gpu_mem_frac = NULL, 
+    analysis_name, analysis_date, outer_iteration, holder_folder, 
+    tfrecord_dir, sim_scaler, sim_outcome_sd, sim_covariates, 
+    get_batch, nsgd_calibration) {
     n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
     n_batch <- min(32L, n_samples_train)
     n_sgd <- analysis2_as_int(nsgd_calibration$resolved_n_sgd)
@@ -10572,9 +10790,17 @@
     max_time_index <- max(0L, n_time_steps_sim - 1L)
     n_checkpoints <- analysis2_small_run_n_checkpoints(nsgd_calibration$anchor_max_n_samples_train, 
         n_sgd)
+    run_id <- analysis2_run_identity(mode = "sim", outer_iteration = outer_iteration, 
+        base_id = row_values$BaseID, model_type = model_type, 
+        run_seed = run_seed, row_id = row_values$row_id %||% 
+            NULL)
+    entry_values <- row_values
+    entry_values$EffectiveModelType <- model_type
+    entry_values$RunSeed <- run_seed
+    entry_values$RunID <- run_id
     c(list(AnalysisName = analysis_name, AnalysisDate = analysis_date, 
-        BaseID = analysis2_as_int(row_values$BaseID), SimEntry = row_values, 
-        ContextLength = analysis2_as_int(row_values$ContextLength), 
+        BaseID = analysis2_as_int(row_values$BaseID), SimEntry = entry_values, 
+        RUN_ID = run_id, ContextLength = analysis2_as_int(row_values$ContextLength), 
         nSamplesTrain = n_samples_train, nSamples_max = analysis2_as_int(nsgd_calibration$anchor_max_n_samples_train), 
         floatType = as.character(row_values$floatType), paddingMethod = as.character(row_values$paddingMethod %||% 
             "left"), ModelDepth = analysis2_as_int(row_values$ModelDepth), 
@@ -10588,12 +10814,13 @@
         } else {
             "left"
         }, SimMode = TRUE, IsPretraining = FALSE, OUTER_ITERATION = analysis2_as_int(outer_iteration), 
-        SEED_ = 100L + analysis2_as_int(outer_iteration), COMMAND_ARG_INPUT = "test", 
+        SEED_ = analysis2_as_int(run_seed), COMMAND_ARG_INPUT = "test", 
         HolderFolder = holder_folder, TfRecordDir = tfrecord_dir, 
         GLOBAL_ODE_NPOP = 10000, rollCompute_window = 52L, nPolicies = 1L, 
-        nOutcomes = 1L, af = 1L, AppendTimeEmbeds = FALSE, AppendPlaceEmbeds = FALSE, 
-        AttentionHeadDim = 64L, AttentionKVHeads = NULL, endAppend = TRUE, 
-        EnableKVCaching = TRUE, MaxTimeIndex = max_time_index, 
+        nOutcomes = 1L, af = analysis2_as_int(outer_iteration), 
+        GPU_MEM_FRAC = gpu_mem_frac, AppendTimeEmbeds = FALSE, 
+        AppendPlaceEmbeds = FALSE, AttentionHeadDim = 64L, AttentionKVHeads = NULL, 
+        endAppend = TRUE, EnableKVCaching = TRUE, MaxTimeIndex = max_time_index, 
         nPlaces = 1L, nMonteEval = 1L, nBatch_SimGridGen = 8L, 
         SimScalingOuterLoops = 1L, SimScalingInnerLoops = 2L, 
         nTimesPast = n_times_past, nTimesLookahead = n_times_lookahead, 
@@ -10660,14 +10887,16 @@
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
     analysis2_log_nsgd_calibration("real", nsgd_calibration)
-    if (!isTRUE(resave_tfrecords)) {
-        analysis2_preflight_canonical_tfrecords(base_ids = write_plan$BaseID, 
-            tfrecord_dir = tfrecord_dir)
-    }
     ndmdatasets_pkg <- analysis2_require_ndmdatasets()
     bundle <- analysis2_call(ndmdatasets_pkg, "ndm_real_build_tables", 
         raw_data_dir = raw_data_dir, outcome_metric = outcome_metric, 
         quiet = TRUE)
+    if (!isTRUE(resave_tfrecords)) {
+        analysis2_preflight_expected_tfrecords(mode = "real", 
+            write_plan = write_plan, grid = real_grid, tfrecord_dir = tfrecord_dir, 
+            ndmdatasets_pkg = ndmdatasets_pkg, outcome_metric = outcome_metric, 
+            data_subset = spec$data_subset, real_bundle = bundle)
+    }
     if (isTRUE(resave_tfrecords)) {
         ndm_pkg <- analysis2_require_ndm()
         tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
@@ -10703,6 +10932,14 @@
             , drop = FALSE]))
         model_type <- analysis2_model_type(spec, row_values$ModelType, 
             default = "DecoderOnly")
+        run_seed <- analysis2_resolved_run_seed("real", spec$run_seed, 
+            outer_iteration)
+        set.seed(run_seed)
+        run_id <- analysis2_run_identity("real", outer_iteration, 
+            row_values$BaseID, model_type, run_seed, row_id = row_values$row_id %||% 
+                NULL)
+        run_holder_folder <- file.path(holder_folder, run_id)
+        analysis2_dir_create(run_holder_folder)
         dataset_spec <- analysis2_real_dataset_spec(ndmdatasets_pkg = ndmdatasets_pkg, 
             row_values = row_values, outcome_metric = outcome_metric, 
             data_subset = spec$data_subset)
@@ -10713,8 +10950,11 @@
         config <- analysis2_call(ndm_pkg, "ndm_create_config", 
             model_type = model_type, backbone = "transformer", 
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType), 
-            force_to_gpu = TRUE, resave_tfrecords = FALSE, gpu_mem_frac = NULL)
+            force_to_gpu = spec$force_to_gpu, resave_tfrecords = FALSE, 
+            gpu_mem_frac = spec$gpu_mem_frac, neuralode_variational = identical(model_type, 
+                "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight)
         runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
+        analysis2_seed_backends(runtime_env, run_seed)
         state <- analysis2_prepare_real_state(ndmdatasets_pkg = ndmdatasets_pkg, 
             bundle = bundle, dataset_spec = dataset_spec, project_root = paths$project_root)
         get_batch <- analysis2_real_get_batch_factory(ndmdatasets_pkg = ndmdatasets_pkg, 
@@ -10723,13 +10963,14 @@
         analysis2_call(ndm_pkg, "ndm_set_runtime_globals", runtime_env, 
             c(analysis2_real_runtime_globals(row_values = row_values, 
                 dataset_spec = dataset_spec, training_spec = training_spec, 
-                state = state, runtime_env = runtime_env, analysis_name = analysis_name, 
-                analysis_date = analysis_date, outer_iteration = outer_iteration, 
-                holder_folder = holder_folder, tfrecord_dir = tfrecord_dir, 
-                nsgd_calibration = nsgd_calibration), list(RealGrid = real_grid, 
-                GetBatch = get_batch, GetBatch_base = get_batch, 
-                GetBatch_real = get_batch, analysis2_run_spec = spec, 
-                analysis2_nsgd_calibration = nsgd_calibration)))
+                state = state, runtime_env = runtime_env, model_type = model_type, 
+                run_seed = run_seed, gpu_mem_frac = spec$gpu_mem_frac, 
+                analysis_name = analysis_name, analysis_date = analysis_date, 
+                outer_iteration = outer_iteration, holder_folder = run_holder_folder, 
+                tfrecord_dir = tfrecord_dir, nsgd_calibration = nsgd_calibration), 
+                list(RealGrid = real_grid, GetBatch = get_batch, 
+                  GetBatch_base = get_batch, GetBatch_real = get_batch, 
+                  analysis2_run_spec = spec, analysis2_nsgd_calibration = nsgd_calibration)))
         preview_batch <- get_batch(nBatch = get("nBatch", envir = runtime_env), 
             training = TRUE, INPUT_REF_DAT = state$input_df_red_in)
         analysis2_seed_runtime_batch(runtime_env, preview_batch)
@@ -10737,7 +10978,7 @@
             runtime_env = runtime_env, train_file = tfrecord_paths$train_file, 
             inference_file = tfrecord_paths$inference_file, schema_kind = "real", 
             batch_size = get("nBatch", envir = runtime_env), 
-            shuffle_train = TRUE)
+            shuffle_train = TRUE, run_seed = run_seed)
         analysis2_expose_runtime_env(runtime_env)
         model_spec <- analysis2_resolve_model_spec(model_tex_loc = row_values$model_tex_loc, 
             model_spec_name = row_values$model_spec_name, model_type = model_type, 
@@ -10801,11 +11042,13 @@
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
     analysis2_log_nsgd_calibration("sim", nsgd_calibration)
-    if (!isTRUE(resave_tfrecords)) {
-        analysis2_preflight_canonical_tfrecords(base_ids = write_plan$BaseID, 
-            tfrecord_dir = tfrecord_dir)
-    }
     ndmdatasets_pkg <- analysis2_require_ndmdatasets()
+    validated_artifacts <- NULL
+    if (!isTRUE(resave_tfrecords)) {
+        validated_artifacts <- analysis2_preflight_expected_tfrecords(mode = "sim", 
+            write_plan = write_plan, grid = sim_grid, tfrecord_dir = tfrecord_dir, 
+            ndmdatasets_pkg = ndmdatasets_pkg)
+    }
     sim_covariates <- c(XPred_c_sqrt = "inc_case_per_capita_sqrt", 
         XPred_h_sqrt = "inc_hosp_per_capita_sqrt", XPred_d_sqrt = "inc_death_per_capita_sqrt")
     if (isTRUE(resave_tfrecords)) {
@@ -10841,6 +11084,14 @@
             , drop = FALSE]))
         model_type <- analysis2_model_type(spec, row_values$ModelType, 
             default = "DecoderOnly")
+        run_seed <- analysis2_resolved_run_seed("sim", spec$run_seed, 
+            outer_iteration)
+        set.seed(run_seed)
+        run_id <- analysis2_run_identity("sim", outer_iteration, 
+            row_values$BaseID, model_type, run_seed, row_id = row_values$row_id %||% 
+                NULL)
+        run_holder_folder <- file.path(holder_folder, run_id)
+        analysis2_dir_create(run_holder_folder)
         dataset_spec <- analysis2_sim_dataset_spec(ndmdatasets_pkg, 
             row_values)
         training_spec <- analysis2_sim_training_spec(ndmdatasets_pkg, 
@@ -10850,10 +11101,19 @@
         config <- analysis2_call(ndm_pkg, "ndm_create_config", 
             model_type = model_type, backbone = "transformer", 
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType), 
-            force_to_gpu = TRUE, resave_tfrecords = FALSE, gpu_mem_frac = NULL)
+            force_to_gpu = spec$force_to_gpu, resave_tfrecords = FALSE, 
+            gpu_mem_frac = spec$gpu_mem_frac, neuralode_variational = identical(model_type, 
+                "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight)
         runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
-        sim_scaler <- analysis2_sim_scaler(ndmdatasets_pkg, dataset_spec, 
-            seed = 1L)
+        analysis2_seed_backends(runtime_env, run_seed)
+        artifact_key <- as.character(analysis2_as_int(row_values$BaseID))
+        sim_scaler <- validated_artifacts[[artifact_key]]$train$scaler %||% 
+            NULL
+        if (is.null(sim_scaler)) {
+            stop("Validated simulation TFRecord manifests did not provide a scaler for BaseID ", 
+                artifact_key, ". Regenerate the canonical artifact pair.", 
+                call. = FALSE)
+        }
         sim_outcome_sd <- analysis2_sim_outcome_sd(ndmdatasets_pkg, 
             dataset_spec, sim_scaler)
         get_batch <- analysis2_sim_get_batch_factory(ndmdatasets_pkg = ndmdatasets_pkg, 
@@ -10862,13 +11122,15 @@
         analysis2_call(ndm_pkg, "ndm_set_runtime_globals", runtime_env, 
             c(analysis2_sim_runtime_globals(row_values = row_values, 
                 dataset_spec = dataset_spec, training_spec = training_spec, 
-                runtime_env = runtime_env, analysis_name = analysis_name, 
-                analysis_date = analysis_date, outer_iteration = outer_iteration, 
-                holder_folder = holder_folder, tfrecord_dir = tfrecord_dir, 
-                sim_scaler = sim_scaler, sim_outcome_sd = sim_outcome_sd, 
-                sim_covariates = sim_covariates, get_batch = get_batch, 
-                nsgd_calibration = nsgd_calibration), list(SimGrid = sim_grid, 
-                analysis2_run_spec = spec, analysis2_nsgd_calibration = nsgd_calibration)))
+                runtime_env = runtime_env, model_type = model_type, 
+                run_seed = run_seed, gpu_mem_frac = spec$gpu_mem_frac, 
+                analysis_name = analysis_name, analysis_date = analysis_date, 
+                outer_iteration = outer_iteration, holder_folder = run_holder_folder, 
+                tfrecord_dir = tfrecord_dir, sim_scaler = sim_scaler, 
+                sim_outcome_sd = sim_outcome_sd, sim_covariates = sim_covariates, 
+                get_batch = get_batch, nsgd_calibration = nsgd_calibration), 
+                list(SimGrid = sim_grid, analysis2_run_spec = spec, 
+                  analysis2_nsgd_calibration = nsgd_calibration)))
         if (!exists("paddingMethod", envir = runtime_env, inherits = FALSE) || 
             is.null(get("paddingMethod", envir = runtime_env, 
                 inherits = FALSE))) {
@@ -10884,7 +11146,7 @@
             runtime_env = runtime_env, train_file = tfrecord_paths$train_file, 
             inference_file = tfrecord_paths$inference_file, schema_kind = "sim", 
             batch_size = get("nBatch", envir = runtime_env), 
-            shuffle_train = TRUE)
+            shuffle_train = TRUE, run_seed = run_seed)
         analysis2_expose_runtime_env(runtime_env)
         model_spec <- analysis2_resolve_model_spec(model_tex_loc = row_values$model_tex_loc, 
             model_spec_name = row_values$model_spec_name, model_type = model_type, 
@@ -10996,11 +11258,11 @@
             12L
         else configured_run_seed)
         ReSaveTfRecords <- isTRUE(analysis2_multidisease_spec$resave_tfrecords)
-        force2GPU <- TRUE
+        force2GPU <- isTRUE(analysis2_multidisease_spec$force_to_gpu)
         nRealGridSeed <- 128L
         nExamplesPerCell <- 10L
         nRealGrid <- 704
-        GPU_MEM_FRAC <- NULL
+        GPU_MEM_FRAC <- analysis2_multidisease_spec$gpu_mem_frac
         UseShortOutcomes <- TRUE
         nTimesLookahead <- (4L * 3L)
         nTimesLookValidationInference <- nTimesLookahead
@@ -11165,6 +11427,9 @@
                 }
                 ModelType <- analysis2_model_type(analysis2_multidisease_spec, 
                   RealEntry$ModelType, default = "DecoderOnly")
+                neuralode_variational <- identical(ModelType, 
+                  "NeuralODE")
+                neuralode_kl_weight <- analysis2_multidisease_spec$neuralode_kl_weight
                 print(sprintf("Using model type: %s", ModelType))
                 ndm_source_extracted("SetupEnv/SuperLModel_MasterImports.R")
                 if (exists("tf", inherits = FALSE) && !is.null(tf$random$set_seed)) {

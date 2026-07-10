@@ -5,7 +5,11 @@ grid_file: Data/RunGrids/SimGrids/SimGrid_BigSimsLatest.csv
 outer:
   - 1
 model_type: null
-respect_grid_model_type: false
+respect_grid_model_type: true
+run_seed: null
+force_to_gpu: true
+gpu_mem_frac: null
+neuralode_kl_weight: 1.0
 resave_tfrecords: true
 run_figures: false
 tfrecord_dir: Data/RunTFRecords/SimTFRecords/BigSimsLatest

@@ -213,6 +213,18 @@ test_that("ndm_backend_modules errors before initialization", {
   )
 })
 
+test_that("force_to_gpu requires an actual CUDA JAX platform", {
+  cpu_jax <- list(devices = function() list(list(platform = "cpu")))
+  gpu_jax <- list(devices = function() list(list(platform = "gpu")))
+
+  expect_error(
+    ndm:::.ndm_assert_gpu_available(cpu_jax, TRUE),
+    "CUDA-capable JAX GPU"
+  )
+  expect_invisible(ndm:::.ndm_assert_gpu_available(cpu_jax, FALSE))
+  expect_invisible(ndm:::.ndm_assert_gpu_available(gpu_jax, TRUE))
+})
+
 test_that("oryx shim supports sampling, triangular fill, and KL divergence in jax_cpu", {
   conda_env <- ndm_require_backend_test_stack("oryx shim tests", packages = c("reticulate"))
   old_backend <- ndm:::ndm_env$backend
@@ -253,4 +265,105 @@ test_that("oryx shim supports sampling, triangular fill, and KL divergence in ja
   )
   expect_true(is.finite(as.numeric(kl)))
   expect_gte(as.numeric(kl), 0)
+})
+
+test_that("oryx shim computes analytic Gaussian KLs including batched mixed factors", {
+  conda_env <- ndm_require_backend_test_stack("Gaussian KL tests", packages = c("reticulate"))
+  old_backend <- ndm:::ndm_env$backend
+  on.exit(assign("backend", old_backend, envir = ndm:::ndm_env), add = TRUE)
+  backend <- ndm_initialize_backend(
+    conda_env = conda_env,
+    float_type = "64",
+    import_tensorflow = FALSE
+  )
+  oryx <- backend$oryx
+  as_r <- function(x) reticulate::py_to_r(backend$np$asanyarray(x))
+
+  normal_kl <- as.numeric(as_r(oryx$kl_divergence(
+    oryx$Normal(1.5, 0.75),
+    oryx$Normal(-0.5, 2.0)
+  )))
+  normal_expected <- log(2 / 0.75) + (0.75^2 + (1.5 + 0.5)^2) / (2 * 2^2) - 0.5
+  expect_equal(normal_kl, normal_expected, tolerance = 1e-10)
+
+  diag_q <- oryx$MultivariateNormalDiag(
+    backend$jnp$array(c(1, -1)),
+    backend$jnp$array(c(0.5, 2))
+  )
+  diag_p <- oryx$MultivariateNormalDiag(
+    backend$jnp$array(c(0, 0.25)),
+    backend$jnp$array(c(1.5, 0.75))
+  )
+  diag_kl <- as.numeric(as_r(oryx$kl_divergence(diag_q, diag_p)))
+  diag_expected <- 0.5 * sum(
+    (c(0.5, 2)^2 + (c(1, -1) - c(0, 0.25))^2) / c(1.5, 0.75)^2 -
+      1 + 2 * log(c(1.5, 0.75) / c(0.5, 2))
+  )
+  expect_equal(diag_kl, diag_expected, tolerance = 1e-10)
+
+  q_locations <- rbind(c(0, 0), c(1, -1))
+  q_scales <- rbind(c(1, 2), c(0.5, 1.5))
+  p_location <- c(0.2, -0.3)
+  p_factor <- matrix(c(1.2, 0, 0.4, 0.8), nrow = 2, byrow = TRUE)
+  mixed_kl <- as.numeric(as_r(oryx$kl_divergence(
+    oryx$MultivariateNormalDiag(
+      backend$jnp$array(q_locations),
+      backend$jnp$array(q_scales)
+    ),
+    oryx$MultivariateNormalTriL(
+      backend$jnp$array(p_location),
+      backend$jnp$array(p_factor)
+    )
+  )))
+  reference_kl <- function(mu_q, l_q, mu_p, l_p) {
+    covariance_q <- l_q %*% t(l_q)
+    covariance_p <- l_p %*% t(l_p)
+    difference <- mu_p - mu_q
+    0.5 * (
+      sum(diag(solve(covariance_p, covariance_q))) +
+        drop(t(difference) %*% solve(covariance_p, difference)) -
+        length(mu_q) +
+        as.numeric(determinant(covariance_p, logarithm = TRUE)$modulus) -
+        as.numeric(determinant(covariance_q, logarithm = TRUE)$modulus)
+    )
+  }
+  mixed_expected <- vapply(seq_len(nrow(q_locations)), function(i) {
+    reference_kl(
+      q_locations[i, ],
+      diag(q_scales[i, ]),
+      p_location,
+      p_factor
+    )
+  }, numeric(1))
+  expect_equal(mixed_kl, mixed_expected, tolerance = 1e-9)
+
+  q_covariance <- matrix(c(1.4, 0.25, 0.25, 0.7), nrow = 2)
+  full_vs_tril <- as.numeric(as_r(oryx$kl_divergence(
+    oryx$MultivariateNormalFullCovariance(
+      backend$jnp$array(c(-0.2, 0.6)),
+      backend$jnp$array(q_covariance)
+    ),
+    oryx$MultivariateNormalTriL(
+      backend$jnp$array(p_location),
+      backend$jnp$array(p_factor)
+    )
+  )))
+  full_expected <- reference_kl(
+    c(-0.2, 0.6),
+    chol(q_covariance + diag(1e-6, 2)) |> t(),
+    p_location,
+    p_factor
+  )
+  expect_equal(full_vs_tril, full_expected, tolerance = 1e-9)
+
+  zero_scale_kl <- as.numeric(as_r(oryx$kl_divergence(
+    oryx$Normal(0, 0),
+    oryx$Normal(0, 0)
+  )))
+  expect_true(is.finite(zero_scale_kl))
+  expect_equal(zero_scale_kl, 0, tolerance = 1e-10)
+  expect_error(
+    oryx$kl_divergence(oryx$Uniform(), oryx$Normal(0, 1)),
+    "not implemented"
+  )
 })

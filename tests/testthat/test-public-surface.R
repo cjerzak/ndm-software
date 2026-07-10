@@ -13,6 +13,7 @@ test_that("only Analysis2 compatibility runtime hooks are part of the public sur
   expect_true("ndm_source_runtime_results_get" %in% exports)
   expect_true("ndm_source_runtime_results_analyze" %in% exports)
   expect_true("ndm_bootstrap_sim_tfrecords" %in% exports)
+  expect_true("ndm_bootstrap_real_tfrecords" %in% exports)
   expect_true("ndm_save_model" %in% exports)
   expect_true("ndm_load_model" %in% exports)
   expect_true("ndm_resume_training" %in% exports)

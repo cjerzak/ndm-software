@@ -39,6 +39,11 @@
 #' @param run_seed Optional integer scalar used to seed model initialization,
 #'   training, and inference. When `NULL`, legacy outer-row-derived seeding is
 #'   retained for backward compatibility.
+#' @param force_to_gpu Logical scalar indicating whether a GPU is required.
+#' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`.
+#' @param neuralode_kl_weight Finite non-negative multiplier for the NeuralODE
+#'   KL contribution. A value of zero disables KL evaluation without disabling
+#'   variational sampling.
 #' @param model_type Optional model family override.
 #' @param respect_grid_model_type Logical scalar indicating whether grid rows
 #'   should be allowed to override the requested model type.
@@ -89,8 +94,11 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_%s.csv", analysis_name)),
                                        outer = 3L,
                                        run_seed = NULL,
+                                       force_to_gpu = TRUE,
+                                       gpu_mem_frac = NULL,
+                                       neuralode_kl_weight = 1.0,
                                        model_type = NULL,
-                                       respect_grid_model_type = FALSE,
+                                       respect_grid_model_type = TRUE,
                                        resave_tfrecords = FALSE,
                                        tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords", analysis_name),
                                        raw_data_dir = file.path("Data", "MainData"),
@@ -108,6 +116,9 @@ ndm_create_real_run_config <- function(project_root = getwd(),
     grid_file = grid_file,
     outer = outer,
     run_seed = run_seed,
+    force_to_gpu = force_to_gpu,
+    gpu_mem_frac = gpu_mem_frac,
+    neuralode_kl_weight = neuralode_kl_weight,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -127,8 +138,11 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       grid_file = file.path("Data", "RunGrids", "SimGrids", sprintf("SimGrid_%s.csv", analysis_name)),
                                       outer = 1L,
                                       run_seed = NULL,
+                                      force_to_gpu = TRUE,
+                                      gpu_mem_frac = NULL,
+                                      neuralode_kl_weight = 1.0,
                                       model_type = NULL,
-                                      respect_grid_model_type = FALSE,
+                                      respect_grid_model_type = TRUE,
                                       resave_tfrecords = TRUE,
                                       tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
                                       dry_run = FALSE) {
@@ -143,6 +157,9 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
     grid_file = grid_file,
     outer = outer,
     run_seed = run_seed,
+    force_to_gpu = force_to_gpu,
+    gpu_mem_frac = gpu_mem_frac,
+    neuralode_kl_weight = neuralode_kl_weight,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -159,8 +176,11 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_%s.csv", analysis_name)),
                                                outer = 1L,
                                                run_seed = NULL,
+                                               force_to_gpu = TRUE,
+                                               gpu_mem_frac = NULL,
+                                               neuralode_kl_weight = 1.0,
                                                model_type = NULL,
-                                               respect_grid_model_type = FALSE,
+                                               respect_grid_model_type = TRUE,
                                                resave_tfrecords = FALSE,
                                                tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords", analysis_name),
                                                outcome_metric = "CountValue",
@@ -179,6 +199,9 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     grid_file = grid_file,
     outer = outer,
     run_seed = run_seed,
+    force_to_gpu = force_to_gpu,
+    gpu_mem_frac = gpu_mem_frac,
+    neuralode_kl_weight = neuralode_kl_weight,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -265,6 +288,73 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
   )
 }
 
+#' Bootstrap canonical real-data TFRecords by BaseID
+#'
+#' Materializes one canonical real-data train/inference artifact pair per
+#' `BaseID`, with the same cross-process lock and canonical-row selection used
+#' by [ndm_bootstrap_sim_tfrecords()].
+#'
+#' @inheritParams ndm_bootstrap_sim_tfrecords
+#' @param analysis_name Analysis label used to derive default real-data paths.
+#' @param grid Optional in-memory real-data grid.
+#' @param grid_file Optional CSV path for the real-data grid.
+#' @param tfrecord_dir Output directory for canonical real-data TFRecords.
+#' @param raw_data_dir Directory containing the real-data source tables.
+#' @param outcome_metric Outcome metric passed to `ndmdatasets`.
+#' @param data_subset Real-data subset passed to `ndmdatasets`.
+#'
+#' @returns A canonical per-`BaseID` write-plan data frame with a `status`
+#'   column.
+#'
+#' @export
+ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
+                                         analysis_name = "RealApril15",
+                                         grid = NULL,
+                                         grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_%s.csv", analysis_name)),
+                                         base_ids = NULL,
+                                         tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords", analysis_name),
+                                         raw_data_dir = file.path("Data", "MainData"),
+                                         outcome_metric = "inc_death",
+                                         data_subset = "high_income",
+                                         overwrite = FALSE,
+                                         dry_run = FALSE) {
+  project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
+  if (!is.null(grid)) {
+    grid_file <- NULL
+  }
+  if (!is.null(grid) && !is.data.frame(grid)) {
+    stop("`grid` must be a data.frame when supplied.", call. = FALSE)
+  }
+  if (is.null(grid)) {
+    grid_file <- .ndm_path_join_if_relative(project_root, grid_file)
+    grid_file <- .ndm_normalize_path(grid_file, must_work = TRUE)
+    grid <- as.data.frame(data.table::fread(grid_file), stringsAsFactors = FALSE)
+  }
+  tfrecord_dir <- .ndm_normalize_path(
+    .ndm_path_join_if_relative(project_root, tfrecord_dir),
+    must_work = FALSE
+  )
+  raw_data_dir <- .ndm_normalize_path(
+    .ndm_path_join_if_relative(project_root, raw_data_dir),
+    must_work = !isTRUE(dry_run)
+  )
+
+  api_env <- .ndm_legacy_run_env()
+  bootstrap_fun <- get("analysis2_bootstrap_real_tfrecords", envir = api_env, inherits = FALSE)
+  bootstrap_fun(
+    project_root = project_root,
+    analysis_name = as.character(analysis_name),
+    grid = grid,
+    base_ids = base_ids,
+    tfrecord_dir = tfrecord_dir,
+    raw_data_dir = raw_data_dir,
+    outcome_metric = as.character(outcome_metric),
+    data_subset = as.character(data_subset),
+    overwrite = isTRUE(overwrite),
+    dry_run = isTRUE(dry_run)
+  )
+}
+
 .ndm_validate_resave_tfrecords <- function(mode, resave_tfrecords) {
   if (identical(mode, "multidisease") && isTRUE(resave_tfrecords)) {
     stop(
@@ -287,8 +377,11 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
                                  grid_file = NULL,
                                  outer,
                                  run_seed = NULL,
+                                 force_to_gpu = TRUE,
+                                 gpu_mem_frac = NULL,
+                                 neuralode_kl_weight = 1.0,
                                  model_type = NULL,
-                                 respect_grid_model_type = FALSE,
+                                 respect_grid_model_type = TRUE,
                                  resave_tfrecords = FALSE,
                                  tfrecord_dir = NULL,
                                  raw_data_dir = NULL,
@@ -319,6 +412,21 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     }
     run_seed <- as.integer(run_seed_numeric)
   }
+  if (!is.logical(force_to_gpu) || length(force_to_gpu) != 1L || is.na(force_to_gpu)) {
+    stop("`force_to_gpu` must be one non-missing logical value.", call. = FALSE)
+  }
+  if (!is.null(gpu_mem_frac)) {
+    gpu_mem_frac <- suppressWarnings(as.numeric(gpu_mem_frac))
+    if (length(gpu_mem_frac) != 1L || !is.finite(gpu_mem_frac) ||
+        gpu_mem_frac <= 0 || gpu_mem_frac > 1) {
+      stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", call. = FALSE)
+    }
+  }
+  neuralode_kl_weight <- suppressWarnings(as.numeric(neuralode_kl_weight))
+  if (length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) ||
+      neuralode_kl_weight < 0) {
+    stop("`neuralode_kl_weight` must be one finite non-negative value.", call. = FALSE)
+  }
   .ndm_validate_resave_tfrecords(mode, resave_tfrecords)
 
   class_name <- switch(
@@ -338,6 +446,9 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
       grid_file = grid_file,
       outer = outer,
       run_seed = run_seed,
+      force_to_gpu = force_to_gpu,
+      gpu_mem_frac = gpu_mem_frac,
+      neuralode_kl_weight = neuralode_kl_weight,
       model_type = model_type,
       respect_grid_model_type = isTRUE(respect_grid_model_type),
       resave_tfrecords = isTRUE(resave_tfrecords),
@@ -376,6 +487,8 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     sprintf("--project_root=%s", config$project_root),
     sprintf("--analysis_name=%s", config$analysis_name),
     sprintf("--outer=%s", paste(config$outer, collapse = ",")),
+    sprintf("--force_to_gpu=%s", toupper(as.character(isTRUE(config$force_to_gpu)))),
+    sprintf("--neuralode_kl_weight=%s", format(config$neuralode_kl_weight, scientific = FALSE, trim = TRUE)),
     sprintf("--respect_grid_model_type=%s", toupper(as.character(isTRUE(config$respect_grid_model_type)))),
     sprintf("--resave_tfrecords=%s", toupper(as.character(isTRUE(config$resave_tfrecords)))),
     "--run_figures=FALSE",
@@ -384,6 +497,9 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
 
   if (!is.null(config$run_seed)) {
     args <- c(args, sprintf("--run_seed=%s", as.integer(config$run_seed)))
+  }
+  if (!is.null(config$gpu_mem_frac)) {
+    args <- c(args, sprintf("--gpu_mem_frac=%s", format(config$gpu_mem_frac, scientific = FALSE, trim = TRUE)))
   }
 
   if (!is.null(grid_file)) {

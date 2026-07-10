@@ -21,7 +21,7 @@ ndm_create_config(
   neuralode_optim_controller = c("pid", "constant"),
   neuralode_optim_rtol = 1e-05,
   neuralode_optim_atol = 1e-07,
-  neuralode_variational = FALSE,
+  neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   ...
 )
@@ -37,15 +37,14 @@ ndm_create_config(
 \item{float_type}{Floating point precision used when initializing the backend.
 Use `"32"` or `"64"`.}
 
-\item{force_to_gpu}{Logical scalar indicating whether the runtime should try
-to place arrays on GPU when available.}
+\item{force_to_gpu}{Logical scalar requiring a CUDA-capable JAX GPU when
+\code{TRUE}.}
 
 \item{resave_tfrecords}{Logical scalar preserved for compatibility with
 existing run workflows. Multidisease workflows reject `TRUE` because the
 legacy TFRecord-regeneration path has been retired.}
 
-\item{gpu_mem_frac}{Optional GPU memory fraction forwarded into the runtime
-bootstrap code.}
+\item{gpu_mem_frac}{Optional finite GPU memory fraction in \code{(0, 1]}.}
 
 \item{neuralode_local_latent_dim}{Optional local NeuralODE latent width. When
 `NULL`, runtime code resolves this to `ModelDims`.}

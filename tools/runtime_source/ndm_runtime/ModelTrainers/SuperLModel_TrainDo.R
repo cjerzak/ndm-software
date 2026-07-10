@@ -2,11 +2,15 @@
 print("Sarting SuperLModel_TrainDo.R")
 SavedModelDir <- get0(
   "SavedModelDir",
-  ifnotfound = sprintf("./SavedModels/%s/Model_%s_%s",
-                       ifelse(grepl(tolower(AnalysisName), pattern = "sim"),
-                              yes = "FromSim", no = "FromReal"),
-                       AnalysisName,
-                       AnalysisDate)
+  ifnotfound = file.path(
+    "./SavedModels",
+    ifelse(isTRUE(SimMode), "FromSim", "FromReal"),
+    sprintf(
+      "Model_%s_%s",
+      AnalysisName,
+      get0("RUN_ID", inherits = TRUE, ifnotfound = paste0("legacy_outer", OUTER_ITERATION))
+    )
+  )
 )
 checkpoint_file <- function(prefix, step){
   file.path(SavedModelDir, sprintf("%s_i%s_%s_%s.eqx", prefix, step, AnalysisName, AnalysisDate))
@@ -268,6 +272,31 @@ for(i in i_:nSGD_model){
   # get batch
   if(nSGD_pretrain > 0L | nSGD_posttrain > 0){ 
   dat_ <- next_train_batch()
+
+  observation_mask_host <- as.array(np$array(dat_$YTrue_out_mask))
+  if (length(dim(observation_mask_host)) == 0L) {
+    observation_mask_host <- array(
+      observation_mask_host,
+      dim = c(length(observation_mask_host), 1L)
+    )
+  }
+  observation_mask_matrix <- matrix(
+    as.numeric(observation_mask_host),
+    nrow = dim(observation_mask_host)[[1L]]
+  )
+  invalid_mask_examples <- which(
+    !apply(is.finite(observation_mask_matrix), 1L, all) |
+      rowSums(observation_mask_matrix != 0) == 0
+  )
+  if (length(invalid_mask_examples) > 0L) {
+    stop(
+      sprintf(
+        "Training batch contains non-finite or all-zero observation masks for example(s): %s.",
+        paste(invalid_mask_examples, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
 
   # update step
   {

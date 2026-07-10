@@ -1,6 +1,6 @@
 Package: ndm
 Title: Neural Disease Modeling Software
-Version: 0.0.1
+Version: 0.1.0
 Author: Connor T. Jerzak [aut, cre]
 Maintainer: Connor T. Jerzak <connor.jerzak@austin.utexas.edu>
 Authors@R:
@@ -16,7 +16,7 @@ Description: Provides an R-first interface for neural disease modeling with a
 Depends: R (>= 4.1.0)
 Imports:
     data.table,
-    ndmdatasets,
+    ndmdatasets (>= 0.1.0),
     rlang,
     reticulate,
     utils

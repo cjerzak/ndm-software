@@ -75,6 +75,29 @@ test_that("canonical sim bootstrap dry run plans one row per BaseID in raw order
   expect_true(all(plan$status == "planned"))
 })
 
+test_that("canonical real bootstrap exposes an explicit BaseID-scoped dry-run plan", {
+  ndm_require_runner_test_stack("package-native real bootstrap dry-run tests")
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  grid <- ndm_test_make_real_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(0L, 1L)
+  )
+
+  plan <- ndm_bootstrap_real_tfrecords(
+    project_root = project_root,
+    grid = grid,
+    base_ids = 1L,
+    dry_run = TRUE
+  )
+
+  expect_equal(plan$BaseID, 1L)
+  expect_equal(plan$canonical_row, 2L)
+  expect_equal(plan$artifact_n_samples_train, 8L)
+  expect_equal(plan$status, "planned")
+  expect_false(dir.exists(file.path(project_root, "Data", "RunTFRecords")))
+})
+
 test_that("canonical sim bootstrap writes the first 10 canonical BaseIDs once each", {
   ndm_require_runner_test_stack("package-native sim bootstrap integration tests")
 
@@ -106,6 +129,49 @@ test_that("canonical sim bootstrap writes the first 10 canonical BaseIDs once ea
   for (base_id in 1:10) {
     ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = base_id)
   }
+})
+
+test_that("Analysis2 training TFRecord shuffle is reproducible from run_seed", {
+  ndm_require_runner_test_stack("package-native seeded TFRecord shuffle tests")
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  grid <- ndm_test_make_sim_run_grid_with_samples(16L)
+  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", "SeededShuffle")
+  ndm_bootstrap_sim_tfrecords(
+    project_root = project_root,
+    analysis_name = "SeededShuffle",
+    grid = grid,
+    tfrecord_dir = tfrecord_dir,
+    overwrite = TRUE,
+    dry_run = FALSE
+  )
+
+  backend <- ndm_backend_modules()
+  api <- ndm:::.ndm_legacy_run_env(refresh = TRUE)
+  first_batch <- function(seed) {
+    runtime_env <- ndm_new_runtime_env()
+    runtime_env$tf <- backend$tf
+    runtime_env$nSamplesTrain <- 16L
+    runtime_env$nObsInference <- 8L
+    api$analysis2_attach_canonical_tfrecords(
+      ndmdatasets_pkg = "ndmdatasets",
+      runtime_env = runtime_env,
+      train_file = file.path(tfrecord_dir, "train_1.tfrecord"),
+      inference_file = file.path(tfrecord_dir, "inference_1.tfrecord"),
+      schema_kind = "sim",
+      batch_size = 8L,
+      shuffle_train = TRUE,
+      run_seed = seed
+    )
+    batch <- reticulate::iter_next(runtime_env$TFDatasetIterator_train)
+    lapply(batch, function(value) as.array(backend$np$asarray(value)))
+  }
+
+  seed_11_a <- first_batch(11L)
+  seed_11_b <- first_batch(11L)
+  seed_12 <- first_batch(12L)
+  expect_equal(seed_11_a, seed_11_b, tolerance = 0)
+  expect_false(identical(seed_11_a, seed_12))
 })
 
 test_that("canonical sim bootstrap skips existing artifacts on rerun", {
@@ -333,6 +399,7 @@ test_that("package-native real runner regenerates canonical TFRecords and comple
       grid_file = grid_path,
       outer = 1L,
       model_type = "NeuralODE",
+      force_to_gpu = FALSE,
       resave_tfrecords = FALSE,
       raw_data_dir = raw_data_dir,
       outcome_metric = "inc_death",
@@ -402,6 +469,7 @@ test_that("package-native real runner reuses duplicate BaseID TFRecords after ca
       grid = grid,
       outer = c(2L, 1L),
       model_type = "NeuralODE",
+      force_to_gpu = FALSE,
       resave_tfrecords = FALSE,
       raw_data_dir = raw_data_dir,
       outcome_metric = "inc_death",
@@ -489,6 +557,7 @@ test_that("package-native multidisease runner completes a non-dry run", {
       grid = grid,
       outer = 1L,
       model_type = "NeuralODE",
+      force_to_gpu = FALSE,
       data_format = "IHME",
       disease_names = "hiv",
       data_subset = "all",

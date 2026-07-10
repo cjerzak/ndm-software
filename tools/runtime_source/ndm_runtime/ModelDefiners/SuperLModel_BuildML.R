@@ -126,10 +126,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   #BackboneType <- "mamba"; StateSize <- 4L
   DoPriorSamplingAutoDiff <- F
   UseDiagonalLMatVCov <- isTRUE(ndm_runtime_get0("UseDiagonalLMatVCov", ifnotfound = TRUE))
-  neuralode_variational <- isTRUE(ndm_runtime_get0("neuralode_variational", ifnotfound = FALSE))
+  neuralode_variational <- isTRUE(ndm_runtime_get0("neuralode_variational", ifnotfound = TRUE))
   neuralode_kl_weight <- suppressWarnings(as.numeric(ndm_runtime_get0("neuralode_kl_weight", ifnotfound = 1.0)))
-  if(length(neuralode_kl_weight) != 1L || is.na(neuralode_kl_weight) || neuralode_kl_weight < 0){
-    stop("neuralode_kl_weight must be a non-negative scalar.")
+  if(length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) || neuralode_kl_weight < 0){
+    stop("neuralode_kl_weight must be one finite non-negative scalar.")
   }
 
   # define model architecture via input
@@ -440,6 +440,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     ScaleList <- list(
                  "ScaleBayes" = {list(
                             "VarInit" = InvSoftPlus( jnp$array(rep(1,times=nOutcomes) )),  # Var Init Scale -> this is later calibrated
+                            "DecoderObservationScale" = InvSoftPlus(jnp$array(rep(1, times = nOutcomes))),
                             
                             "DirichletScale1"=InvSoftPlus( jnp$array(c(1, 1, 1, 1) ) ),  # dirichletparams 
                             "DirichletScale2"=InvSoftPlus( jnp$array(rep(1, times=4)) ),  # dirichletparams 
@@ -963,6 +964,36 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                        # scenario (defines the smooth shift trajectory in the policy from the previous state)
                        diffrax$LinearInterpolation(jnp$array(as.numeric(0:NTimeSteps_SIM)),
                                                    jnp$array(rep(-0.10,times=NTimeSteps_SIM+1))))
+
+  local_prior_definitions_matched <- NeuralDefinitions_jax_STOCHASTIC[,
+    as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",]),
+    drop = FALSE
+  ]
+  local_prior_definitions_matched <- local_prior_definitions_matched[,
+    !local_prior_definitions_matched["DefClean",] %in% FixedLocalParams_defns,
+    drop = FALSE
+  ]
+  local_neural_prior_mask_matched <- as.logical(
+    local_prior_definitions_matched["TDep",]
+  )
+  if (sum(local_neural_prior_mask_matched) != nParams_DiagMat_neural) {
+    stop(sprintf(
+      "Matched local neural prior has %s terms, but the posterior has %s terms.",
+      sum(local_neural_prior_mask_matched),
+      nParams_DiagMat_neural
+    ))
+  }
+  localParamPrior_neural_matched <- NULL
+  if (any(local_neural_prior_mask_matched)) {
+    localParamPrior_neural_matched <- oryx$Normal(
+      loc = jnp$array(f2n(local_prior_definitions_matched[
+        "PriorMean", local_neural_prior_mask_matched
+      ])),
+      scale = jnp$array(f2n(local_prior_definitions_matched[
+        "PriorSD", local_neural_prior_mask_matched
+      ]))
+    )
+  }
   
   GetPred <- function(ModelList, # not externally vectorized 
                       x, # vectorized
@@ -984,6 +1015,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     # return_v <- eq$filter_vmap(function(TSList_){
     return_v <- {
       state <- jnp$array(1.); 
+      KL_LOCAL <- KL_GLOBAL <- KL_PLACE <- jnp$array(0.)
 
       # initial processing 
       x <- ProcessEncoderInput(
@@ -1051,9 +1083,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             )
             decoder_scan_out <- scan_out[[2]]
             y_mean  <- jax$nn$softplus(decoder_scan_out$logits)
-            y_sigma <- jnp$ones_like(y_mean)
+            y_sigma <- jnp$ones_like(y_mean) * (
+              0.001 + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
+            )
             TemporalLatents <- list("decoder_head_input" = decoder_scan_out$decoder_head_input)
-            KL_TERM <- jnp$array(0.)
             ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
             diff_eq_sol <- NULL; diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
           }
@@ -1158,9 +1191,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last, 0L), masked_head_tail), 0L)
             
             y_mean  <- jax$nn$softplus(y_all)   # preserve your softplus post-proj
-            y_sigma <- jnp$ones_like(y_mean)
+            y_sigma <- jnp$ones_like(y_mean) * (
+              0.001 + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
+            )
             TemporalLatents <- list("decoder_head_input" = decoder_head_input_all)
-            KL_TERM <- jnp$array(0.)
             ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
             diff_eq_sol <- NULL; diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
           }
@@ -1244,12 +1278,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         
         xt_running_final <- scan_out[[1]]   # final updated carry
         y_mean          <- jax$nn$softplus( scan_out[[2]] )# * 0.1 
-        y_sigma         <- jnp$ones_like(y_mean)
+        y_sigma         <- jnp$ones_like(y_mean) * (
+          0.001 + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
+        )
 
         # 6) If your code expects a big T dimension including historical time,
         #    you can also combine them, or keep them separate. 
         #    Return in the same shape as "NeuralODE" does:
-        KL_TERM <- jnp$array(0.)
         ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
         diff_eq_sol <- NULL
         diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
@@ -1373,6 +1408,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           fixedLocal_means <- jnp$take( ModelList$FixedLocalTerms[[1]], loc_indices, 0L)
           fixedLocal_sds <- SoftPlus( jnp$take( ModelList$FixedLocalTerms[[2]], loc_indices, 0L) )
           fixedLocalParamD <- oryx$Normal( loc = fixedLocal_means, scale = fixedLocal_sds )
+          fixedLocalParamD_all <- oryx$Normal(
+            loc = ModelList$FixedLocalTerms[[1]],
+            scale = SoftPlus(ModelList$FixedLocalTerms[[2]])
+          )
         }
         global_x_params_samp <- jnp$array(0.)
         if(length(ArgNoDeps) > 0 && nGlobalParams > 0L){
@@ -1398,21 +1437,19 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         }
       }
   
-      KL_TERM <- jnp$array(0.)
-      if(isTRUE(neuralode_variational) && !prior_sampling){
+      if(isTRUE(neuralode_variational) && neuralode_kl_weight > 0 && !prior_sampling){
         if(exists("localParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE)){
-          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD, localParamPrior_base)))
+          KL_LOCAL <- jnp$add(KL_LOCAL, jnp$sum(oryx$kl_divergence(localParamD, localParamPrior_base)))
         }
-        if(exists("localParamPrior_neural", envir = ndm_runtime_lookup_env, inherits = FALSE)){
-          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(localParamD_neural, localParamPrior_neural)))
+        if(!is.null(localParamPrior_neural_matched)){
+          KL_LOCAL <- jnp$add(KL_LOCAL, jnp$sum(oryx$kl_divergence(localParamD_neural, localParamPrior_neural_matched)))
         }
         if(length(ArgNoDeps) > 0 && nGlobalParams > 0L && exists("globalParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE)){
-          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(globalParamD, globalParamPrior_base)))
+          KL_GLOBAL <- jnp$add(KL_GLOBAL, jnp$sum(oryx$kl_divergence(globalParamD, globalParamPrior_base)))
         }
         if(nFixedLocal > 0 && exists("fixedLocalParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE)){
-          KL_TERM <- jnp$add(KL_TERM, jnp$sum(oryx$kl_divergence(fixedLocalParamD, fixedLocalParamPrior_base)))
+          KL_PLACE <- jnp$add(KL_PLACE, jnp$sum(oryx$kl_divergence(fixedLocalParamD_all, fixedLocalParamPrior_base)))
         }
-        KL_TERM <- jnp$multiply(jnp$array(as.numeric(neuralode_kl_weight)), KL_TERM)
       }
 
       testWithoutSampling_requested <- isTRUE(ndm_runtime_get0("testWithoutSampling", ifnotfound = FALSE))
@@ -1645,7 +1682,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   
       return_v <- list(list("y_mu" = y_mean,
                             "y_sigma" = y_sigma,
-                            "KL_TERM" = KL_TERM,
+                            "KL_TERM" = KL_LOCAL + KL_GLOBAL + KL_PLACE,
+                            "KL_LOCAL" = KL_LOCAL,
+                            "KL_GLOBAL" = KL_GLOBAL,
+                            "KL_PLACE" = KL_PLACE,
                             "TemporalLatents" = TemporalLatents,
                             "ODEParamsSampList" = c(ODEParamsSampList_args,
                                                     ODEParamsSampList_y0,
@@ -1721,19 +1761,34 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           # plot(  np$array(GetPred_output$y_mu)[sample(1:40,1),,1] )
           # plot(  np$array(GetPred_output$y_sigma)[sample(1:40,1),,1] )
           
-          #likelihood_d <- oryx$Normal(loc = GetPred_output$ODEParamsSampList$center_param,
-                                                      #scale = GetPred_output$ODEParamsSampList$scale_param)$log_prob( y )*y_mask
-          likelihood_d <- jnp$negative((GetPred_output$ODEParamsSampList$center_param - y)^2) # loss with MSE 
-          #likelihood_d <- jnp$negative( jnp$log(jnp$cosh(GetPred_output$ODEParamsSampList$center_param - y) )) # loss with log cosh (logcosh)
-          
-          # plot(np$array(GetPred_output$ODEParamsSampList$center_param)[5,,2])
-          # hist(np$array(jnp$sum(likelihood_d,0L))[,1])
+          student_t_loss <- ndm_student_t_masked_nll(
+            jax = jax,
+            jnp = jnp,
+            y = y,
+            location = GetPred_output$y_mu,
+            scale = GetPred_output$y_sigma,
+            mask = y_mask,
+            df = 4.,
+            scale_floor = 1e-3
+          )
+          likelihood_loss <- student_t_loss$loss
+          local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
 
-          # which(is.na(rowMeans(np$array(likelihood_d))))
-          # minThis <- jnp$add(jnp$negative(jnp$sum(likelihood_d)), KL_div)
-          mse_loss <- jnp$negative( jnp$sum(likelihood_d*y_mask$astype(likelihood_d$dtype)) /
-                                     (0.001+jnp$sum(y_mask$astype(likelihood_d$dtype)) ) )
-          minThis <- jnp$add(mse_loss, jnp$mean(GetPred_output$KL_TERM))
+          persistent_kl_values <- GetPred_output$KL_GLOBAL + GetPred_output$KL_PLACE
+          persistent_kl_first <- jnp$take(persistent_kl_values, 0L, axis = 0L)
+          persistent_kl_spread <- jnp$max(jnp$abs(
+            persistent_kl_values - persistent_kl_first
+          ))
+          persistent_kl <- jnp$where(
+            persistent_kl_spread <= jnp$array(1e-6, dtype = GetPred_output$y_mu$dtype),
+            persistent_kl_first / jnp$array(as.numeric(nSamplesTrain), dtype = GetPred_output$y_mu$dtype),
+            jnp$array(jnp$nan, dtype = GetPred_output$y_mu$dtype)
+          )
+          weighted_kl <- jnp$array(
+            as.numeric(neuralode_kl_weight),
+            dtype = GetPred_output$y_mu$dtype
+          ) * (local_kl + persistent_kl)
+          minThis <- likelihood_loss + weighted_kl
         }
         return( list(minThis, state)  )
       }

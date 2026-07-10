@@ -188,13 +188,12 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param backbone Backbone family. Phase 1 supports `"transformer"` only.
 #' @param float_type Floating point precision used when initializing the backend.
 #'   Use `"32"` or `"64"`.
-#' @param force_to_gpu Logical scalar indicating whether the runtime should try
-#'   to place arrays on GPU when available.
+#' @param force_to_gpu Logical scalar requiring a CUDA-capable JAX GPU when
+#'   `TRUE`.
 #' @param resave_tfrecords Logical scalar preserved for compatibility with
 #'   existing run workflows. Multidisease workflows reject `TRUE` because the
 #'   legacy TFRecord-regeneration path has been retired.
-#' @param gpu_mem_frac Optional GPU memory fraction forwarded into the runtime
-#'   bootstrap code.
+#' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`.
 #' @param neuralode_local_latent_dim Optional local NeuralODE latent width. When
 #'   `NULL`, runtime code resolves this to `ModelDims`.
 #' @param neuralode_global_latent_dim Optional global NeuralODE latent width.
@@ -242,7 +241,7 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_optim_controller = c("pid", "constant"),
                               neuralode_optim_rtol = 1e-5,
                               neuralode_optim_atol = 1e-7,
-                              neuralode_variational = FALSE,
+                              neuralode_variational = TRUE,
                               neuralode_kl_weight = 1.0,
                               ...) {
   model_type <- match.arg(model_type)
@@ -252,9 +251,19 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
+  if (!is.logical(force_to_gpu) || length(force_to_gpu) != 1L || is.na(force_to_gpu)) {
+    stop("`force_to_gpu` must be one non-missing logical value.", call. = FALSE)
+  }
+  if (!is.null(gpu_mem_frac)) {
+    gpu_mem_frac <- suppressWarnings(as.numeric(gpu_mem_frac))
+    if (length(gpu_mem_frac) != 1L || !is.finite(gpu_mem_frac) ||
+        gpu_mem_frac <= 0 || gpu_mem_frac > 1) {
+      stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", call. = FALSE)
+    }
+  }
   neuralode_kl_weight <- suppressWarnings(as.numeric(neuralode_kl_weight))
-  if (length(neuralode_kl_weight) != 1L || is.na(neuralode_kl_weight) || neuralode_kl_weight < 0) {
-    stop("`neuralode_kl_weight` must be a non-negative numeric scalar.", call. = FALSE)
+  if (length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) || neuralode_kl_weight < 0) {
+    stop("`neuralode_kl_weight` must be one finite non-negative numeric scalar.", call. = FALSE)
   }
 
   extras <- list(...)

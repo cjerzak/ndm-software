@@ -202,13 +202,23 @@ plottingSeq_counter <- ExecuteUpdateCounter <- 0; GradNorm_jit <- jax$jit(optax$
 crossIterCor_vec <- c()
 
 # create save directory for results
-SavedModelDir <- sprintf("./SavedModels/%s/Model_%s_%s",
-                         ifelse(grepl(tolower(AnalysisName), pattern = "sim"),
-                                yes = "FromSim",no="FromReal"),
-                         AnalysisName,
-                         AnalysisDate)
+saved_model_run_id <- get0(
+  "RUN_ID",
+  inherits = TRUE,
+  ifnotfound = paste0("legacy_outer", get0("OUTER_ITERATION", inherits = TRUE, ifnotfound = "unknown"))
+)
+SavedModelDir <- file.path(
+  "./SavedModels",
+  ifelse(isTRUE(SimMode), "FromSim", "FromReal"),
+  sprintf("Model_%s_%s", AnalysisName, saved_model_run_id)
+)
 if(dir.exists(SavedModelDir)){
-  SavedModelDir <- sprintf("%s_%s", SavedModelDir, format(Sys.time(), "%H-%M-%S"))
+  SavedModelDir <- sprintf(
+    "%s_retry_%s_%s",
+    SavedModelDir,
+    format(Sys.time(), "%Y%m%dT%H%M%S"),
+    Sys.getpid()
+  )
 }
 dir.create(SavedModelDir, recursive = TRUE, showWarnings = FALSE)
 

@@ -356,6 +356,31 @@ ndm_initialize_backend <- function(conda_env = "ndm_software_env",
   invisible(backend)
 }
 
+.ndm_assert_gpu_available <- function(jax, force_to_gpu = TRUE) {
+  if (!isTRUE(force_to_gpu)) {
+    return(invisible(TRUE))
+  }
+  devices <- tryCatch(jax$devices(), error = function(e) list())
+  platforms <- vapply(
+    devices,
+    function(device) {
+      value <- tryCatch(device$platform, error = function(e) NULL)
+      if (is.null(value)) "" else tolower(as.character(value))
+    },
+    character(1)
+  )
+  if (!any(platforms == "gpu")) {
+    visible <- if (length(platforms) == 0L) "none" else paste(unique(platforms), collapse = ", ")
+    stop(
+      "`force_to_gpu = TRUE` requires a CUDA-capable JAX GPU device; visible platform(s): ",
+      visible,
+      ". Set `force_to_gpu = FALSE` only for an intentional CPU/bootstrap run.",
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
+}
+
 #' @rdname ndm_check_backend
 #'
 #' @returns `ndm_backend_modules()` returns the currently initialized

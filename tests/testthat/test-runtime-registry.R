@@ -164,7 +164,11 @@ test_that("runtime source keeps NeuralODE and transformer regression fixes", {
   analysis2_api <- runtime_source_text(source_root, "SetupEnv/Analysis2_api.R")
 
   expect_match(build_ml, "neuralode_variational", fixed = TRUE)
-  expect_match(build_ml, "jnp$mean(GetPred_output$KL_TERM)", fixed = TRUE)
+  expect_match(build_ml, "ndm_student_t_masked_nll", fixed = TRUE)
+  expect_match(build_ml, "local_kl <- jnp$mean(GetPred_output$KL_LOCAL)", fixed = TRUE)
+  expect_match(build_ml, "persistent_kl_first / jnp$array(as.numeric(nSamplesTrain)", fixed = TRUE)
+  expect_match(build_ml, "neuralode_kl_weight > 0", fixed = TRUE)
+  expect_match(build_ml, "DecoderObservationScale", fixed = TRUE)
   expect_match(build_ml, "testWithoutSampling <- !isTRUE(neuralode_variational)", fixed = TRUE)
   expect_match(sim_data, "\"YTrue_out\" = (YTrue_out_ <- jnp$expand_dims(YTrue_d_out,2L))", fixed = TRUE)
   expect_false(grepl("astype\\(jaxFloatType,1L\\)", transformer))

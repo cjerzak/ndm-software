@@ -27,7 +27,11 @@
       "outer:",
       "  - 3",
       "model_type: null",
-      "respect_grid_model_type: false",
+      "respect_grid_model_type: true",
+      "run_seed: null",
+      "force_to_gpu: true",
+      "gpu_mem_frac: null",
+      "neuralode_kl_weight: 1.0",
       "resave_tfrecords: false",
       "run_figures: false",
       "raw_data_dir: Data/MainData",
@@ -47,7 +51,11 @@
       "outer:",
       "  - 1",
       "model_type: null",
-      "respect_grid_model_type: false",
+      "respect_grid_model_type: true",
+      "run_seed: null",
+      "force_to_gpu: true",
+      "gpu_mem_frac: null",
+      "neuralode_kl_weight: 1.0",
       "resave_tfrecords: true",
       "run_figures: false",
       "tfrecord_dir: Data/RunTFRecords/SimTFRecords/BigSimsLatest",
@@ -64,7 +72,11 @@
       "outer:",
       "  - 1",
       "model_type: null",
-      "respect_grid_model_type: false",
+      "respect_grid_model_type: true",
+      "run_seed: null",
+      "force_to_gpu: true",
+      "gpu_mem_frac: null",
+      "neuralode_kl_weight: 1.0",
       "resave_tfrecords: false",
       "run_figures: false",
       "tfrecord_dir: Data/RunTFRecords/RealTFRecords/RealLatest",
@@ -328,6 +340,11 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
   }
 
   assign("NDM_INTERNAL_ANALYSIS_DIR", analysis_root, envir = env)
+  assign(
+    "ndm_student_t_masked_nll",
+    .ndm_student_t_masked_nll,
+    envir = env
+  )
   assign(
     "ndm_source_extracted",
     function(relative_path, env_target = NULL, ...) {

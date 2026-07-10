@@ -16,8 +16,11 @@ ndm_create_real_run_config(
     analysis_name)),
   outer = 3L,
   run_seed = NULL,
+  force_to_gpu = TRUE,
+  gpu_mem_frac = NULL,
+  neuralode_kl_weight = 1,
   model_type = NULL,
-  respect_grid_model_type = FALSE,
+  respect_grid_model_type = TRUE,
   resave_tfrecords = FALSE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords",
     analysis_name),
@@ -35,8 +38,11 @@ ndm_create_sim_run_config(
     analysis_name)),
   outer = 1L,
   run_seed = NULL,
+  force_to_gpu = TRUE,
+  gpu_mem_frac = NULL,
+  neuralode_kl_weight = 1,
   model_type = NULL,
-  respect_grid_model_type = FALSE,
+  respect_grid_model_type = TRUE,
   resave_tfrecords = TRUE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords",
     analysis_name),
@@ -51,8 +57,11 @@ ndm_create_multidisease_run_config(
     analysis_name)),
   outer = 1L,
   run_seed = NULL,
+  force_to_gpu = TRUE,
+  gpu_mem_frac = NULL,
+  neuralode_kl_weight = 1,
   model_type = NULL,
-  respect_grid_model_type = FALSE,
+  respect_grid_model_type = TRUE,
   resave_tfrecords = FALSE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "RealTFRecords",
     analysis_name),
@@ -83,6 +92,13 @@ ndm_run_multidisease(config = ndm_create_multidisease_run_config())
 \item{run_seed}{Optional non-negative integer used for model initialization,
 training Monte Carlo keys, and inference randomness. When \code{NULL}, the
 legacy outer-row-derived seed is retained.}
+
+\item{force_to_gpu}{Logical scalar requiring a CUDA-capable JAX GPU for fitting.}
+
+\item{gpu_mem_frac}{Optional finite GPU memory fraction in \code{(0, 1]}.}
+
+\item{neuralode_kl_weight}{Finite non-negative NeuralODE KL multiplier. Zero
+disables KL evaluation while preserving variational sampling.}
 
 \item{model_type}{Optional model family override.}
 
