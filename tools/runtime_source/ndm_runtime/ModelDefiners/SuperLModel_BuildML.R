@@ -131,6 +131,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   if(length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) || neuralode_kl_weight < 0){
     stop("neuralode_kl_weight must be one finite non-negative scalar.")
   }
+  neuralode_mean_loss_weight <- suppressWarnings(as.numeric(
+    ndm_runtime_get0("neuralode_mean_loss_weight", ifnotfound = 0.0)
+  ))
+  if(length(neuralode_mean_loss_weight) != 1L ||
+     !is.finite(neuralode_mean_loss_weight) || neuralode_mean_loss_weight < 0){
+    stop("neuralode_mean_loss_weight must be one finite non-negative scalar.")
+  }
 
   # define model architecture via input
   Constrained2Unconstrained <- function(target_mean_of_transformated_x, transformation, sd){
@@ -976,6 +983,17 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   local_neural_prior_mask_matched <- as.logical(
     local_prior_definitions_matched["TDep",]
   )
+  if (anyNA(local_neural_prior_mask_matched)) {
+    stop("Matched local prior definitions contain missing TDep flags.")
+  }
+  local_base_prior_mask_matched <- !local_neural_prior_mask_matched
+  if (sum(local_base_prior_mask_matched) != nODEParams_base) {
+    stop(sprintf(
+      "Matched local base prior has %s terms, but the posterior has %s terms.",
+      sum(local_base_prior_mask_matched),
+      nODEParams_base
+    ))
+  }
   if (sum(local_neural_prior_mask_matched) != nParams_DiagMat_neural) {
     stop(sprintf(
       "Matched local neural prior has %s terms, but the posterior has %s terms.",
@@ -991,7 +1009,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       ])),
       scale = jnp$array(f2n(local_prior_definitions_matched[
         "PriorSD", local_neural_prior_mask_matched
-      ]))
+      ]) * suppressWarnings(as.numeric(ndm_runtime_get0("PriorSDMultiplier", ifnotfound = 1.0))))
     )
   }
   
@@ -1438,7 +1456,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       }
   
       if(isTRUE(neuralode_variational) && neuralode_kl_weight > 0 && !prior_sampling){
-        if(exists("localParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE)){
+        if(exists("localParamPrior_base", envir = ndm_runtime_lookup_env, inherits = FALSE) &&
+           !is.null(localParamPrior_base)){
           KL_LOCAL <- jnp$add(KL_LOCAL, jnp$sum(oryx$kl_divergence(localParamD, localParamPrior_base)))
         }
         if(!is.null(localParamPrior_neural_matched)){
@@ -1788,7 +1807,18 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             as.numeric(neuralode_kl_weight),
             dtype = GetPred_output$y_mu$dtype
           ) * (local_kl + persistent_kl)
-          minThis <- likelihood_loss + weighted_kl
+          observation_mask <- y_mask$astype(GetPred_output$y_mu$dtype)
+          mean_squared_error <- jnp$sum(
+            jnp$square(GetPred_output$y_mu - y) * observation_mask
+          ) / jnp$maximum(
+            jnp$sum(observation_mask),
+            jnp$array(1., dtype = GetPred_output$y_mu$dtype)
+          )
+          weighted_mean_loss <- jnp$array(
+            ifelse(ModelType == "NeuralODE", neuralode_mean_loss_weight, 0.0),
+            dtype = GetPred_output$y_mu$dtype
+          ) * mean_squared_error
+          minThis <- likelihood_loss + weighted_kl + weighted_mean_loss
         }
         return( list(minThis, state)  )
       }

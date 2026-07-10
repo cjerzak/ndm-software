@@ -30,11 +30,11 @@ analysis2_as_int <- function(x) {
 }
 
 analysis2_small_run_n_checkpoints <- function(n_samples_train, n_sgd, default = 10L) {
-  n_samples <- max(1L, analysis2_as_int(n_samples_train))
-  max_sgd <- max(1L, analysis2_as_int(n_sgd))
-  if (n_samples < 32L) {
-    return(max(1L, min(3L, max_sgd)))
+  n_samples <- analysis2_as_int(n_samples_train)
+  if (length(n_samples) != 1L || is.na(n_samples) || n_samples < 1L) {
+    stop("Invalid training sample count.", call. = FALSE)
   }
+  max_sgd <- max(1L, analysis2_as_int(n_sgd))
   max(1L, min(analysis2_as_int(default), max_sgd))
 }
 
@@ -58,7 +58,7 @@ analysis2_resolve_nsgd_calibration <- function(mode,
                                                n_epoches_max,
                                                fallback_n_samples_train = NULL) {
   resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", "ndm")
-  tryCatch(
+  calibration <- tryCatch(
     resolver(
       mode = mode,
       project_root = spec$project_root,
@@ -76,6 +76,15 @@ analysis2_resolve_nsgd_calibration <- function(mode,
       stop(e)
     }
   )
+  if (!is.null(calibration) && !is.null(spec$max_sgd_steps)) {
+    calibration$unbounded_resolved_n_sgd <- calibration$resolved_n_sgd
+    calibration$resolved_n_sgd <- min(
+      as.integer(calibration$resolved_n_sgd),
+      as.integer(spec$max_sgd_steps)
+    )
+    calibration$policy <- paste0(calibration$policy, "+pilot_cap")
+  }
+  calibration
 }
 
 analysis2_nsgd_calibration_globals <- function(calibration) {
@@ -181,6 +190,11 @@ analysis2_supported_flags <- function(mode) {
     "force_to_gpu",
     "gpu_mem_frac",
     "neuralode_kl_weight",
+    "neuralode_mean_loss_weight",
+    "n_checkpoints",
+    "max_sgd_steps",
+    "prior_sd_multiplier",
+    "solver_profile",
     "model_type",
     "respect_grid_model_type",
     "resave_tfrecords",
@@ -282,6 +296,11 @@ analysis2_mode_defaults <- function(mode) {
       force_to_gpu = TRUE,
       gpu_mem_frac = NULL,
       neuralode_kl_weight = 1.0,
+      neuralode_mean_loss_weight = 0.0,
+      n_checkpoints = 1L,
+      max_sgd_steps = NULL,
+      prior_sd_multiplier = 1.0,
+      solver_profile = "default",
       model_type = NULL,
       respect_grid_model_type = TRUE,
       resave_tfrecords = FALSE,
@@ -305,6 +324,11 @@ analysis2_mode_defaults <- function(mode) {
       force_to_gpu = TRUE,
       gpu_mem_frac = NULL,
       neuralode_kl_weight = 1.0,
+      neuralode_mean_loss_weight = 0.0,
+      n_checkpoints = 1L,
+      max_sgd_steps = NULL,
+      prior_sd_multiplier = 1.0,
+      solver_profile = "default",
       model_type = NULL,
       respect_grid_model_type = TRUE,
       resave_tfrecords = TRUE,
@@ -328,6 +352,11 @@ analysis2_mode_defaults <- function(mode) {
       force_to_gpu = TRUE,
       gpu_mem_frac = NULL,
       neuralode_kl_weight = 1.0,
+      neuralode_mean_loss_weight = 0.0,
+      n_checkpoints = 1L,
+      max_sgd_steps = NULL,
+      prior_sd_multiplier = 1.0,
+      solver_profile = "default",
       model_type = NULL,
       respect_grid_model_type = TRUE,
       resave_tfrecords = FALSE,
@@ -411,7 +440,8 @@ analysis2_cli_overrides <- function(opts, mode) {
       "tfrecord_dir",
       "outcome_metric",
       "data_subset",
-      "data_format"
+      "data_format",
+      "solver_profile"
     ),
     names(opts)
   )
@@ -423,7 +453,9 @@ analysis2_cli_overrides <- function(opts, mode) {
   if ("run_seed" %in% names(opts)) {
     overrides$run_seed <- opts$run_seed
   }
-  for (field in intersect(c("gpu_mem_frac", "neuralode_kl_weight"), names(opts))) {
+  for (field in intersect(c(
+    "gpu_mem_frac", "neuralode_kl_weight", "neuralode_mean_loss_weight", "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier"
+  ), names(opts))) {
     overrides[[field]] <- opts[[field]]
   }
 
@@ -505,6 +537,38 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
   if (length(spec$neuralode_kl_weight) != 1L ||
       !is.finite(spec$neuralode_kl_weight) || spec$neuralode_kl_weight < 0) {
     stop("`neuralode_kl_weight` must be one finite non-negative value.", call. = FALSE)
+  }
+  spec$neuralode_mean_loss_weight <- suppressWarnings(as.numeric(
+    spec$neuralode_mean_loss_weight %||% defaults$neuralode_mean_loss_weight
+  ))
+  if (length(spec$neuralode_mean_loss_weight) != 1L ||
+      !is.finite(spec$neuralode_mean_loss_weight) || spec$neuralode_mean_loss_weight < 0) {
+    stop("`neuralode_mean_loss_weight` must be one finite non-negative value.", call. = FALSE)
+  }
+  spec$n_checkpoints <- suppressWarnings(as.numeric(spec$n_checkpoints %||% defaults$n_checkpoints))
+  if (length(spec$n_checkpoints) != 1L || !is.finite(spec$n_checkpoints) ||
+      spec$n_checkpoints < 1 || spec$n_checkpoints > .Machine$integer.max ||
+      spec$n_checkpoints != floor(spec$n_checkpoints)) {
+    stop("`n_checkpoints` must be one positive integer.", call. = FALSE)
+  }
+  spec$n_checkpoints <- as.integer(spec$n_checkpoints)
+  if (!is.null(spec$max_sgd_steps)) {
+    spec$max_sgd_steps <- suppressWarnings(as.numeric(spec$max_sgd_steps))
+    if (length(spec$max_sgd_steps) != 1L || !is.finite(spec$max_sgd_steps) ||
+        spec$max_sgd_steps < 1 || spec$max_sgd_steps > .Machine$integer.max ||
+        spec$max_sgd_steps != floor(spec$max_sgd_steps)) {
+      stop("`max_sgd_steps` must be NULL or one positive integer.", call. = FALSE)
+    }
+    spec$max_sgd_steps <- as.integer(spec$max_sgd_steps)
+  }
+  spec$prior_sd_multiplier <- suppressWarnings(as.numeric(spec$prior_sd_multiplier %||% 1.0))
+  if (length(spec$prior_sd_multiplier) != 1L || !is.finite(spec$prior_sd_multiplier) ||
+      spec$prior_sd_multiplier <= 0) {
+    stop("`prior_sd_multiplier` must be one finite positive value.", call. = FALSE)
+  }
+  spec$solver_profile <- tolower(analysis2_normalize_string(spec$solver_profile %||% "default"))
+  if (!spec$solver_profile %in% c("default", "loose", "tight", "alternative")) {
+    stop("`solver_profile` must be default, loose, tight, or alternative.", call. = FALSE)
   }
 
   spec$grid_file <- analysis2_path_from_project(
@@ -602,6 +666,11 @@ analysis2_usage <- function(mode, paths = analysis2_paths()) {
       "  --force_to_gpu=TRUE|FALSE",
       "  --gpu_mem_frac=NUMBER",
       "  --neuralode_kl_weight=NUMBER",
+      "  --neuralode_mean_loss_weight=NUMBER",
+      "  --n_checkpoints=POSITIVE_INTEGER",
+      "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)",
+      "  --prior_sd_multiplier=POSITIVE_NUMBER",
+      "  --solver_profile=default|loose|tight|alternative",
       "  --model_type=DecoderOnly|NeuralODE",
       "  --respect_grid_model_type=TRUE|FALSE",
       "  --resave_tfrecords=TRUE|FALSE",
@@ -853,6 +922,9 @@ analysis2_canonical_variation_fields <- function(mode) {
     mode,
     real = c(
       "row_id",
+      "pair_id",
+      "core_row_id",
+      "core_pair_id",
       "ModelType",
       "ModelDepth",
       "ModelDims",
@@ -865,10 +937,19 @@ analysis2_canonical_variation_fields <- function(mode) {
       "force_to_gpu",
       "gpu_mem_frac",
       "neuralode_kl_weight",
+      "neuralode_mean_loss_weight",
+      "n_checkpoints",
+      "max_sgd_steps",
+      "prior_sd_multiplier",
+      "solver_profile",
+      "addon_family",
       "ResaveThisTFRecord"
     ),
     sim = c(
       "row_id",
+      "pair_id",
+      "core_row_id",
+      "core_pair_id",
       "ModelType",
       "ModelDepth",
       "ModelDims",
@@ -880,6 +961,12 @@ analysis2_canonical_variation_fields <- function(mode) {
       "force_to_gpu",
       "gpu_mem_frac",
       "neuralode_kl_weight",
+      "neuralode_mean_loss_weight",
+      "n_checkpoints",
+      "max_sgd_steps",
+      "prior_sd_multiplier",
+      "solver_profile",
+      "addon_family",
       "ResaveThisTFRecord"
     ),
     stop("Unsupported Analysis2 mode for canonical TFRecord validation: ", mode, call. = FALSE)
@@ -1211,9 +1298,14 @@ analysis2_bootstrap_sim_tfrecords <- function(project_root,
                                               grid,
                                               base_ids = NULL,
                                               tfrecord_dir,
+                                              parallel_workers = 1L,
                                               overwrite = FALSE,
                                               dry_run = FALSE) {
   stopifnot(is.data.frame(grid))
+  parallel_workers <- as.integer(parallel_workers)
+  if (length(parallel_workers) != 1L || is.na(parallel_workers) || parallel_workers < 1L) {
+    stop("`parallel_workers` must be one positive integer.", call. = FALSE)
+  }
 
   project_root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
   paths <- analysis2_paths(project_root = project_root)
@@ -1267,14 +1359,13 @@ analysis2_bootstrap_sim_tfrecords <- function(project_root,
     list(ndmdatasets_pkg = ndmdatasets_pkg, tensorflow = tensorflow)
   }
 
-  statuses <- character(nrow(write_plan))
-  for (plan_idx in seq_len(nrow(write_plan))) {
+  bootstrap_one <- function(plan_idx) {
     canonical_row <- write_plan$canonical_row[[plan_idx]]
     row_values <- analysis2_normalize_row_values(
       analysis2_row_to_list(grid[canonical_row, , drop = FALSE])
     )
 
-    statuses[[plan_idx]] <- analysis2_bootstrap_write_sim_tfrecord(
+    analysis2_bootstrap_write_sim_tfrecord(
       base_id = analysis2_as_int(write_plan$BaseID[[plan_idx]]),
       canonical_row = canonical_row,
       artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]],
@@ -1285,8 +1376,27 @@ analysis2_bootstrap_sim_tfrecords <- function(project_root,
       overwrite = overwrite
     )
   }
+  # Forking an initialized TensorFlow/JAX runtime is unsafe on macOS. The IHME
+  # Linux bootstrap hosts use the requested fork count; macOS and Windows use
+  # the same deterministic serial path.
+  fork_workers <- parallel_workers > 1L && .Platform$OS.type != "windows" &&
+    !identical(Sys.info()[["sysname"]], "Darwin")
+  statuses <- if (!fork_workers) {
+    lapply(seq_len(nrow(write_plan)), bootstrap_one)
+  } else {
+    parallel::mclapply(
+      seq_len(nrow(write_plan)),
+      bootstrap_one,
+      mc.cores = parallel_workers,
+      mc.preschedule = TRUE
+    )
+  }
+  failed <- vapply(statuses, inherits, logical(1L), what = "try-error")
+  if (any(failed)) {
+    stop("Simulation artifact bootstrap worker failed: ", as.character(statuses[[which(failed)[[1L]]]]), call. = FALSE)
+  }
 
-  write_plan$status <- statuses
+  write_plan$status <- unlist(statuses, use.names = FALSE)
   write_plan
 }
 
@@ -1353,9 +1463,14 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
                                                raw_data_dir,
                                                outcome_metric = "inc_death",
                                                data_subset = "high_income",
+                                               parallel_workers = 1L,
                                                overwrite = FALSE,
                                                dry_run = FALSE) {
   stopifnot(is.data.frame(grid))
+  parallel_workers <- as.integer(parallel_workers)
+  if (length(parallel_workers) != 1L || is.na(parallel_workers) || parallel_workers < 1L) {
+    stop("`parallel_workers` must be one positive integer.", call. = FALSE)
+  }
   project_root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
   paths <- analysis2_paths(project_root = project_root)
   tfrecord_dir <- normalizePath(tfrecord_dir, winslash = "/", mustWork = FALSE)
@@ -1396,22 +1511,19 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
   ndmdatasets_pkg <- analysis2_require_ndmdatasets()
   ndm_pkg <- NULL
   tensorflow <- NULL
-  bundle <- NULL
+  bundle <- analysis2_call(
+    ndmdatasets_pkg,
+    "ndm_real_build_tables",
+    raw_data_dir = raw_data_dir,
+    outcome_metric = outcome_metric,
+    quiet = TRUE
+  )
   resolve_backend <- function() {
     if (is.null(ndm_pkg)) {
       ndm_pkg <<- analysis2_require_ndm()
     }
     if (is.null(tensorflow)) {
       tensorflow <<- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
-    }
-    if (is.null(bundle)) {
-      bundle <<- analysis2_call(
-        ndmdatasets_pkg,
-        "ndm_real_build_tables",
-        raw_data_dir = raw_data_dir,
-        outcome_metric = outcome_metric,
-        quiet = TRUE
-      )
     }
     list(
       ndmdatasets_pkg = ndmdatasets_pkg,
@@ -1420,13 +1532,12 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
     )
   }
 
-  statuses <- character(nrow(write_plan))
-  for (plan_idx in seq_len(nrow(write_plan))) {
+  bootstrap_one <- function(plan_idx) {
     canonical_row <- write_plan$canonical_row[[plan_idx]]
     row_values <- analysis2_normalize_row_values(
       analysis2_row_to_list(grid[canonical_row, , drop = FALSE])
     )
-    statuses[[plan_idx]] <- analysis2_bootstrap_write_real_tfrecord(
+    analysis2_bootstrap_write_real_tfrecord(
       base_id = analysis2_as_int(write_plan$BaseID[[plan_idx]]),
       canonical_row = canonical_row,
       artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]],
@@ -1439,7 +1550,26 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
       overwrite = overwrite
     )
   }
-  write_plan$status <- statuses
+  # Forking an initialized TensorFlow/JAX runtime is unsafe on macOS. The IHME
+  # Linux bootstrap hosts use the requested fork count; macOS and Windows use
+  # the same deterministic serial path.
+  fork_workers <- parallel_workers > 1L && .Platform$OS.type != "windows" &&
+    !identical(Sys.info()[["sysname"]], "Darwin")
+  statuses <- if (!fork_workers) {
+    lapply(seq_len(nrow(write_plan)), bootstrap_one)
+  } else {
+    parallel::mclapply(
+      seq_len(nrow(write_plan)),
+      bootstrap_one,
+      mc.cores = parallel_workers,
+      mc.preschedule = TRUE
+    )
+  }
+  failed <- vapply(statuses, inherits, logical(1L), what = "try-error")
+  if (any(failed)) {
+    stop("Real artifact bootstrap worker failed: ", as.character(statuses[[which(failed)[[1L]]]]), call. = FALSE)
+  }
+  write_plan$status <- unlist(statuses, use.names = FALSE)
   write_plan
 }
 
@@ -2367,6 +2497,26 @@ analysis2_write_sim_tfrecords <- function(ndmdatasets_pkg,
   )
 }
 
+analysis2_solver_profile <- function(runtime_env, profile = "default") {
+  profile <- match.arg(tolower(profile), c("default", "loose", "tight", "alternative"))
+  diffrax <- runtime_env$diffrax
+  tolerances <- switch(
+    profile,
+    default = c(rtol = 1e-5, atol = 1e-7),
+    loose = c(rtol = 1e-4, atol = 1e-6),
+    tight = c(rtol = 1e-6, atol = 1e-8),
+    alternative = c(rtol = 1e-5, atol = 1e-7)
+  )
+  list(
+    name = profile,
+    solver = if (identical(profile, "alternative")) diffrax$Dopri8() else diffrax$Tsit5(),
+    controller = diffrax$PIDController(rtol = tolerances[["rtol"]], atol = tolerances[["atol"]]),
+    rtol = unname(tolerances[["rtol"]]),
+    atol = unname(tolerances[["atol"]]),
+    dt0 = 1e-3
+  )
+}
+
 analysis2_real_runtime_globals <- function(row_values,
                                            dataset_spec,
                                            training_spec,
@@ -2380,6 +2530,9 @@ analysis2_real_runtime_globals <- function(row_values,
                                            outer_iteration,
                                            holder_folder,
                                            tfrecord_dir,
+                                           n_checkpoints = 1L,
+                                           prior_sd_multiplier = 1.0,
+                                           solver_profile = "default",
                                            nsgd_calibration) {
   n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
   n_batch <- min(32L, n_samples_train)
@@ -2388,6 +2541,7 @@ analysis2_real_runtime_globals <- function(row_values,
   n_times_lookahead <- analysis2_as_int(dataset_spec$lookahead)
   jnp <- runtime_env$jnp
   diffrax <- runtime_env$diffrax
+  solver_settings <- analysis2_solver_profile(runtime_env, solver_profile)
   vi_total_times <- n_times_lookahead
   n_time_steps_sim <- (n_times_lookahead + abs(max_times_past)) * 2L
   max_time_index <- if ("time_id" %in% names(state$truth_df_red)) {
@@ -2400,7 +2554,8 @@ analysis2_real_runtime_globals <- function(row_values,
 
   n_checkpoints <- analysis2_small_run_n_checkpoints(
     nsgd_calibration$anchor_max_n_samples_train,
-    n_sgd
+    n_sgd,
+    default = n_checkpoints
   )
   n_obs_inference <- analysis2_small_run_n_obs_inference(
     n_samples_train = n_samples_train,
@@ -2444,6 +2599,10 @@ analysis2_real_runtime_globals <- function(row_values,
     ModelDims = analysis2_as_int(row_values$ModelDims),
     nBatch = n_batch,
     nCheckpoints = n_checkpoints,
+    PriorSDMultiplier = as.numeric(prior_sd_multiplier),
+    SolverProfile = solver_settings$name,
+    SolverRtol = solver_settings$rtol,
+    SolverAtol = solver_settings$atol,
     nEpochesMax = 9L,
     nSGD_DefiningLRSeq = n_sgd,
     nSGD_model = n_sgd,
@@ -2497,13 +2656,13 @@ analysis2_real_runtime_globals <- function(row_values,
     diffraxInterpolator = diffrax$LinearInterpolation,
     VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim - 1L))),
     VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(vi_total_times - 1L))),
-    VI_diff_eq_solver_optim = diffrax$Tsit5(),
+    VI_diff_eq_solver_optim = solver_settings$solver,
     VI_diff_eq_solver_dgp = diffrax$Tsit5(),
     dt0_init = 1e-1,
     dt0_init_dgp = 1e-3,
-    dt0_init_optim = 1e-3,
+    dt0_init_optim = solver_settings$dt0,
     stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-6, atol = 1e-7),
-    stepsize_controller_optim = diffrax$PIDController(rtol = 1e-5, atol = 1e-7),
+    stepsize_controller_optim = solver_settings$controller,
     truth_df_red = state$truth_df_red,
     input_df_red_full = state$input_df_red_full,
     input_df_red_in = state$input_df_red_in,
@@ -2547,6 +2706,9 @@ analysis2_sim_runtime_globals <- function(row_values,
                                           outer_iteration,
                                           holder_folder,
                                           tfrecord_dir,
+                                          n_checkpoints = 1L,
+                                          prior_sd_multiplier = 1.0,
+                                          solver_profile = "default",
                                           sim_scaler,
                                           sim_outcome_sd,
                                           sim_covariates,
@@ -2561,11 +2723,13 @@ analysis2_sim_runtime_globals <- function(row_values,
   n_time_steps_sim <- as.integer((n_times_past + n_times_lookahead) * 2L)
   jnp <- runtime_env$jnp
   diffrax <- runtime_env$diffrax
+  solver_settings <- analysis2_solver_profile(runtime_env, solver_profile)
   max_time_index <- max(0L, n_time_steps_sim - 1L)
 
   n_checkpoints <- analysis2_small_run_n_checkpoints(
     nsgd_calibration$anchor_max_n_samples_train,
-    n_sgd
+    n_sgd,
+    default = n_checkpoints
   )
   run_id <- analysis2_run_identity(
     mode = "sim",
@@ -2596,6 +2760,10 @@ analysis2_sim_runtime_globals <- function(row_values,
     ModelDims = analysis2_as_int(row_values$ModelDims),
     nBatch = n_batch,
     nCheckpoints = n_checkpoints,
+    PriorSDMultiplier = as.numeric(prior_sd_multiplier),
+    SolverProfile = solver_settings$name,
+    SolverRtol = solver_settings$rtol,
+    SolverAtol = solver_settings$atol,
     nSGD_DefiningLRSeq = n_sgd,
     nSGD_model = n_sgd,
     nSGD_pretrain = 0L,
@@ -2646,12 +2814,12 @@ analysis2_sim_runtime_globals <- function(row_values,
     MaxSteps = as.integer(10^4),
     VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim - 1L))),
     VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(n_times_lookahead - 1L))),
-    VI_diff_eq_solver_optim = diffrax$Tsit5(),
+    VI_diff_eq_solver_optim = solver_settings$solver,
     VI_diff_eq_solver_dgp = diffrax$Tsit5(),
     dt0_init_dgp = 1e-3,
     stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-6, atol = 1e-7),
-    dt0_init_optim = 1e-3,
-    stepsize_controller_optim = diffrax$PIDController(rtol = 1e-5, atol = 1e-7),
+    dt0_init_optim = solver_settings$dt0,
+    stepsize_controller_optim = solver_settings$controller,
     diffraxInterpolator = diffrax$LinearInterpolation,
     analysis2_sim_get_batch = get_batch,
     GetBatch = get_batch,
@@ -2834,7 +3002,8 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
       resave_tfrecords = FALSE,
       gpu_mem_frac = spec$gpu_mem_frac,
       neuralode_variational = identical(model_type, "NeuralODE"),
-      neuralode_kl_weight = spec$neuralode_kl_weight
+      neuralode_kl_weight = spec$neuralode_kl_weight,
+      neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight
     )
     runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
     analysis2_seed_backends(runtime_env, run_seed)
@@ -2871,6 +3040,9 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
           outer_iteration = outer_iteration,
           holder_folder = run_holder_folder,
           tfrecord_dir = tfrecord_dir,
+          n_checkpoints = spec$n_checkpoints,
+          prior_sd_multiplier = spec$prior_sd_multiplier,
+          solver_profile = spec$solver_profile,
           nsgd_calibration = nsgd_calibration
         ),
         list(
@@ -3073,7 +3245,8 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
       resave_tfrecords = FALSE,
       gpu_mem_frac = spec$gpu_mem_frac,
       neuralode_variational = identical(model_type, "NeuralODE"),
-      neuralode_kl_weight = spec$neuralode_kl_weight
+      neuralode_kl_weight = spec$neuralode_kl_weight,
+      neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight
     )
     runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
     analysis2_seed_backends(runtime_env, run_seed)
@@ -3114,6 +3287,9 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
           outer_iteration = outer_iteration,
           holder_folder = run_holder_folder,
           tfrecord_dir = tfrecord_dir,
+          n_checkpoints = spec$n_checkpoints,
+          prior_sd_multiplier = spec$prior_sd_multiplier,
+          solver_profile = spec$solver_profile,
           sim_scaler = sim_scaler,
           sim_outcome_sd = sim_outcome_sd,
           sim_covariates = sim_covariates,

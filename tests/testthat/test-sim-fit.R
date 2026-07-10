@@ -310,6 +310,18 @@ test_that("tuned scientific NeuralODE week-10 parity stays within 25% of decoder
   expect_true(decoder_over_neural <= 1.25, info = ratio_info)
   expect_true(neural_over_decoder >= 0.75, info = ratio_info)
   expect_true(neural_over_decoder <= 1.25, info = ratio_info)
+  expect_equal(
+    pair$decoder_week10$rss_baseline,
+    pair$neuralode_week10$rss_baseline,
+    tolerance = 1e-12,
+    info = ratio_info
+  )
+  expect_equal(
+    pair$decoder_week10$truth,
+    pair$neuralode_week10$truth,
+    tolerance = 0,
+    info = ratio_info
+  )
 
   neural_summary <- pair$neuralode_details$summary
   neural_info <- paste(
@@ -446,6 +458,16 @@ ndm_test_expect_neuralode_smoke <- function(spec,
   expect_true(is.finite(loss_value), info = label)
   expect_true(is.finite(grad_norm), info = label)
   expect_false(is.null(details$trained$opt_state), info = label)
+  expect_equal(
+    as.integer(sum(details$runtime_env$local_base_prior_mask_matched)),
+    as.integer(details$runtime_env$nODEParams_base),
+    info = label
+  )
+  expect_equal(
+    as.integer(sum(details$runtime_env$local_neural_prior_mask_matched)),
+    as.integer(details$runtime_env$nODEParams_neural),
+    info = label
+  )
   details$smoke_pred <- pred
 
   details

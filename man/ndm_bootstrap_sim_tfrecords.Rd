@@ -12,6 +12,7 @@ ndm_bootstrap_sim_tfrecords(
     analysis_name)),
   base_ids = NULL,
   tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
+  parallel_workers = 1L,
   overwrite = FALSE,
   dry_run = FALSE
 )
@@ -33,6 +34,10 @@ materialize. When `NULL`, bootstrap all `BaseID`s in raw grid order of
 first appearance.}
 
 \item{tfrecord_dir}{Output directory for canonical TFRecords.}
+
+\item{parallel_workers}{Positive integer number of forked BaseID workers on
+Linux. macOS and Windows use the deterministic serial path because
+TensorFlow/JAX runtimes are not fork-safe there.}
 
 \item{overwrite}{Logical scalar controlling whether existing canonical
 TFRecords should be regenerated.}

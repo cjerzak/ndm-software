@@ -857,31 +857,78 @@
     }
   }
 
+  # Scale prior standard deviations for preregistered sensitivity analyses
+  # without changing posterior initialization.
+  prior_sd_multiplier <- suppressWarnings(as.numeric(
+    ndm_runtime_get0("PriorSDMultiplier", ifnotfound = 1.0)
+  ))
+  if (length(prior_sd_multiplier) != 1L || !is.finite(prior_sd_multiplier) ||
+      prior_sd_multiplier <= 0) {
+    stop("PriorSDMultiplier must be one finite positive value.")
+  }
+
+  # Match local priors to the same structural TDep partition used later by the
+  # posterior. `TDeps` contains model-term names and does not include the
+  # expanded Neural1 coordinates for structures without explicit dynamic
+  # terms, so filtering by names(TDeps) can mix neural coordinates into the
+  # base prior.
+  local_prior_definitions_matched <- NeuralDefinitions_jax_STOCHASTIC[,
+    as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",]),
+    drop = FALSE
+  ]
+  local_prior_definitions_matched <- local_prior_definitions_matched[,
+    !local_prior_definitions_matched["DefClean",] %in% FixedLocalParams_defns,
+    drop = FALSE
+  ]
+  local_neural_prior_mask_matched <- as.logical(
+    local_prior_definitions_matched["TDep",]
+  )
+  if (anyNA(local_neural_prior_mask_matched)) {
+    stop("Matched local prior definitions contain missing TDep flags.")
+  }
+  local_base_prior_mask_matched <- !local_neural_prior_mask_matched
+
+  fixedLocalParamPrior_base <- NULL
+  localParamPrior_base <- NULL
+  localParamPrior_neural <- NULL
+
   # setup prior mean
   if(length(VariationalInitNonEncLocalMean) > 0){
     fixedLocalParamPrior_base <- oryx$Normal( jnp$array( VariationalInitNonEncLocalMean ),
-                                                                       jnp$array(VariationalInitNonEncLocalSD) )
+                                                                       jnp$array(VariationalInitNonEncLocalSD * prior_sd_multiplier) )
   }
-  if(length(VariationalInitEncLocalMean) > 0){
-    localParamPrior_base <- oryx$MultivariateNormalDiag( jnp$array(VariationalInitEncLocalMean[!names(VariationalInitEncLocalMean) %in% TDeps] ),
-                                                                jnp$array(VariationalInitEncLocalSD[!names(VariationalInitEncLocalSD) %in% TDeps]) )
+  if(any(local_base_prior_mask_matched)){
+    localParamPrior_base <- oryx$MultivariateNormalDiag(
+      jnp$array(f2n(local_prior_definitions_matched[
+        "PriorMean", local_base_prior_mask_matched
+      ])),
+      jnp$array(f2n(local_prior_definitions_matched[
+        "PriorSD", local_base_prior_mask_matched
+      ]) * prior_sd_multiplier)
+    )
   }
   if(length(VariationalInitGlobalMean[!names(VariationalInitGlobalMean) %in% TDeps]) > 0){
     globalParamPrior_base <- oryx$MultivariateNormalDiag( jnp$array(VariationalInitGlobalMean[!names(VariationalInitGlobalMean) %in% TDeps]),
                                                                  jnp$array(ifelse(length(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps])==1,
-                                                                                  yes = list(as.matrix(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps])),
-                                                                                  no = list(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps]))[[1]] ))
+                                                                                  yes = list(as.matrix(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps] * prior_sd_multiplier)),
+                                                                                  no = list(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps] * prior_sd_multiplier))[[1]] ))
   }
   #- define four priors (neural + non-neural for local + global )
-  if(length(VariationalInitEncLocalMean[names(VariationalInitEncLocalMean) %in% TDeps] ) > 0){
-    localParamPrior_neural <- oryx$Normal( jnp$array(VariationalInitEncLocalMean[names(VariationalInitEncLocalMean) %in% TDeps] ),
-                                                                scale = jnp$array(VariationalInitEncLocalSD[names(VariationalInitEncLocalSD) %in% TDeps]) )
+  if(any(local_neural_prior_mask_matched)){
+    localParamPrior_neural <- oryx$Normal(
+      jnp$array(f2n(local_prior_definitions_matched[
+        "PriorMean", local_neural_prior_mask_matched
+      ])),
+      scale = jnp$array(f2n(local_prior_definitions_matched[
+        "PriorSD", local_neural_prior_mask_matched
+      ]) * prior_sd_multiplier)
+    )
   }
   if(length(VariationalInitGlobalMean[names(VariationalInitGlobalMean) %in% TDeps]) > 0){
     globalParamPrior_neural <- oryx$Normal( jnp$array(VariationalInitGlobalMean[names(VariationalInitGlobalMean) %in% TDeps]),
                                                         scale =  jnp$array(ifelse(length(VariationalInitGlobalSD[names(VariationalInitGlobalMean) %in% TDeps])==1,
-                                                                                         yes = list(as.matrix(VariationalInitGlobalSD[names(VariationalInitGlobalMean) %in% TDeps])),
-                                                                                         no = list(VariationalInitGlobalSD[names(VariationalInitGlobalMean) %in% TDeps]))[[1]] ))
+                                                                                 yes = list(as.matrix(VariationalInitGlobalSD[names(VariationalInitGlobalMean) %in% TDeps] * prior_sd_multiplier)),
+                                                                                 no = list(VariationalInitGlobalSD[names(VariationalInitGlobalMean) %in% TDeps] * prior_sd_multiplier))[[1]] ))
   }
   # NB: NITIAL DIRICHLET FROM SIM IS DIFF THAN INIT FROM TIME t
   #init_s_prior <- oryx$Dirichlet(concentration = 1*rep(1,times = 4))

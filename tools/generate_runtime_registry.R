@@ -9,7 +9,7 @@ write_expression_assignment <- function(con, name, path) {
 }
 
 escape_non_ascii <- function(lines) {
-  vapply(
+  escaped_lines <- vapply(
     enc2utf8(lines),
     function(line) {
       code_points <- utf8ToInt(line)
@@ -32,6 +32,7 @@ escape_non_ascii <- function(lines) {
     character(1),
     USE.NAMES = FALSE
   )
+  sub("[[:space:]]+$", "", escaped_lines)
 }
 
 resolve_script_path <- function() {

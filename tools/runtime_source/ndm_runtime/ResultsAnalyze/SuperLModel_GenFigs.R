@@ -5,11 +5,22 @@
   print("Starting SuperLModel_GenFigs.R")
 
   print("Define data to use in analysis")
-  #SimMode<-FALSE;AnalysisName <- "RealApril15";resultsFolder<-sprintf("./SavedResults/Real/Results_%s",AnalysisName); FiguresTag <- "RealTag"; TheGrid <- as.data.frame( data.table::fread( sprintf("./Data/RunGrids/RealGrids/RealGrid_%s.csv",AnalysisName) ) ) 
-  #SimMode<-FALSE;AnalysisName <- "RealApril15-2000iters";resultsFolder<-sprintf("./SavedResults/Real/Results_%s",AnalysisName); FiguresTag <- "RealTag"; TheGrid <- as.data.frame( data.table::fread( sprintf("./Data/RunGrids/RealGrids/RealGrid_%s.csv",strsplit(AnalysisName, split="-")[[1]][1]) ) ) 
-  
-  SimMode<-TRUE;AnalysisName <- "BigSimsJuly15";resultsFolder<-sprintf("./SavedResults/Sim/Results_%s",AnalysisName); FiguresTag <- "SimTag"; TheGrid <- as.data.frame( data.table::fread( theFileName <- sprintf("./Data/RunGrids/SimGrids/SimGrid_%s.csv",strsplit(AnalysisName, split="-")[[1]][1]) ) )
-  #SimMode<-TRUE;AnalysisName <- "BigSimsApril15-9000iters";resultsFolder<-sprintf("./SavedResults/Sim/Results_%s",AnalysisName); FiguresTag <- "SimTag"; TheGrid <- as.data.frame( data.table::fread( theFileName <- sprintf("./Data/RunGrids/SimGrids/SimGrid_%s.csv",strsplit(AnalysisName, split="-")[[1]][1]) ) )
+  SimMode <- isTRUE(get0("SimMode", inherits = TRUE, ifnotfound = FALSE))
+  AnalysisName <- as.character(get0("AnalysisName", inherits = TRUE, ifnotfound = NA_character_))
+  if (is.na(AnalysisName) || !nzchar(AnalysisName)) {
+    stop("Figure generation requires the resolved AnalysisName.")
+  }
+  analysis2_spec <- get0("analysis2_run_spec", inherits = TRUE, ifnotfound = list(project_root = getwd()))
+  project_root <- normalizePath(analysis2_spec$project_root %||% getwd(), winslash = "/", mustWork = TRUE)
+  resultsFolder <- file.path(
+    project_root, "SavedResults", if (SimMode) "Sim" else "Real", sprintf("Results_%s", AnalysisName)
+  )
+  FiguresTag <- if (SimMode) "SimTag" else "RealTag"
+  TheGrid <- as.data.frame(get0(
+    if (SimMode) "SimGrid" else "RealGrid",
+    inherits = TRUE,
+    ifnotfound = stop("Figure generation requires the resolved frozen grid.")
+  ))
   
   print("Starting: --Load in and preprocess--")
   {
@@ -28,10 +39,13 @@
     library(future.apply); plan(multisession(workers = 10L)) # plan() is needed to set up multicore use 
     result_csv_files <- list.files(
       resultsFolder,
-      pattern = "\\.csv$",
+      pattern = if (SimMode) "^res.*\\.csv$" else "^predicted_df_out_.*\\.csv$",
       full.names = TRUE,
       recursive = TRUE
     )
+    if (!length(result_csv_files)) {
+      stop("No mode-specific final-result CSV files were found in ", resultsFolder, ".")
+    }
     dt_list <- future.apply::future_lapply(
       result_csv_files,
       function(csv_file_) data.table::fread(csv_file_)
@@ -45,7 +59,9 @@
     # res_mat <- res_mat[res_mat$i_in_sgd <= 28125,]
     
     # generate pair id 
-    res_mat$PairID_recon <- paste(
+    res_mat$PairID_recon <- if ("pair_id" %in% names(res_mat)) {
+      as.character(res_mat$pair_id)
+    } else paste(
                              as.character(res_mat$BaseID), 
                              as.character(res_mat$i_in_sgd), 
                              as.character(res_mat$nSamplesTrain), 
@@ -76,7 +92,10 @@
     res_mat$RSSPredSummary <- rowMeans(res_mat[,paste0("RSSPredTime",StartTime_SkillSummary : nTimesLookValidationInferenceTrainedTo)], na.rm=T)
     
     # save to disk for shiny app 
-    data.table::fwrite(res_mat, file = sprintf("~/Downloads/%s.csv", ifelse(SimMode, yes = "res_mat_sim",no = "res_mat_real")))
+    data.table::fwrite(
+      res_mat,
+      file = file.path(SaveFolder, sprintf("%s.csv", ifelse(SimMode, yes = "res_mat_sim", no = "res_mat_real")))
+    )
   }
   
   print("Some initial analyses")

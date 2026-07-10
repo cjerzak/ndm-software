@@ -19,6 +19,11 @@ ndm_create_real_run_config(
   force_to_gpu = TRUE,
   gpu_mem_frac = NULL,
   neuralode_kl_weight = 1,
+  neuralode_mean_loss_weight = 0,
+  n_checkpoints = 1L,
+  max_sgd_steps = NULL,
+  prior_sd_multiplier = 1,
+  solver_profile = "default",
   model_type = NULL,
   respect_grid_model_type = TRUE,
   resave_tfrecords = FALSE,
@@ -41,6 +46,11 @@ ndm_create_sim_run_config(
   force_to_gpu = TRUE,
   gpu_mem_frac = NULL,
   neuralode_kl_weight = 1,
+  neuralode_mean_loss_weight = 0,
+  n_checkpoints = 1L,
+  max_sgd_steps = NULL,
+  prior_sd_multiplier = 1,
+  solver_profile = "default",
   model_type = NULL,
   respect_grid_model_type = TRUE,
   resave_tfrecords = TRUE,
@@ -60,6 +70,11 @@ ndm_create_multidisease_run_config(
   force_to_gpu = TRUE,
   gpu_mem_frac = NULL,
   neuralode_kl_weight = 1,
+  neuralode_mean_loss_weight = 0,
+  n_checkpoints = 1L,
+  max_sgd_steps = NULL,
+  prior_sd_multiplier = 1,
+  solver_profile = "default",
   model_type = NULL,
   respect_grid_model_type = TRUE,
   resave_tfrecords = FALSE,
@@ -99,6 +114,21 @@ legacy outer-row-derived seed is retained.}
 
 \item{neuralode_kl_weight}{Finite non-negative NeuralODE KL multiplier. Zero
 disables KL evaluation while preserving variational sampling.}
+
+\item{neuralode_mean_loss_weight}{Finite non-negative multiplier for the
+NeuralODE auxiliary masked mean-squared-error term.}
+
+\item{n_checkpoints}{Positive integer number of checkpoint and analytics
+states to retain, including the terminal post-update state.}
+
+\item{max_sgd_steps}{Optional positive integer training-step cap for explicitly
+labeled pilot runs.}
+
+\item{prior_sd_multiplier}{Finite positive multiplier applied to ODE prior
+standard deviations.}
+
+\item{solver_profile}{ODE optimization profile: \code{"default"},
+\code{"loose"}, \code{"tight"}, or \code{"alternative"}.}
 
 \item{model_type}{Optional model family override.}
 

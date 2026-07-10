@@ -217,6 +217,9 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   variational samples.
 #' @param neuralode_kl_weight Non-negative scalar KL multiplier used only when
 #'   `neuralode_variational = TRUE`.
+#' @param neuralode_mean_loss_weight Non-negative multiplier for an auxiliary
+#'   masked mean-squared-error term applied to NeuralODE forecasts alongside
+#'   the Student-t likelihood.
 #' @param ... Additional named values appended to the configuration object.
 #'
 #' @returns `ndm_create_config()` returns an object of class `ndm_config`.
@@ -243,6 +246,7 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_optim_atol = 1e-7,
                               neuralode_variational = TRUE,
                               neuralode_kl_weight = 1.0,
+                              neuralode_mean_loss_weight = 0.0,
                               ...) {
   model_type <- match.arg(model_type)
   float_type <- match.arg(float_type)
@@ -265,6 +269,11 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   if (length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) || neuralode_kl_weight < 0) {
     stop("`neuralode_kl_weight` must be one finite non-negative numeric scalar.", call. = FALSE)
   }
+  neuralode_mean_loss_weight <- suppressWarnings(as.numeric(neuralode_mean_loss_weight))
+  if (length(neuralode_mean_loss_weight) != 1L ||
+      !is.finite(neuralode_mean_loss_weight) || neuralode_mean_loss_weight < 0) {
+    stop("`neuralode_mean_loss_weight` must be one finite non-negative numeric scalar.", call. = FALSE)
+  }
 
   extras <- list(...)
   config <- list(
@@ -284,7 +293,8 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     neuralode_optim_rtol = neuralode_optim_rtol,
     neuralode_optim_atol = neuralode_optim_atol,
     neuralode_variational = isTRUE(neuralode_variational),
-    neuralode_kl_weight = neuralode_kl_weight
+    neuralode_kl_weight = neuralode_kl_weight,
+    neuralode_mean_loss_weight = neuralode_mean_loss_weight
   )
 
   config <- c(config, extras)

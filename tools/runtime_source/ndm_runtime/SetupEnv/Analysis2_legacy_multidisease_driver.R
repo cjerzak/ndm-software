@@ -249,6 +249,7 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   ModelType <- analysis2_model_type(analysis2_multidisease_spec, RealEntry$ModelType, default = "DecoderOnly")
   neuralode_variational <- identical(ModelType, "NeuralODE")
   neuralode_kl_weight <- analysis2_multidisease_spec$neuralode_kl_weight
+  neuralode_mean_loss_weight <- analysis2_multidisease_spec$neuralode_mean_loss_weight
   print(sprintf("Using model type: %s", ModelType))
   
   # setup master ODE solution parameters

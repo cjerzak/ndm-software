@@ -25,7 +25,6 @@
   nSGD_MASTER <- nSGD_DefiningLRSeq
   #LR_schedule_vec <- np$array(  LR_schedule(jnp$array(1L:as.integer(nSGD_DefiningLRSeq) ) ))
   LR_schedule_vec <- sapply(1:nSGD_MASTER, function(x_){ np$array(  LR_schedule(jnp$array(x_) ))})
-  plot( LR_schedule_vec )
 
   if(T == T){ 
   optax_optimizer <-  optax$chain(

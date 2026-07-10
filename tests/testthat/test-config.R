@@ -26,7 +26,8 @@ test_that("configuration objects preserve requested modeling defaults", {
       "neuralode_optim_rtol",
       "neuralode_optim_atol",
       "neuralode_variational",
-      "neuralode_kl_weight"
+      "neuralode_kl_weight",
+      "neuralode_mean_loss_weight"
     )
   )
   expect_null(cfg$neuralode_local_latent_dim)
@@ -40,6 +41,7 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_equal(cfg$neuralode_optim_atol, 1e-7)
   expect_true(cfg$neuralode_variational)
   expect_equal(cfg$neuralode_kl_weight, 1)
+  expect_equal(cfg$neuralode_mean_loss_weight, 0)
 })
 
 test_that("NeuralODE remains a supported model type", {
@@ -66,6 +68,24 @@ test_that("NeuralODE variational config validates KL weight", {
   )
   expect_error(
     ndm_create_config(model_type = "NeuralODE", neuralode_kl_weight = Inf),
+    "finite"
+  )
+})
+
+test_that("NeuralODE auxiliary mean-loss weight is finite and non-negative", {
+  expect_equal(
+    ndm_create_config(
+      model_type = "NeuralODE",
+      neuralode_mean_loss_weight = 0.3
+    )$neuralode_mean_loss_weight,
+    0.3
+  )
+  expect_error(
+    ndm_create_config(neuralode_mean_loss_weight = -1),
+    "non-negative"
+  )
+  expect_error(
+    ndm_create_config(neuralode_mean_loss_weight = Inf),
     "finite"
   )
 })

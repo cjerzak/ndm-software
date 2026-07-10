@@ -451,6 +451,91 @@ ndm_test_week10_relative_accuracy <- function(metrics, eps = 1e-3, target_week =
   )
 }
 
+ndm_test_clip_at <- function(x, qval = 0.975) {
+  limits <- stats::quantile(x, probs = c(1 - qval, qval), na.rm = TRUE)
+  pmin(pmax(x, limits[[1L]]), limits[[2L]])
+}
+
+ndm_test_sim_evaluation_batch <- function(details) {
+  runtime_env <- details$runtime_env
+  if (!exists("TFDataset_inference", envir = runtime_env, inherits = FALSE) ||
+      !exists("TFConst2JAXArray", envir = runtime_env, inherits = FALSE)) {
+    stop("Expected an inference dataset and TF-to-JAX converter for paired evaluation.")
+  }
+
+  iterator <- reticulate::as_iterator(runtime_env$TFDataset_inference)
+  batch <- reticulate::iter_next(iterator)
+  if (is.null(batch) || length(batch) == 0L) {
+    stop("The paired simulation inference dataset returned no batch.")
+  }
+  batch <- runtime_env$TFConst2JAXArray(batch)
+  batch_sizes <- vapply(
+    batch,
+    function(value) as.integer(runtime_env$np$array(value$shape)[[1L]]),
+    integer(1)
+  )
+  if (any(batch_sizes != as.integer(runtime_env$nBatch))) {
+    stop(
+      "The paired simulation inference batch must contain exactly ",
+      as.integer(runtime_env$nBatch),
+      " examples."
+    )
+  }
+  batch
+}
+
+ndm_test_week_relative_accuracy_on_batch <- function(details,
+                                                     batch,
+                                                     target_week = 10L,
+                                                     prediction_seed = 9001L,
+                                                     n_monte = 10L,
+                                                     eps = 1e-3) {
+  runtime_env <- details$runtime_env
+  n_monte <- as.integer(n_monte)
+  predictions <- lapply(seq_len(n_monte), function(draw) {
+    pred <- ndm_predict(
+      details$trained,
+      batch = batch,
+      seed = as.integer(prediction_seed + draw - 1L),
+      update_state = FALSE
+    )
+    ndm_test_py_numeric_array(runtime_env$np$asanyarray(pred$y_mu))
+  })
+  pred_mean <- Reduce(`+`, predictions) / n_monte
+  truth <- ndm_test_py_numeric_array(runtime_env$np$asanyarray(batch$YTrue_out))
+  history <- ndm_test_py_numeric_array(runtime_env$np$asanyarray(batch$YTrue))
+
+  if (length(dim(pred_mean)) == 3L) {
+    pred_mean <- pred_mean[, , 1L, drop = TRUE]
+  }
+  if (length(dim(truth)) == 3L) {
+    truth <- truth[, , 1L, drop = TRUE]
+  }
+  if (length(dim(history)) == 3L) {
+    history <- history[, , 1L, drop = TRUE]
+  }
+  target_week <- as.integer(target_week)
+  if (target_week < 1L || target_week > ncol(truth) || target_week > ncol(pred_mean)) {
+    stop("Requested paired-evaluation week is outside the prediction horizon.")
+  }
+
+  baseline_index <- as.integer(runtime_env$nTimesTotal - runtime_env$nTimesLookahead)
+  baseline <- history[, baseline_index]
+  squared_pred_error <- (pred_mean[, target_week] - truth[, target_week])^2
+  squared_baseline_error <- (baseline - truth[, target_week])^2
+  rss_pred <- mean(ndm_test_clip_at(squared_pred_error))
+  rss_baseline <- mean(ndm_test_clip_at(squared_baseline_error))
+
+  list(
+    rss_pred = rss_pred,
+    rss_baseline = rss_baseline,
+    skill = 1 - (eps + sqrt(rss_pred)) / (eps + sqrt(rss_baseline)),
+    relative_accuracy = (eps + sqrt(rss_baseline)) / (eps + sqrt(rss_pred)),
+    truth = truth[, target_week],
+    baseline = baseline
+  )
+}
+
 ndm_test_sim_parity_shared_runtime_globals <- function(shared_seed,
                                                        n_samples_train = 256L,
                                                        scaling_outer_loops = 2L,
@@ -473,8 +558,12 @@ ndm_test_sim_parity_shared_runtime_globals <- function(shared_seed,
 ndm_test_sim_parity_neural_config_overrides <- function() {
   list(
     neuralode_optim_dt0 = 1e-2,
+    neuralode_optim_controller = "pid",
     neuralode_init_state_logit_offset = c(2.5, 0, 0, 0),
-    neuralode_init_state_logit_scale_max = 1.0
+    neuralode_init_state_logit_scale_max = 1.0,
+    neuralode_variational = TRUE,
+    neuralode_kl_weight = 1e-3,
+    neuralode_mean_loss_weight = 1.0
   )
 }
 
@@ -859,10 +948,27 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
     )
   )
 
-  decoder_metrics <- ndm_test_read_single_sim_metrics(decoder_details$holder_folder)
-  neuralode_metrics <- ndm_test_read_single_sim_metrics(neuralode_details$holder_folder)
-  decoder_week10 <- ndm_test_week10_relative_accuracy(decoder_metrics)
-  neuralode_week10 <- ndm_test_week10_relative_accuracy(neuralode_metrics)
+  evaluation_batch <- ndm_test_sim_evaluation_batch(decoder_details)
+  evaluation_seed <- as.integer(shared_seed + 9001L)
+  decoder_week10 <- ndm_test_week_relative_accuracy_on_batch(
+    decoder_details,
+    evaluation_batch,
+    target_week = n_times_lookahead,
+    prediction_seed = evaluation_seed
+  )
+  neuralode_week10 <- ndm_test_week_relative_accuracy_on_batch(
+    neuralode_details,
+    evaluation_batch,
+    target_week = n_times_lookahead,
+    prediction_seed = evaluation_seed
+  )
+  if (!isTRUE(all.equal(
+    decoder_week10$rss_baseline,
+    neuralode_week10$rss_baseline,
+    tolerance = 1e-12
+  ))) {
+    stop("Paired decoder and NeuralODE evaluations produced different baseline RSS values.")
+  }
   result <- list(
     decoder_relative_accuracy_10 = decoder_week10$relative_accuracy,
     neuralode_relative_accuracy_10 = neuralode_week10$relative_accuracy,
@@ -905,6 +1011,9 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
   if (isTRUE(return_details)) {
     result$decoder_details <- decoder_details
     result$neuralode_details <- neuralode_details
+    result$evaluation_batch <- evaluation_batch
+    result$decoder_week10 <- decoder_week10
+    result$neuralode_week10 <- neuralode_week10
   }
   result
 }

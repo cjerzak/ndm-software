@@ -188,84 +188,48 @@ capture_nonfinite_report <- function(batch_l,
 if (exists("ndm_runtime_normalize_getpred_saveat_info", inherits = TRUE)) {
   GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
 }
+checkpoint_save_steps <- function(n_steps, n_checkpoints) {
+  n_steps <- max(1L, as.integer(n_steps))
+  n_checkpoints <- max(0L, as.integer(n_checkpoints))
+  if (n_checkpoints == 0L) {
+    return(integer())
+  }
+  if (n_checkpoints == 1L || n_steps == 1L) {
+    return(n_steps)
+  }
+  first_step <- min(10L, n_steps)
+  intermediate <- round(10^seq(
+    log(first_step, base = 10),
+    log(n_steps, base = 10),
+    length.out = n_checkpoints
+  ))
+  sort(unique(c(as.integer(intermediate), n_steps)))
+}
+CheckPointSaveAt <- checkpoint_save_steps(nSGD_MASTER, nCheckpoints)
+training_telemetry <- data.frame(
+  iteration = integer(),
+  elapsed_seconds = numeric(),
+  gradient_seconds = numeric(),
+  loss = numeric(),
+  gradient_norm = numeric(),
+  trainable_parameters = numeric(),
+  stringsAsFactors = FALSE
+)
+write_training_telemetry <- function() {
+  if (nrow(training_telemetry) == 0L) {
+    return(invisible(NULL))
+  }
+  telemetry_file <- file.path(HolderFolder, "training_telemetry.csv")
+  dir.create(dirname(telemetry_file), recursive = TRUE, showWarnings = FALSE)
+  temporary <- tempfile("training-telemetry-", tmpdir = dirname(telemetry_file), fileext = ".csv")
+  data.table::fwrite(training_telemetry, temporary)
+  if (!file.rename(temporary, telemetry_file)) {
+    unlink(temporary, force = TRUE)
+    stop("Could not atomically write training telemetry to ", telemetry_file, ".", call. = FALSE)
+  }
+  invisible(telemetry_file)
+}
 for(i in i_:nSGD_model){
-  if(Sys.info()["sysname"] != "Darwin" & i > 2){  
-    #write.csv( file="./i_.csv",data.frame("i" = i, "te_total" = as.numeric(te_total, units = "secs"), "te_grad" = as.numeric(te_grads, units = "secs") ))  
-  }
-  # save model checkpoints
-  if(nCheckpoints > 0){
-  CheckPointSaveAt <- unique(c(round(10^(seq(log(10,base=10), 
-                                             log(nSGD_MASTER,base=10), 
-                                             length.out = nCheckpoints)),0L),
-                               nSGD_MASTER))
-  if(  i %in% CheckPointSaveAt ){
-    print2( "Saving checkpoint (Optimizer, Model, Model-generating Code)..." )
-    saveCheckpointCounter <- saveCheckpointCounter + 1
-
-    if(saveCheckpointCounter == 1){
-      zip::zip(zipfile = file.path(SavedModelDir, sprintf("AnalysisR_%s_%s.zip", AnalysisName, AnalysisDate)),
-               files = NDM_INTERNAL_ANALYSIS_DIR)
-    }
-
-    if(i %in% CheckPointSaveAt){ save_i <- i }
-    if(save_eqx_enabled){ 
-      # save_i <- "last"
-      eq$tree_serialise_leaves(checkpoint_file("ModelList", save_i),
-                               checkpoint_model_payload())
-      if("ModelList_notshared_set" %in% ls()){
-        eq$tree_serialise_leaves(checkpoint_file("ModelList_notshared_set", save_i),
-                                 list(ModelList_notshared_set, # nonshared parameters 
-                                      lapply(sim_dat_norm_list,jnp$array)) # means for recovery 
-                                 ) 
-      }
-    }
-
-    # recover trained model
-    if(save_eqx_enabled && !is.null(recover_checkpoint_at)){
-      # nSGD_model / 1:4 # defines i's
-      RecoverAt <- recover_checkpoint_at
-      ModelList_recovered <- eq$tree_deserialise_leaves(
-        checkpoint_file("ModelList", RecoverAt),
-        checkpoint_model_payload()) 
-      if("ModelList_notshared_set" %in% ls()){
-        ModelList_notshared_set_recovered <- eq$tree_deserialise_leaves(checkpoint_file("ModelList_notshared_set", RecoverAt),
-                                 list(ModelList_notshared_set, # non shared parameters 
-                                      lapply(sim_dat_norm_list,jnp$array) ) # norm factors 
-                                 )
-        sim_dat_norm_list <- ModelList_notshared_set_recovered[[2]] 
-        sim_dat_norm_list <- lapply(sim_dat_norm_list,function(l_){
-          SIM_GLOBAL_SCALE_MEAN_ <- jnp$take(l_,0L,axis=0L)$tolist()
-          SIM_GLOBAL_SCALE_SD_ <- jnp$take(l_,1L,axis=0L)$tolist()
-          list(SIM_GLOBAL_SCALE_MEAN_, SIM_GLOBAL_SCALE_SD_)
-        })
-        restore_checkpoint_scale_state(ModelList_recovered)
-        ModelList_notshared_set <- ModelList_notshared_set_recovered[[1]]
-      }
-
-      # confirm 
-      restore_checkpoint_scale_state(ModelList_recovered)
-      # opt_state[[1]]
-      # opt_state[[3]][[1]]
-      opt_state <- ModelList_recovered[[3]];
-      state <- ModelList_recovered[[2]];
-      ModelList <- ModelList_recovered[[1]]
-      if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
-        opt_state <- ndm_runtime_replicate_tree(opt_state)
-        state <- ndm_runtime_replicate_tree(state)
-        ModelList <- ndm_runtime_replicate_tree(ModelList)
-      }
-      i_ <- np$array( opt_state[[4]][[2]]$count )
-      rm( ModelList_recovered )
-    }
-  }
-
-  # save analytics
-  if( i %in% CheckPointSaveAt  ){
-    print2( sprintf("Starting GetAnalytics.R at %s of %s", i, nSGD_model) )
-    outSampCounter <- outSampCounter+1;ndm_source_extracted("ResultsGet/SuperLModel_GetAnalytics.R")
-  }
-  }
-  
   i_ <- i; fulliter_timer <- Sys.time()
   if(i %% 10 == 0){  print(i); gc(); py_gc$collect() }
 
@@ -423,16 +387,106 @@ for(i in i_:nSGD_model){
       # print results
       if (i == 1 || (is.na(COMMAND_ARG_INPUT) && i %% 4 == 0L) ||
             (!is.na(COMMAND_ARG_INPUT) && i %% 20 == 0L)) {
+          te_total <- as.numeric(difftime(Sys.time(), fulliter_timer, units = "secs"))
+          te_grads <- as.numeric(difftime(Sys.time(), gd_timer, units = "secs"))
           print2( sprintf("Iter: %s of %s -- Loss: %.4f (%.3f%%) -- Last OutCor %.2f: -- Last OutSkill: %.2f -- Total (s): %s -- Grad & updates (s): %.3f",
                             i, nSGD_model, 
                             Loss_i,
                             100*(1-rank(in_loss_vec[1:i])[i]/i),
                             LastOutCor, Skill8SanityCheck,
-                            te_total <- round(difftime(Sys.time(), fulliter_timer, units = "secs"),2L), 
-                            te_grads <- round(difftime(Sys.time(), gd_timer, units = "secs"),2L) )   )
+                            round(te_total, 2L),
+                            round(te_grads, 3L) )   )
+          training_telemetry <- rbind(
+            training_telemetry,
+            data.frame(
+              iteration = as.integer(i),
+              elapsed_seconds = te_total,
+              gradient_seconds = te_grads,
+              loss = Loss_i,
+              gradient_norm = GradNorm_i,
+              trainable_parameters = as.numeric(nParams),
+              stringsAsFactors = FALSE
+            )
+          )
       }
-      write.csv(file = './TrainDoStepTime.csv', as.matrix(te_total))
+
+      # Checkpoints and analytics are generated after the optimizer update, so
+      # a final-only policy records the actual terminal model state.
+      if (i %in% CheckPointSaveAt) {
+        if (!(i %in% training_telemetry$iteration)) {
+          checkpoint_total_seconds <- as.numeric(difftime(Sys.time(), fulliter_timer, units = "secs"))
+          checkpoint_gradient_seconds <- as.numeric(difftime(Sys.time(), gd_timer, units = "secs"))
+          training_telemetry <- rbind(
+            training_telemetry,
+            data.frame(
+              iteration = as.integer(i),
+              elapsed_seconds = checkpoint_total_seconds,
+              gradient_seconds = checkpoint_gradient_seconds,
+              loss = Loss_i,
+              gradient_norm = GradNorm_i,
+              trainable_parameters = as.numeric(nParams),
+              stringsAsFactors = FALSE
+            )
+          )
+        }
+        print2( "Saving checkpoint (Optimizer, Model, Model-generating Code)..." )
+        saveCheckpointCounter <- saveCheckpointCounter + 1
+
+        if(saveCheckpointCounter == 1){
+          zip::zip(zipfile = file.path(SavedModelDir, sprintf("AnalysisR_%s_%s.zip", AnalysisName, AnalysisDate)),
+                   files = NDM_INTERNAL_ANALYSIS_DIR)
+        }
+
+        save_i <- i
+        if(save_eqx_enabled){
+          eq$tree_serialise_leaves(checkpoint_file("ModelList", save_i),
+                                   checkpoint_model_payload())
+          if("ModelList_notshared_set" %in% ls()){
+            eq$tree_serialise_leaves(checkpoint_file("ModelList_notshared_set", save_i),
+                                     list(ModelList_notshared_set,
+                                          lapply(sim_dat_norm_list,jnp$array)))
+          }
+        }
+
+        if(save_eqx_enabled && !is.null(recover_checkpoint_at)){
+          RecoverAt <- recover_checkpoint_at
+          ModelList_recovered <- eq$tree_deserialise_leaves(
+            checkpoint_file("ModelList", RecoverAt),
+            checkpoint_model_payload())
+          if("ModelList_notshared_set" %in% ls()){
+            ModelList_notshared_set_recovered <- eq$tree_deserialise_leaves(
+              checkpoint_file("ModelList_notshared_set", RecoverAt),
+              list(ModelList_notshared_set, lapply(sim_dat_norm_list,jnp$array))
+            )
+            sim_dat_norm_list <- lapply(ModelList_notshared_set_recovered[[2]],function(l_){
+              SIM_GLOBAL_SCALE_MEAN_ <- jnp$take(l_,0L,axis=0L)$tolist()
+              SIM_GLOBAL_SCALE_SD_ <- jnp$take(l_,1L,axis=0L)$tolist()
+              list(SIM_GLOBAL_SCALE_MEAN_, SIM_GLOBAL_SCALE_SD_)
+            })
+            restore_checkpoint_scale_state(ModelList_recovered)
+            ModelList_notshared_set <- ModelList_notshared_set_recovered[[1]]
+          }
+
+          restore_checkpoint_scale_state(ModelList_recovered)
+          opt_state <- ModelList_recovered[[3]]
+          state <- ModelList_recovered[[2]]
+          ModelList <- ModelList_recovered[[1]]
+          if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+            opt_state <- ndm_runtime_replicate_tree(opt_state)
+            state <- ndm_runtime_replicate_tree(state)
+            ModelList <- ndm_runtime_replicate_tree(ModelList)
+          }
+          i_ <- np$array( opt_state[[4]][[2]]$count )
+          rm( ModelList_recovered )
+        }
+
+        print2( sprintf("Starting GetAnalytics.R at %s of %s", i, nSGD_model) )
+        outSampCounter <- outSampCounter+1
+        ndm_source_extracted("ResultsGet/SuperLModel_GetAnalytics.R")
+        write_training_telemetry()
+      }
     }
   }
 }
+write_training_telemetry()
 print("Done with SuperLModel_TrainDo.R")

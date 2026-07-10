@@ -193,6 +193,7 @@ test_that("canonical sim bootstrap skips existing artifacts on rerun", {
     project_root = project_root,
     analysis_name = analysis_name,
     grid = grid,
+    parallel_workers = 2L,
     overwrite = FALSE,
     dry_run = FALSE
   )
@@ -254,6 +255,42 @@ test_that("canonical sim bootstrap rejects conflicting dataset fields within a B
     ),
     "disagree on dataset-defining fields.*gamma"
   )
+})
+
+test_that("canonical bootstraps treat production row and pair identities as run metadata", {
+  ndm_require_runner_test_stack("production-shaped canonical bootstrap identity tests")
+
+  project_root <- ndm_test_runner_project_root()
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  sim_grid <- ndm_test_make_sim_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(0L, 1L)
+  )
+  sim_grid$row_id <- c("sim-row-a", "sim-row-b")
+  sim_grid$pair_id <- c("sim-pair-a", "sim-pair-b")
+  sim_plan <- ndm_bootstrap_sim_tfrecords(
+    project_root = project_root,
+    analysis_name = "SimBootstrapProductionIdentity",
+    grid = sim_grid,
+    dry_run = TRUE
+  )
+
+  real_grid <- ndm_test_make_real_duplicate_base_grid(
+    n_samples_train = c(4L, 8L),
+    resave_flags = c(0L, 1L)
+  )
+  real_grid$row_id <- c("real-row-a", "real-row-b")
+  real_grid$pair_id <- c("real-pair-a", "real-pair-b")
+  real_plan <- ndm_bootstrap_real_tfrecords(
+    project_root = project_root,
+    analysis_name = "RealBootstrapProductionIdentity",
+    grid = real_grid,
+    dry_run = TRUE
+  )
+
+  expect_equal(sim_plan$BaseID, 1L)
+  expect_equal(real_plan$BaseID, 1L)
 })
 
 test_that("package-native sim runner regenerates canonical TFRecords in non-dry mode", {
@@ -764,6 +801,45 @@ test_that("run config helpers validate mutually exclusive grid inputs and outer 
     ),
     "`outer` must contain at least one integer row index"
   )
+})
+
+test_that("run configs expose production checkpoint and preregistered sensitivity controls", {
+  config <- ndm_create_sim_run_config(
+    project_root = tempdir(),
+    grid = data.frame(BaseID = 1L, ModelType = "NeuralODE"),
+    n_checkpoints = 10L,
+    max_sgd_steps = 100L,
+    prior_sd_multiplier = 2,
+    solver_profile = "tight",
+    neuralode_mean_loss_weight = 0.3,
+    dry_run = TRUE
+  )
+
+  expect_equal(config$n_checkpoints, 10L)
+  expect_equal(config$max_sgd_steps, 100L)
+  expect_equal(config$prior_sd_multiplier, 2)
+  expect_equal(config$solver_profile, "tight")
+  expect_equal(config$neuralode_mean_loss_weight, 0.3)
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), n_checkpoints = 0L),
+    "positive integer"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), prior_sd_multiplier = 0),
+    "finite positive"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), solver_profile = "unknown"),
+    "default, loose, tight, or alternative"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), neuralode_mean_loss_weight = -1),
+    "non-negative"
+  )
+
+  runtime_env <- ndm:::.ndm_new_run_impl_env()
+  expect_equal(runtime_env$analysis2_small_run_n_checkpoints(8L, 100L, default = 1L), 1L)
+  expect_equal(runtime_env$analysis2_small_run_n_checkpoints(8L, 100L, default = 10L), 10L)
 })
 
 test_that("path helpers recognize POSIX, Windows, UNC, and relative paths", {

@@ -44,6 +44,17 @@
 #' @param neuralode_kl_weight Finite non-negative multiplier for the NeuralODE
 #'   KL contribution. A value of zero disables KL evaluation without disabling
 #'   variational sampling.
+#' @param neuralode_mean_loss_weight Finite non-negative multiplier for the
+#'   NeuralODE auxiliary masked mean-squared-error term.
+#' @param n_checkpoints Positive integer number of checkpoint/analytics states
+#'   to retain, including the terminal post-update state. The production
+#'   default is one final checkpoint.
+#' @param max_sgd_steps Optional positive integer cap used only by explicitly
+#'   labeled pilot runs.
+#' @param prior_sd_multiplier Finite positive multiplier applied to ODE prior
+#'   standard deviations; `1` is the core-grid default.
+#' @param solver_profile ODE optimization solver profile: `"default"`,
+#'   `"loose"`, `"tight"`, or `"alternative"`.
 #' @param model_type Optional model family override.
 #' @param respect_grid_model_type Logical scalar indicating whether grid rows
 #'   should be allowed to override the requested model type.
@@ -97,6 +108,11 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        force_to_gpu = TRUE,
                                        gpu_mem_frac = NULL,
                                        neuralode_kl_weight = 1.0,
+                                       neuralode_mean_loss_weight = 0.0,
+                                       n_checkpoints = 1L,
+                                       max_sgd_steps = NULL,
+                                       prior_sd_multiplier = 1.0,
+                                       solver_profile = "default",
                                        model_type = NULL,
                                        respect_grid_model_type = TRUE,
                                        resave_tfrecords = FALSE,
@@ -119,6 +135,11 @@ ndm_create_real_run_config <- function(project_root = getwd(),
     force_to_gpu = force_to_gpu,
     gpu_mem_frac = gpu_mem_frac,
     neuralode_kl_weight = neuralode_kl_weight,
+    neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+    n_checkpoints = n_checkpoints,
+    max_sgd_steps = max_sgd_steps,
+    prior_sd_multiplier = prior_sd_multiplier,
+    solver_profile = solver_profile,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -141,6 +162,11 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       force_to_gpu = TRUE,
                                       gpu_mem_frac = NULL,
                                       neuralode_kl_weight = 1.0,
+                                      neuralode_mean_loss_weight = 0.0,
+                                      n_checkpoints = 1L,
+                                      max_sgd_steps = NULL,
+                                      prior_sd_multiplier = 1.0,
+                                      solver_profile = "default",
                                       model_type = NULL,
                                       respect_grid_model_type = TRUE,
                                       resave_tfrecords = TRUE,
@@ -160,6 +186,11 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
     force_to_gpu = force_to_gpu,
     gpu_mem_frac = gpu_mem_frac,
     neuralode_kl_weight = neuralode_kl_weight,
+    neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+    n_checkpoints = n_checkpoints,
+    max_sgd_steps = max_sgd_steps,
+    prior_sd_multiplier = prior_sd_multiplier,
+    solver_profile = solver_profile,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -179,6 +210,11 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                force_to_gpu = TRUE,
                                                gpu_mem_frac = NULL,
                                                neuralode_kl_weight = 1.0,
+                                               neuralode_mean_loss_weight = 0.0,
+                                               n_checkpoints = 1L,
+                                               max_sgd_steps = NULL,
+                                               prior_sd_multiplier = 1.0,
+                                               solver_profile = "default",
                                                model_type = NULL,
                                                respect_grid_model_type = TRUE,
                                                resave_tfrecords = FALSE,
@@ -202,6 +238,11 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     force_to_gpu = force_to_gpu,
     gpu_mem_frac = gpu_mem_frac,
     neuralode_kl_weight = neuralode_kl_weight,
+    neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+    n_checkpoints = n_checkpoints,
+    max_sgd_steps = max_sgd_steps,
+    prior_sd_multiplier = prior_sd_multiplier,
+    solver_profile = solver_profile,
     model_type = model_type,
     respect_grid_model_type = respect_grid_model_type,
     resave_tfrecords = resave_tfrecords,
@@ -234,6 +275,10 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
 #' @param tfrecord_dir Output directory for canonical TFRecords.
 #' @param overwrite Logical scalar controlling whether existing canonical
 #'   TFRecords should be regenerated.
+#' @param parallel_workers Positive integer number of forked BaseID workers on
+#'   Linux. Real-data source tables are prepared once before forking. macOS and
+#'   Windows use the deterministic serial path because TensorFlow/JAX runtimes
+#'   are not fork-safe there.
 #' @param dry_run Logical scalar indicating whether to return the canonical
 #'   write plan without writing TFRecords.
 #'
@@ -248,6 +293,7 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
                                         grid_file = file.path("Data", "RunGrids", "SimGrids", sprintf("SimGrid_%s.csv", analysis_name)),
                                         base_ids = NULL,
                                         tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
+                                        parallel_workers = 1L,
                                         overwrite = FALSE,
                                         dry_run = FALSE) {
   project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
@@ -283,6 +329,7 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     grid = sim_grid,
     base_ids = base_ids,
     tfrecord_dir = tfrecord_dir,
+    parallel_workers = as.integer(parallel_workers),
     overwrite = isTRUE(overwrite),
     dry_run = isTRUE(dry_run)
   )
@@ -316,6 +363,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
                                          raw_data_dir = file.path("Data", "MainData"),
                                          outcome_metric = "inc_death",
                                          data_subset = "high_income",
+                                         parallel_workers = 1L,
                                          overwrite = FALSE,
                                          dry_run = FALSE) {
   project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
@@ -350,6 +398,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     raw_data_dir = raw_data_dir,
     outcome_metric = as.character(outcome_metric),
     data_subset = as.character(data_subset),
+    parallel_workers = as.integer(parallel_workers),
     overwrite = isTRUE(overwrite),
     dry_run = isTRUE(dry_run)
   )
@@ -380,6 +429,11 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
                                  force_to_gpu = TRUE,
                                  gpu_mem_frac = NULL,
                                  neuralode_kl_weight = 1.0,
+                                 neuralode_mean_loss_weight = 0.0,
+                                 n_checkpoints = 1L,
+                                 max_sgd_steps = NULL,
+                                 prior_sd_multiplier = 1.0,
+                                 solver_profile = "default",
                                  model_type = NULL,
                                  respect_grid_model_type = TRUE,
                                  resave_tfrecords = FALSE,
@@ -427,6 +481,37 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       neuralode_kl_weight < 0) {
     stop("`neuralode_kl_weight` must be one finite non-negative value.", call. = FALSE)
   }
+  neuralode_mean_loss_weight <- suppressWarnings(as.numeric(neuralode_mean_loss_weight))
+  if (length(neuralode_mean_loss_weight) != 1L ||
+      !is.finite(neuralode_mean_loss_weight) || neuralode_mean_loss_weight < 0) {
+    stop("`neuralode_mean_loss_weight` must be one finite non-negative value.", call. = FALSE)
+  }
+  n_checkpoints <- suppressWarnings(as.numeric(n_checkpoints))
+  if (length(n_checkpoints) != 1L || !is.finite(n_checkpoints) ||
+      n_checkpoints < 1 || n_checkpoints > .Machine$integer.max ||
+      n_checkpoints != floor(n_checkpoints)) {
+    stop("`n_checkpoints` must be one positive integer.", call. = FALSE)
+  }
+  n_checkpoints <- as.integer(n_checkpoints)
+  if (!is.null(max_sgd_steps)) {
+    max_sgd_steps <- suppressWarnings(as.numeric(max_sgd_steps))
+    if (length(max_sgd_steps) != 1L || !is.finite(max_sgd_steps) ||
+        max_sgd_steps < 1 || max_sgd_steps > .Machine$integer.max ||
+        max_sgd_steps != floor(max_sgd_steps)) {
+      stop("`max_sgd_steps` must be NULL or one positive integer.", call. = FALSE)
+    }
+    max_sgd_steps <- as.integer(max_sgd_steps)
+  }
+  prior_sd_multiplier <- suppressWarnings(as.numeric(prior_sd_multiplier))
+  if (length(prior_sd_multiplier) != 1L || !is.finite(prior_sd_multiplier) ||
+      prior_sd_multiplier <= 0) {
+    stop("`prior_sd_multiplier` must be one finite positive value.", call. = FALSE)
+  }
+  solver_profile <- tolower(as.character(solver_profile))
+  if (length(solver_profile) != 1L ||
+      !solver_profile %in% c("default", "loose", "tight", "alternative")) {
+    stop("`solver_profile` must be default, loose, tight, or alternative.", call. = FALSE)
+  }
   .ndm_validate_resave_tfrecords(mode, resave_tfrecords)
 
   class_name <- switch(
@@ -449,6 +534,11 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       force_to_gpu = force_to_gpu,
       gpu_mem_frac = gpu_mem_frac,
       neuralode_kl_weight = neuralode_kl_weight,
+      neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+      n_checkpoints = n_checkpoints,
+      max_sgd_steps = max_sgd_steps,
+      prior_sd_multiplier = prior_sd_multiplier,
+      solver_profile = solver_profile,
       model_type = model_type,
       respect_grid_model_type = isTRUE(respect_grid_model_type),
       resave_tfrecords = isTRUE(resave_tfrecords),
@@ -489,6 +579,10 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     sprintf("--outer=%s", paste(config$outer, collapse = ",")),
     sprintf("--force_to_gpu=%s", toupper(as.character(isTRUE(config$force_to_gpu)))),
     sprintf("--neuralode_kl_weight=%s", format(config$neuralode_kl_weight, scientific = FALSE, trim = TRUE)),
+    sprintf("--neuralode_mean_loss_weight=%s", format(config$neuralode_mean_loss_weight, scientific = FALSE, trim = TRUE)),
+    sprintf("--n_checkpoints=%s", as.integer(config$n_checkpoints)),
+    sprintf("--prior_sd_multiplier=%s", format(config$prior_sd_multiplier, scientific = FALSE, trim = TRUE)),
+    sprintf("--solver_profile=%s", config$solver_profile),
     sprintf("--respect_grid_model_type=%s", toupper(as.character(isTRUE(config$respect_grid_model_type)))),
     sprintf("--resave_tfrecords=%s", toupper(as.character(isTRUE(config$resave_tfrecords)))),
     "--run_figures=FALSE",
@@ -497,6 +591,9 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
 
   if (!is.null(config$run_seed)) {
     args <- c(args, sprintf("--run_seed=%s", as.integer(config$run_seed)))
+  }
+  if (!is.null(config$max_sgd_steps)) {
+    args <- c(args, sprintf("--max_sgd_steps=%s", as.integer(config$max_sgd_steps)))
   }
   if (!is.null(config$gpu_mem_frac)) {
     args <- c(args, sprintf("--gpu_mem_frac=%s", format(config$gpu_mem_frac, scientific = FALSE, trim = TRUE)))

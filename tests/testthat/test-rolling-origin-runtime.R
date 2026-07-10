@@ -18,6 +18,7 @@ test_that("run configs expose GPU and NeuralODE KL controls with safe defaults",
     outer = 1L,
     gpu_mem_frac = 0.5,
     neuralode_kl_weight = 0,
+    neuralode_mean_loss_weight = 0.3,
     dry_run = TRUE
   )
   args <- ndm:::.ndm_run_config_to_args(config)
@@ -26,9 +27,11 @@ test_that("run configs expose GPU and NeuralODE KL controls with safe defaults",
   expect_true(config$respect_grid_model_type)
   expect_equal(config$gpu_mem_frac, 0.5)
   expect_equal(config$neuralode_kl_weight, 0)
+  expect_equal(config$neuralode_mean_loss_weight, 0.3)
   expect_true("--force_to_gpu=TRUE" %in% args)
   expect_true("--gpu_mem_frac=0.5" %in% args)
   expect_true("--neuralode_kl_weight=0" %in% args)
+  expect_true("--neuralode_mean_loss_weight=0.3" %in% args)
 })
 
 test_that("Analysis2 outer rows preserve frozen CSV order and stable row identity", {

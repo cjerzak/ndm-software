@@ -138,6 +138,27 @@ test_that("generated runtime special expressions stay in sync with runtime sourc
   }
 })
 
+test_that("production runtime avoids shared per-step files and uses final-only checkpoint semantics", {
+  source_root <- runtime_registry_source_root()
+  train_define <- runtime_source_text(source_root, "ModelTrainers/SuperLModel_TrainDefine.R")
+  train_do <- runtime_source_text(source_root, "ModelTrainers/SuperLModel_TrainDo.R")
+
+  expect_false(grepl("plot( LR_schedule_vec )", train_define, fixed = TRUE))
+  expect_false(grepl("TrainDoStepTime.csv", train_do, fixed = TRUE))
+  expect_match(train_do, "if (n_checkpoints == 1L", fixed = TRUE)
+  expect_match(train_do, "training_telemetry.csv", fixed = TRUE)
+  expect_match(train_do, "if (!(i %in% training_telemetry$iteration))", fixed = TRUE)
+  optimizer_update <- regexpr("ModelList <- train_step_result$model", train_do, fixed = TRUE)[[1L]]
+  checkpoint_write <- regexpr("if (i %in% CheckPointSaveAt)", train_do, fixed = TRUE)[[1L]]
+  expect_gt(optimizer_update, 0L)
+  expect_gt(checkpoint_write, optimizer_update)
+
+  analysis2_api <- runtime_source_text(source_root, "SetupEnv/Analysis2_api.R")
+  parse_dynamic <- runtime_source_text(source_root, "ModelDefiners/SuperLModel_ParseDynamicODE.R")
+  expect_match(analysis2_api, "analysis2_solver_profile", fixed = TRUE)
+  expect_match(parse_dynamic, "PriorSDMultiplier", fixed = TRUE)
+})
+
 test_that("generated embedded runtime sources stay in sync with runtime source files", {
   ns <- asNamespace("ndm")
   source_root <- runtime_registry_source_root()
@@ -168,6 +189,8 @@ test_that("runtime source keeps NeuralODE and transformer regression fixes", {
   expect_match(build_ml, "local_kl <- jnp$mean(GetPred_output$KL_LOCAL)", fixed = TRUE)
   expect_match(build_ml, "persistent_kl_first / jnp$array(as.numeric(nSamplesTrain)", fixed = TRUE)
   expect_match(build_ml, "neuralode_kl_weight > 0", fixed = TRUE)
+  expect_match(build_ml, "neuralode_mean_loss_weight", fixed = TRUE)
+  expect_match(build_ml, "local_base_prior_mask_matched", fixed = TRUE)
   expect_match(build_ml, "DecoderObservationScale", fixed = TRUE)
   expect_match(build_ml, "testWithoutSampling <- !isTRUE(neuralode_variational)", fixed = TRUE)
   expect_match(sim_data, "\"YTrue_out\" = (YTrue_out_ <- jnp$expand_dims(YTrue_d_out,2L))", fixed = TRUE)
