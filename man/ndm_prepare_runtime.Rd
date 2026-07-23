@@ -25,27 +25,30 @@ ndm_prepare_data(
 objects.}
 
 \item{runtime_globals}{Named list of additional bindings to assign before the
-runtime code is sourced.}
+relevant runtime or data-preparation stage.}
 
-\item{generator}{Which data generator to source into `runtime_env`.}
+\item{generator}{Which data workflow to prepare in `runtime_env`.}
 }
 \value{
 `ndm_prepare_runtime()` invisibly returns `runtime_env` after
   loading the package-owned helper and backend code.
 
-`ndm_prepare_data()` invisibly returns `runtime_env` after sourcing
-  the requested data generator.
+`ndm_prepare_data()` invisibly returns `runtime_env` after preparing
+  the requested data workflow.
 }
 \description{
 These wrappers load package-owned runtime components into an isolated
-environment and then source the selected data generator.
+environment and prepare the selected data workflow.
 }
 \details{
 Before building, training, predicting, or restoring artifacts from a runtime
 environment, initialize the backend for the target conda environment with
 `ndm_initialize_backend()`. `ndm_prepare_runtime()` requires the
-`fastmatch` package. `ndm_prepare_data(generator = "sim")` additionally
-requires `zoo`. The compatibility fields
+`fastmatch` package. Canonical real and simulation preparation requires a
+completed `train_<BaseID>.tfrecord` / `inference_<BaseID>.tfrecord` pair and
+their ndmdatasets manifests. Set `SkipTfRecords = TRUE` only for explicit
+in-memory preparation; the simulation compatibility path then also requires
+`zoo`. The compatibility fields
 `resave_tfrecords` and `ReSaveTfRecords` must remain `FALSE` in configs,
 runtime environments, and runtime globals.
 }

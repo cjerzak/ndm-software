@@ -167,25 +167,23 @@ ndm_create_tfrecord_parser <- function(field_names,
 
   function(example_proto) {
     tf <- .ndm_resolve_tensorflow(tensorflow)
-    feature_description <- list()
-    for (name in field_names) {
-      feature_description[[name]] <- tf$io$FixedLenFeature(list(), tf$string)
-      feature_description[[paste0(name, "_shape")]] <- tf$io$FixedLenFeature(list(), tf$string)
-    }
+    feature_description <- stats::setNames(
+      replicate(
+        length(field_names),
+        tf$io$FixedLenFeature(list(), tf$string),
+        simplify = FALSE
+      ),
+      field_names
+    )
 
     example <- tf$io$parse_single_example(example_proto, feature_description)
     out <- list()
 
     for (name in field_names) {
-      tensor <- tf$io$parse_tensor(
+      out[[name]] <- tf$io$parse_tensor(
         example[[name]],
         out_type = .ndm_resolve_tf_dtype(dtype_map[[name]], tf)
       )
-      shape <- tf$io$parse_tensor(
-        example[[paste0(name, "_shape")]],
-        out_type = tf$int32
-      )
-      out[[name]] <- tf$reshape(tensor, shape)
     }
 
     out
@@ -382,6 +380,122 @@ ndm_batch_to_model_inputs <- function(batch) {
   )
 }
 
+.ndm_tfrecord_manifest_path <- function(file) {
+  paste0(file, ".manifest.rds")
+}
+
+.ndm_dtype_map_is_canonical <- function(dtype_map,
+                                        kind,
+                                        field_names = switch(
+                                          kind,
+                                          real = ndm_tfrecord_fields_real(),
+                                          sim = ndm_tfrecord_fields_sim()
+                                        )) {
+  canonical_fields <- switch(
+    kind,
+    real = ndm_tfrecord_fields_real(),
+    sim = ndm_tfrecord_fields_sim()
+  )
+  canonical_dtypes <- ndm_tfrecord_dtype_map(kind)
+
+  is.character(field_names) &&
+    identical(unname(field_names), canonical_fields) &&
+    is.character(dtype_map) &&
+    identical(dtype_map, canonical_dtypes)
+}
+
+.ndm_validate_bundle_tfrecord_artifact <- function(...) {
+  ndmdatasets::ndm_datasets_validate_tfrecord_artifact(...)
+}
+
+.ndm_validate_canonical_tfrecord_bundle <- function(train_file,
+                                                     inference_file,
+                                                     kind,
+                                                     tensorflow) {
+  train_manifest <- .ndm_validate_bundle_tfrecord_artifact(
+    file = train_file,
+    schema = kind,
+    expected_split = "train",
+    verify_checksum = TRUE,
+    verify_readable = FALSE,
+    tensorflow = tensorflow
+  )
+
+  inference_manifest <- NULL
+  if (!is.null(inference_file)) {
+    pair_dataset_spec <- train_manifest$dataset_spec %||% NULL
+    if (is.null(pair_dataset_spec)) {
+      stop(
+        "Canonical training TFRecord manifest does not contain a dataset specification.",
+        call. = FALSE
+      )
+    }
+
+    inference_manifest <- .ndm_validate_bundle_tfrecord_artifact(
+      file = inference_file,
+      schema = kind,
+      expected_dataset_spec = pair_dataset_spec,
+      expected_split = "inference",
+      verify_checksum = TRUE,
+      verify_readable = FALSE,
+      tensorflow = tensorflow
+    )
+
+    if (!identical(train_manifest$scaler_sha256, inference_manifest$scaler_sha256)) {
+      stop(
+        "Canonical train and inference TFRecords were built with different scalers.",
+        call. = FALSE
+      )
+    }
+
+    train_source <- (train_manifest$metadata %||% list())$source_sha256 %||% NULL
+    inference_source <- (inference_manifest$metadata %||% list())$source_sha256 %||% NULL
+    if ((!is.null(train_source) || !is.null(inference_source)) &&
+        !identical(train_source, inference_source)) {
+      stop(
+        "Canonical train and inference TFRecords were built from different source tables.",
+        call. = FALSE
+      )
+    }
+  }
+
+  invisible(list(train = train_manifest, inference = inference_manifest))
+}
+
+.ndm_read_bundle_tfrecord_dataset <- function(file,
+                                               batch_size,
+                                               kind,
+                                               field_names,
+                                               dtype_map,
+                                               max_examples,
+                                               shuffle,
+                                               tensorflow,
+                                               canonical = FALSE) {
+  if (isTRUE(canonical)) {
+    return(ndmdatasets::ndm_datasets_read_tfrecord_dataset(
+      file = file,
+      batch_size = batch_size,
+      schema = kind,
+      max_examples = max_examples,
+      shuffle = shuffle,
+      shuffle_seed = NULL,
+      reshuffle_each_iteration = FALSE,
+      tensorflow = tensorflow,
+      verify_checksum = FALSE
+    ))
+  }
+
+  ndm_read_tfrecord_dataset(
+    file = file,
+    batch_size = batch_size,
+    field_names = field_names,
+    dtype_map = dtype_map,
+    max_examples = max_examples,
+    shuffle = shuffle,
+    tensorflow = tensorflow
+  )
+}
+
 #' @rdname ndm_tf_batch_to_r
 #' @export
 ndm_load_tfrecord_bundle <- function(train_file,
@@ -401,27 +515,57 @@ ndm_load_tfrecord_bundle <- function(train_file,
     sim = ndm_tfrecord_fields_sim()
   )
   dtype_map <- dtype_map %||% ndm_tfrecord_dtype_map(kind)
+  tensorflow <- .ndm_resolve_tensorflow(tensorflow)
 
-  train_dataset <- ndm_read_tfrecord_dataset(
+  train_file <- .ndm_normalize_path(train_file, must_work = TRUE)
+  inference_file <- if (is.null(inference_file)) {
+    NULL
+  } else {
+    .ndm_normalize_path(inference_file, must_work = TRUE)
+  }
+  artifact_files <- c(train_file, inference_file)
+  canonical <-
+    .ndm_dtype_map_is_canonical(dtype_map, kind, field_names = field_names) &&
+    all(file.exists(vapply(
+      artifact_files,
+      .ndm_tfrecord_manifest_path,
+      character(1),
+      USE.NAMES = FALSE
+    )))
+
+  if (isTRUE(canonical)) {
+    .ndm_validate_canonical_tfrecord_bundle(
+      train_file = train_file,
+      inference_file = inference_file,
+      kind = kind,
+      tensorflow = tensorflow
+    )
+  }
+
+  train_dataset <- .ndm_read_bundle_tfrecord_dataset(
     file = train_file,
     batch_size = batch_size,
+    kind = kind,
     field_names = field_names,
     dtype_map = dtype_map,
     max_examples = max_train_examples,
     shuffle = shuffle_train,
-    tensorflow = tensorflow
+    tensorflow = tensorflow,
+    canonical = canonical
   )
 
   inference_dataset <- NULL
   if (!is.null(inference_file)) {
-    inference_dataset <- ndm_read_tfrecord_dataset(
+    inference_dataset <- .ndm_read_bundle_tfrecord_dataset(
       file = inference_file,
       batch_size = batch_size,
+      kind = kind,
       field_names = field_names,
       dtype_map = dtype_map,
       max_examples = max_inference_examples,
       shuffle = shuffle_inference,
-      tensorflow = tensorflow
+      tensorflow = tensorflow,
+      canonical = canonical
     )
   }
 
@@ -431,8 +575,8 @@ ndm_load_tfrecord_bundle <- function(train_file,
       batch_size = as.integer(batch_size),
       field_names = field_names,
       dtype_map = dtype_map,
-      train_file = .ndm_normalize_path(train_file, must_work = TRUE),
-      inference_file = if (is.null(inference_file)) NULL else .ndm_normalize_path(inference_file, must_work = TRUE),
+      train_file = train_file,
+      inference_file = inference_file,
       train_dataset = train_dataset,
       train_iterator = reticulate::as_iterator(train_dataset),
       inference_dataset = inference_dataset,

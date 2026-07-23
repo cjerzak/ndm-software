@@ -176,7 +176,7 @@ test_that("generated embedded runtime sources stay in sync with runtime source f
   }
 })
 
-test_that("real and simulation data generators only read canonical TFRecords", {
+test_that("real and simulation data generators delegate canonical TFRecord reads", {
   source_root <- runtime_registry_source_root()
   generators <- vapply(
     c(
@@ -187,8 +187,9 @@ test_that("real and simulation data generators only read canonical TFRecords", {
     character(1L)
   )
 
-  expect_true(all(grepl("tf$data$TFRecordDataset", generators, fixed = TRUE)))
-  expect_true(all(grepl("TFDatasetIterator_train", generators, fixed = TRUE)))
+  expect_true(all(grepl(".ndm_attach_canonical_tfrecords", generators, fixed = TRUE)))
+  expect_true(all(grepl("SkipTfRecords", generators, fixed = TRUE)))
+  expect_false(any(grepl("_shape", generators, fixed = TRUE)))
   expect_false(any(grepl("TFRecordWriter", generators, fixed = TRUE)))
   expect_false(any(grepl("dir.create(TfRecordDir", generators, fixed = TRUE)))
   expect_false(grepl("inference_support_", generators[[1L]], fixed = TRUE))

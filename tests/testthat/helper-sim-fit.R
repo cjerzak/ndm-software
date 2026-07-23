@@ -1,5 +1,173 @@
 # Shared simulation-fit harness for backend-heavy transformer regression tests.
 
+.ndm_test_sim_fit_tfrecord_cache <- new.env(parent = emptyenv())
+
+ndm_test_sim_fit_scaling_batches <- function(scaling_outer_loops,
+                                             scaling_inner_loops,
+                                             n_batch_sim_grid_gen) {
+  legacy_counts <- suppressWarnings(as.numeric(c(
+    scaling_outer_loops,
+    scaling_inner_loops,
+    n_batch_sim_grid_gen
+  )))
+  if (length(legacy_counts) != 3L ||
+      any(!is.finite(legacy_counts)) ||
+      any(legacy_counts <= 0)) {
+    stop("Simulation scaling loop and batch counts must be positive finite numbers.",
+         call. = FALSE)
+  }
+
+  scaling_examples <- prod(legacy_counts)
+  # ndmdatasets generates 16 examples for each canonical scaling batch.
+  as.integer(max(1, ceiling(scaling_examples / 16L)))
+}
+
+ndm_test_sim_fit_grid <- function(sim_entry,
+                                  n_samples_train,
+                                  n_times_lookahead,
+                                  n_times_past = 8L,
+                                  scaling_outer_loops = 1L,
+                                  scaling_inner_loops = 2L,
+                                  n_batch_sim_grid_gen = 8L) {
+  grid <- ndm_test_make_sim_run_grid()[1L, , drop = FALSE]
+  sim_entry <- if (is.data.frame(sim_entry)) {
+    as.list(sim_entry[1L, , drop = FALSE])
+  } else {
+    as.list(sim_entry)
+  }
+
+  for (field in names(sim_entry)) {
+    value <- sim_entry[[field]]
+    if (length(value) == 1L && !is.list(value)) {
+      grid[[field]] <- value
+    }
+  }
+
+  grid$BaseID <- 1L
+  grid$ContextLength <- as.integer(n_times_past)
+  grid$lookahead <- as.integer(n_times_lookahead)
+  grid$n_time_steps <- as.integer(2L * (n_times_past + n_times_lookahead))
+  grid$n_inference_batches <- 1L
+  grid$scaling_batches <- ndm_test_sim_fit_scaling_batches(
+    scaling_outer_loops = scaling_outer_loops,
+    scaling_inner_loops = scaling_inner_loops,
+    n_batch_sim_grid_gen = n_batch_sim_grid_gen
+  )
+  grid$nSamplesTrain <- as.integer(n_samples_train)
+  grid$ModelType <- "DecoderOnly"
+  grid$ModelDepth <- 1L
+  grid$ModelDims <- 32L
+  grid$floatType <- "32"
+  grid$ResaveThisTFRecord <- 1L
+  rownames(grid) <- NULL
+  grid
+}
+
+ndm_test_sim_fit_canonical_artifacts <- function(api,
+                                                 grid,
+                                                 dataset_spec,
+                                                 ndmdatasets_pkg = "ndmdatasets") {
+  producer <- ndm_test_tfrecord_producer()
+  cache_key <- digest::digest(
+    list(
+      schema = "canonical-sim-v3",
+      dataset_spec = dataset_spec,
+      n_samples_train = as.integer(grid$nSamplesTrain[[1L]]),
+      producer = producer,
+      ndmdatasets_version = as.character(utils::packageVersion(ndmdatasets_pkg))
+    ),
+    algo = "sha256"
+  )
+  # Keep artifacts available to every fit in this R process. The PID-scoped
+  # root lives under R's session tempdir and is removed with that session.
+  cache_root <- file.path(
+    tempdir(),
+    sprintf("ndm-sim-fit-tfrecord-cache-%s", Sys.getpid()),
+    cache_key
+  )
+  dir.create(cache_root, recursive = TRUE, showWarnings = FALSE)
+  tfrecord_dir <- file.path(cache_root, "tfrecords")
+  paths <- api$analysis2_tfrecord_paths(tfrecord_dir, 1L)
+  required_files <- c(
+    paths$train_file,
+    paths$inference_file,
+    paste0(paths$train_file, ".manifest.rds"),
+    paste0(paths$inference_file, ".manifest.rds")
+  )
+
+  bootstrap <- function(overwrite) {
+    suppressMessages(
+      ndm_bootstrap_sim_tfrecords(
+        project_root = cache_root,
+        analysis_name = "SimFitCanonicalCache",
+        grid = grid,
+        base_ids = 1L,
+        tfrecord_dir = tfrecord_dir,
+        producer = producer,
+        overwrite = isTRUE(overwrite),
+        dry_run = FALSE
+      )
+    )
+  }
+  if (!all(file.exists(required_files))) {
+    bootstrap(overwrite = any(file.exists(required_files)))
+  }
+
+  validate <- function() {
+    api$analysis2_validate_canonical_tfrecord_pair(
+      ndmdatasets_pkg = ndmdatasets_pkg,
+      paths = paths,
+      schema_kind = "sim",
+      dataset_spec = dataset_spec,
+      n_train = as.integer(grid$nSamplesTrain[[1L]]),
+      n_inference = as.integer(dataset_spec$n_inference_batches) * 128L,
+      verify_checksum = TRUE
+    )
+  }
+  validated <- try(validate(), silent = TRUE)
+  if (inherits(validated, "try-error")) {
+    bootstrap(overwrite = TRUE)
+    validated <- validate()
+  }
+  if (!identical(validated$train$producer, producer) ||
+      !identical(validated$inference$producer, producer)) {
+    stop("Canonical simulation-fit cache has unexpected producer metadata.", call. = FALSE)
+  }
+
+  cache_entry <- get0(
+    cache_key,
+    envir = .ndm_test_sim_fit_tfrecord_cache,
+    inherits = FALSE,
+    ifnotfound = NULL
+  )
+  scaler_sha256 <- validated$train$scaler_sha256
+  if (is.null(cache_entry) ||
+      !identical(cache_entry$scaler_sha256, scaler_sha256)) {
+    scaler <- validated$train$scaler
+    if (is.null(scaler)) {
+      stop("Canonical simulation-fit manifest did not contain a scaler.", call. = FALSE)
+    }
+    cache_entry <- list(
+      scaler_sha256 = scaler_sha256,
+      outcome_sd = api$analysis2_sim_outcome_sd(
+        ndmdatasets_pkg = ndmdatasets_pkg,
+        dataset_spec = dataset_spec,
+        scaler = scaler
+      )
+    )
+    assign(cache_key, cache_entry, envir = .ndm_test_sim_fit_tfrecord_cache)
+  }
+
+  list(
+    key = cache_key,
+    paths = paths,
+    tfrecord_dir = tfrecord_dir,
+    validated = validated,
+    scaler = validated$train$scaler,
+    outcome_sd = cache_entry$outcome_sd
+  )
+}
+
 ndm_test_copy_env <- function(src, dest = globalenv()) {
   src_names <- ls(src, all.names = TRUE)
   overwritten <- intersect(src_names, ls(dest, all.names = TRUE))
@@ -179,13 +347,52 @@ ndm_test_fit_sim_case <- function(model_type,
     runtime_defaults <- utils::modifyList(runtime_defaults, runtime_globals)
   }
 
+  n_times_past <- 8L
+  n_samples_train <- as.integer(runtime_defaults$nSamplesTrain)
+  effective_sim_entry <- utils::modifyList(sim_entry, as.list(runtime_defaults$SimEntry))
+  effective_sim_entry$nSamplesTrain <- n_samples_train
+  effective_sim_entry$BaseID <- 1L
+  effective_sim_entry$ResaveThisTFRecord <- 1L
+  artifact_grid <- ndm_test_sim_fit_grid(
+    sim_entry = effective_sim_entry,
+    n_samples_train = n_samples_train,
+    n_times_lookahead = n_times_lookahead,
+    n_times_past = n_times_past,
+    scaling_outer_loops = runtime_defaults$SimScalingOuterLoops,
+    scaling_inner_loops = runtime_defaults$SimScalingInnerLoops,
+    n_batch_sim_grid_gen = runtime_defaults$nBatch_SimGridGen
+  )
+  api <- ndm:::.ndm_legacy_run_env()
+  row_values <- api$analysis2_normalize_row_values(
+    api$analysis2_row_to_list(artifact_grid[1L, , drop = FALSE])
+  )
+  dataset_spec <- api$analysis2_sim_dataset_spec("ndmdatasets", row_values)
+  canonical <- ndm_test_sim_fit_canonical_artifacts(
+    api = api,
+    grid = artifact_grid,
+    dataset_spec = dataset_spec
+  )
+
+  sim_grid <- artifact_grid[rep(1L, 2L), , drop = FALSE]
+  sim_grid$BaseID <- c(1L, 2L)
+  sim_grid$c_endogeneous[[2L]] <- as.numeric(sim_grid$c_endogeneous[[1L]]) + 0.1
+  rownames(sim_grid) <- NULL
+  runtime_defaults$TfRecordDir <- canonical$tfrecord_dir
+  runtime_defaults$SimEntry <- row_values
+  runtime_defaults$SimGrid <- sim_grid
+  runtime_defaults$nSamplesTrain <- n_samples_train
+  runtime_defaults$nSamples_max <- max(
+    n_samples_train,
+    as.integer(runtime_defaults$nSamples_max)
+  )
+  runtime_defaults$nObsInference <- as.integer(dataset_spec$n_inference_batches) * 128L
+
   runtime_env <- ndm_prepare_runtime(
     config = config,
     runtime_env = ndm_new_runtime_env(parent = globalenv()),
     runtime_globals = runtime_defaults
   )
 
-  n_times_past <- 8L
   n_times_total <- n_times_past + n_times_lookahead
   n_time_steps_sim <- (n_times_past + n_times_lookahead) * 2L
   ndm_set_runtime_globals(
@@ -218,11 +425,26 @@ ndm_test_fit_sim_case <- function(model_type,
     ndm_set_runtime_globals(runtime_env, runtime_globals_after_setup)
   }
 
-  suppressWarnings(
-    ndm_prepare_data(
-      runtime_env = runtime_env,
-      generator = "sim"
+  training_row_values <- row_values
+  training_row_values$ModelType <- model_type
+  training_row_values$ModelDepth <- as.integer(runtime_env$ModelDepth)
+  training_row_values$ModelDims <- as.integer(runtime_env$ModelDims)
+  training_row_values$nSamplesTrain <- as.integer(runtime_env$nSamplesTrain)
+  training_spec <- api$analysis2_sim_training_spec(
+    "ndmdatasets",
+    training_row_values,
+    model_type = model_type
+  )
+  ndm_set_runtime_globals(
+    runtime_env,
+    list(
+      SIM_GLOBAL_OUTCOME_SD = canonical$outcome_sd,
+      training_spec = training_spec
     )
+  )
+  ndm_prepare_data(
+    runtime_env = runtime_env,
+    generator = "sim"
   )
 
   snapshot <- ndm_test_copy_env(runtime_env)

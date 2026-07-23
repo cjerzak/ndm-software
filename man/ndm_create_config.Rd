@@ -42,7 +42,7 @@ Use `"32"` or `"64"`.}
 `TRUE`.}
 
 \item{resave_tfrecords}{Logical scalar preserved for compatibility. Public
-training APIs require \code{FALSE}; prepare canonical inputs before training.}
+training APIs require `FALSE`; prepare canonical inputs before training.}
 
 \item{gpu_mem_frac}{Optional finite GPU memory fraction in `(0, 1]`.}
 

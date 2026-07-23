@@ -10,14 +10,17 @@
 #' Prepare a local runtime for execution
 #'
 #' These wrappers load package-owned runtime components into an isolated
-#' environment and then source the selected data generator.
+#' environment and prepare the selected data workflow.
 #'
 #' @details
 #' Before building, training, predicting, or restoring artifacts from a runtime
 #' environment, initialize the backend for the target conda environment with
 #' `ndm_initialize_backend()`. `ndm_prepare_runtime()` requires the
-#' `fastmatch` package. `ndm_prepare_data(generator = "sim")` additionally
-#' requires `zoo`. The compatibility fields
+#' `fastmatch` package. Canonical real and simulation preparation requires a
+#' completed `train_<BaseID>.tfrecord` / `inference_<BaseID>.tfrecord` pair and
+#' their ndmdatasets manifests. Set `SkipTfRecords = TRUE` only for explicit
+#' in-memory preparation; the simulation compatibility path then also requires
+#' `zoo`. The compatibility fields
 #' `resave_tfrecords` and `ReSaveTfRecords` must remain `FALSE` in configs,
 #' runtime environments, and runtime globals.
 #'
@@ -26,7 +29,7 @@
 #' @param runtime_env Runtime environment that should receive the sourced
 #'   objects.
 #' @param runtime_globals Named list of additional bindings to assign before the
-#'   runtime code is sourced.
+#'   relevant runtime or data-preparation stage.
 #'
 #' @returns `ndm_prepare_runtime()` invisibly returns `runtime_env` after
 #'   loading the package-owned helper and backend code.
@@ -64,10 +67,10 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
 
 #' @rdname ndm_prepare_runtime
 #'
-#' @param generator Which data generator to source into `runtime_env`.
+#' @param generator Which data workflow to prepare in `runtime_env`.
 #'
-#' @returns `ndm_prepare_data()` invisibly returns `runtime_env` after sourcing
-#'   the requested data generator.
+#' @returns `ndm_prepare_data()` invisibly returns `runtime_env` after preparing
+#'   the requested data workflow.
 #'
 #' @examples
 #' env <- ndm_new_runtime_env()
@@ -87,21 +90,37 @@ ndm_prepare_data <- function(runtime_env,
     .ndm_requests_tfrecord_regeneration(runtime_env, list(runtime_globals))
   )
   ndm_set_runtime_globals(runtime_env, runtime_globals)
-  ndm_set_runtime_globals(runtime_env, list(ndm_data_generator = generator))
-  if (identical(generator, "sim")) {
+  skip_tfrecords <- isTRUE(get0(
+    "SkipTfRecords",
+    envir = runtime_env,
+    inherits = TRUE,
+    ifnotfound = FALSE
+  ))
+  ndm_set_runtime_globals(
+    runtime_env,
+    list(SkipTfRecords = skip_tfrecords)
+  )
+
+  if (identical(generator, "sim") && isTRUE(skip_tfrecords)) {
     .ndm_require_namespaces(
       "zoo",
-      context = "ndm_prepare_data(generator = 'sim')"
+      context = "ndm_prepare_data(generator = 'sim', SkipTfRecords = TRUE)"
     )
   }
   if (identical(generator, "multidisease")) {
     .ndm_prepare_multidisease_data(runtime_env)
+  } else if (identical(generator, "sim") && !isTRUE(skip_tfrecords)) {
+    .ndm_prepare_canonical_sim_runtime(runtime_env)
   } else {
+    if (identical(generator, "real") && !isTRUE(skip_tfrecords)) {
+      .ndm_preflight_canonical_real_runtime(runtime_env)
+    }
     ndm_source_runtime_data(
       env = runtime_env,
       generator = generator
     )
   }
+  ndm_set_runtime_globals(runtime_env, list(ndm_data_generator = generator))
 }
 
 .ndm_runtime_env_from_object <- function(x, arg = "x") {
@@ -250,8 +269,9 @@ ndm_prepare_data <- function(runtime_env,
 #' `ndm_initialize_backend()` and that `runtime_env` already contains the
 #' upstream runtime and data globals required by the selected workflow.
 #' `ndm_train()` requires `rrapply`; it also requires `zip` when checkpointing
-#' is enabled and `zoo` for multidisease training. Simulation paths inherit the
-#' `zoo` requirement documented on [ndm_prepare_runtime()].
+#' is enabled and `zoo` for multidisease training. Simulation preparation only
+#' requires `zoo` when `SkipTfRecords = TRUE` selects the in-memory compatibility
+#' path documented on [ndm_prepare_runtime()].
 #'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.
@@ -271,10 +291,10 @@ ndm_prepare_data <- function(runtime_env,
 #'   script should be sourced.
 #' @param run_loop Logical scalar indicating whether the training loop script
 #'   should be sourced.
-#' @param data_generator Which local data generator to source before calling
+#' @param data_generator Which data workflow to prepare before calling
 #'   `ndm_build_model()` inside `ndm_fit()`.
-#' @param data_globals Named list of globals assigned before sourcing the data
-#'   generator in `ndm_fit()`.
+#' @param data_globals Named list of globals assigned before data preparation in
+#'   `ndm_fit()`.
 #' @param build_globals Named list of globals assigned before building the model
 #'   in `ndm_fit()`.
 #' @param train_globals Named list of globals assigned immediately before
@@ -1305,21 +1325,11 @@ ndm_train <- function(x,
     .ndm_prepare_train_environment(runtime_env)
 
     if (isTRUE(run_define)) {
-      tryCatch(
-        .ndm_source_runtime_file(paths$train_define, runtime_env),
-        error = function(e) {
-          stop("Failed while loading package-owned training definition code: ", conditionMessage(e), call. = FALSE)
-        }
-      )
+      .ndm_source_runtime_file(paths$train_define, runtime_env)
     }
 
     if (isTRUE(run_loop)) {
-      tryCatch(
-        .ndm_source_runtime_file(paths$train_do, runtime_env),
-        error = function(e) {
-          stop("Failed while loading package-owned training loop code: ", conditionMessage(e), call. = FALSE)
-        }
-      )
+      .ndm_source_runtime_file(paths$train_do, runtime_env)
     }
   }
   if (is.null(project_root)) {

@@ -1753,6 +1753,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   #############################################
   # setup key vectorized functions
   #############################################
+  .ndm_select_model_targets <- utils::getFromNamespace(
+    ".ndm_select_model_targets",
+    "ndm"
+  )
   for(prior_sampling in unique(c(DoPriorSamplingAutoDiff,F))){
     GetPred_inference <- switch_filter_jit( jax$vmap(function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed){
       GetPred(ModelList, x, state, inference=T, PriorList=PriorList, PolicyList=PolicyList, GetPredSaveAtInfo=GetPredSaveAtInfo, seed=seed) },
@@ -1772,6 +1776,15 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     getLoss_train <- function(ModelList, x, y, y_mask, 
                               i, state, PriorList, PolicyList, 
                               GetPredSaveAtInfo, seed){
+        model_targets <- .ndm_select_model_targets(
+          y = y,
+          y_mask = y_mask,
+          n_outcomes = nOutcomes,
+          jnp = jnp
+        )
+        loss_y <- model_targets$y
+        loss_y_mask <- model_targets$y_mask
+
         GetPred_output <- GetPred_train(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed)
         state <- GetPred_output[[2]]; GetPred_output <- GetPred_output[[1]]
         {
@@ -1783,10 +1796,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           student_t_loss <- ndm_student_t_masked_nll(
             jax = jax,
             jnp = jnp,
-            y = y,
+            y = loss_y,
             location = GetPred_output$y_mu,
             scale = GetPred_output$y_sigma,
-            mask = y_mask,
+            mask = loss_y_mask,
             df = 4.,
             scale_floor = 1e-3
           )
@@ -1807,9 +1820,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             as.numeric(neuralode_kl_weight),
             dtype = GetPred_output$y_mu$dtype
           ) * (local_kl + persistent_kl)
-          observation_mask <- y_mask$astype(GetPred_output$y_mu$dtype)
+          observation_mask <- loss_y_mask$astype(GetPred_output$y_mu$dtype)
           mean_squared_error <- jnp$sum(
-            jnp$square(GetPred_output$y_mu - y) * observation_mask
+            jnp$square(GetPred_output$y_mu - loss_y) * observation_mask
           ) / jnp$maximum(
             jnp$sum(observation_mask),
             jnp$array(1., dtype = GetPred_output$y_mu$dtype)

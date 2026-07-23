@@ -836,6 +836,10 @@ analysis2_call <- function(pkg, name, ...) {
   do.call(getExportedValue(pkg, name), list(...))
 }
 
+analysis2_ndm_internal <- function(name) {
+  utils::getFromNamespace(name, analysis2_require_ndm())
+}
+
 analysis2_import_tensorflow <- function(ndm_pkg = analysis2_require_ndm(),
                                         float_type = "32") {
   backend <- analysis2_call(
@@ -1851,13 +1855,7 @@ analysis2_prepare_real_state <- function(ndmdatasets_pkg,
 }
 
 analysis2_batch_to_runtime_jax <- function(x, runtime_env) {
-  if (is.list(x)) {
-    return(lapply(x, analysis2_batch_to_runtime_jax, runtime_env = runtime_env))
-  }
-  if (inherits(x, "python.builtin.object")) {
-    x <- reticulate::py_to_r(x)
-  }
-  runtime_env$jnp$array(x)
+  analysis2_ndm_internal(".ndm_batch_to_runtime_jax")(x, runtime_env)
 }
 
 analysis2_real_get_batch_factory <- function(ndmdatasets_pkg,
@@ -2175,77 +2173,33 @@ analysis2_sim_outcome_sd <- function(ndmdatasets_pkg,
                                      scaler,
                                      n_batch = 32L,
                                      n_outer = 4L) {
-  values <- c()
-  counter <- 0L
-  for (i in seq_len(n_outer)) {
-    for (j in seq_len(n_batch)) {
-      counter <- counter + 1L
-      example <- analysis2_call(
-        ndmdatasets_pkg,
-        "ndm_sim_make_example",
-        dataset_spec = dataset_spec,
-        scaler = scaler,
-        seed = 6000L + counter
-      )
-      values <- c(values, as.numeric(example$YTrue[, 1L]))
-    }
-  }
-  stats::sd(values, na.rm = TRUE)
+  analysis2_ndm_internal(".ndm_sim_outcome_sd")(
+    dataset_spec = dataset_spec,
+    scaler = scaler,
+    n_batch = n_batch,
+    n_outer = n_outer,
+    dataset_call = function(name, ...) analysis2_call(ndmdatasets_pkg, name, ...)
+  )
 }
 
 analysis2_sim_get_batch_factory <- function(ndmdatasets_pkg,
                                             dataset_spec,
                                             scaler,
                                             runtime_env) {
-  function(nBatch = NULL,
-           training = TRUE,
-           openBrowser = FALSE,
-           INPUT_REF_DAT = NULL,
-           finalGenLocID = NULL,
-           finalGenTimeID = NULL,
-           nTimes = dataset_spec$n_time_steps %||% ((dataset_spec$context_length + dataset_spec$lookahead) * 4L),
-           nTimesLook = dataset_spec$lookahead,
-           PolicyList = list(ComputeScenario = FALSE, Scenario = NULL)) {
-    if (isTRUE(openBrowser)) {
-      browser()
-    }
-    if (is.null(nBatch) || is.na(nBatch) || nBatch <= 0L) {
-      stop("`nBatch` must be a positive integer.", call. = FALSE)
-    }
-
-    local_spec <- dataset_spec
-    local_spec$n_time_steps <- as.integer(nTimes)
-    local_spec$lookahead <- as.integer(nTimesLook)
-
-    compute_scenario <- isTRUE(PolicyList$ComputeScenario)
-    policy_scenario <- PolicyList$Scenario %||% numeric(local_spec$n_time_steps)
-
-    examples <- lapply(seq_len(nBatch), function(i) {
-      analysis2_call(
-        ndmdatasets_pkg,
-        "ndm_sim_make_example",
-        dataset_spec = local_spec,
-        scaler = scaler,
-        seed = 5000L + i,
-        compute_scenario = compute_scenario,
-        policy_scenario = policy_scenario
-      )
-    })
-
-    stacked <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_stack_batches", examples)
-    analysis2_batch_to_runtime_jax(stacked, runtime_env = runtime_env)
-  }
-}
-
-analysis2_tfrecord_paths <- function(output_dir, base_id) {
-  list(
-    train_file = file.path(output_dir, sprintf("train_%s.tfrecord", base_id)),
-    inference_file = file.path(output_dir, sprintf("inference_%s.tfrecord", base_id))
+  analysis2_ndm_internal(".ndm_sim_get_batch_factory")(
+    dataset_spec = dataset_spec,
+    scaler = scaler,
+    runtime_env = runtime_env,
+    dataset_call = function(name, ...) analysis2_call(ndmdatasets_pkg, name, ...)
   )
 }
 
+analysis2_tfrecord_paths <- function(output_dir, base_id) {
+  analysis2_ndm_internal(".ndm_canonical_tfrecord_paths")(output_dir, base_id)
+}
+
 analysis2_manifest_path <- function(file) {
-  paste0(file, ".manifest.rds")
+  analysis2_ndm_internal(".ndm_canonical_manifest_path")(file)
 }
 
 analysis2_has_canonical_tfrecords <- function(paths) {
@@ -2398,53 +2352,16 @@ analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg,
                                                        n_inference,
                                                        source_sha256 = NULL,
                                                        verify_checksum = TRUE) {
-  train_manifest <- analysis2_call(
-    ndmdatasets_pkg,
-    "ndm_datasets_validate_tfrecord_artifact",
-    file = paths$train_file,
-    schema = schema_kind,
-    expected_dataset_spec = dataset_spec,
-    expected_split = "train",
-    expected_seed = 0L,
-    verify_checksum = isTRUE(verify_checksum),
-    verify_readable = FALSE
-  )
-  if (as.numeric(train_manifest$n_examples) < as.numeric(n_train)) {
-    stop(
-      "Canonical training TFRecord has ", train_manifest$n_examples,
-      " examples; the selected run requires at least ", as.integer(n_train), ".",
-      call. = FALSE
-    )
-  }
-  inference_manifest <- analysis2_call(
-    ndmdatasets_pkg,
-    "ndm_datasets_validate_tfrecord_artifact",
-    file = paths$inference_file,
-    schema = schema_kind,
-    expected_n_examples = as.integer(n_inference),
-    expected_dataset_spec = dataset_spec,
-    expected_split = "inference",
-    expected_seed = 0L,
-    verify_checksum = isTRUE(verify_checksum),
-    verify_readable = FALSE
-  )
-  if (!identical(train_manifest$scaler_sha256, inference_manifest$scaler_sha256)) {
-    stop("Canonical train and inference TFRecords were built with different scalers.", call. = FALSE)
-  }
-  if (!is.null(source_sha256)) {
-    train_source <- train_manifest$metadata$source_sha256 %||% NULL
-    inference_source <- inference_manifest$metadata$source_sha256 %||% NULL
-    if (!identical(train_source, source_sha256) ||
-        !identical(inference_source, source_sha256)) {
-      stop("Canonical real TFRecords were built from different source tables.", call. = FALSE)
-    }
-  }
-  invisible(list(
+  analysis2_ndm_internal(".ndm_validate_canonical_tfrecord_pair")(
     paths = paths,
-    train = train_manifest,
-    inference = inference_manifest,
-    verify_checksum = isTRUE(verify_checksum)
-  ))
+    schema_kind = schema_kind,
+    dataset_spec = dataset_spec,
+    n_train = n_train,
+    n_inference = n_inference,
+    source_sha256 = source_sha256,
+    verify_checksum = verify_checksum,
+    dataset_call = function(name, ...) analysis2_call(ndmdatasets_pkg, name, ...)
+  )
 }
 
 analysis2_preflight_expected_tfrecords <- function(mode,
@@ -2517,54 +2434,23 @@ analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
                                                  shuffle_train = FALSE,
                                                  run_seed = NULL,
                                                  verify_checksum = TRUE) {
-  tf <- runtime_env$tf %||% analysis2_import_tensorflow()
-  max_train_examples <- get0("nSamplesTrain", envir = runtime_env, inherits = TRUE, ifnotfound = NULL)
-  max_inference_examples <- get0("nObsInference", envir = runtime_env, inherits = TRUE, ifnotfound = NULL)
-  train_dataset <- analysis2_call(
-    ndmdatasets_pkg,
-    "ndm_datasets_read_tfrecord_dataset",
-    file = train_file,
+  analysis2_ndm_internal(".ndm_attach_canonical_tfrecords")(
+    runtime_env = runtime_env,
+    train_file = train_file,
+    inference_file = inference_file,
+    schema_kind = schema_kind,
     batch_size = batch_size,
-    schema = schema_kind,
-    max_examples = max_train_examples,
-    shuffle = isTRUE(shuffle_train),
-    shuffle_seed = if (is.null(run_seed)) NULL else analysis2_as_int(run_seed),
-    reshuffle_each_iteration = isTRUE(shuffle_train),
-    verify_checksum = isTRUE(verify_checksum),
-    tensorflow = tf
+    shuffle_train = shuffle_train,
+    reshuffle_train = shuffle_train,
+    run_seed = if (is.null(run_seed)) NULL else analysis2_as_int(run_seed),
+    verify_checksum = verify_checksum,
+    tensorflow = runtime_env$tf %||% analysis2_import_tensorflow(),
+    dataset_call = function(name, ...) analysis2_call(ndmdatasets_pkg, name, ...)
   )
-
-  inference_dataset <- analysis2_call(
-    ndmdatasets_pkg,
-    "ndm_datasets_read_tfrecord_dataset",
-    file = inference_file,
-    batch_size = batch_size,
-    schema = schema_kind,
-    max_examples = max_inference_examples,
-    shuffle = FALSE,
-    shuffle_seed = NULL,
-    reshuffle_each_iteration = FALSE,
-    verify_checksum = isTRUE(verify_checksum),
-    tensorflow = tf
-  )
-
-  assign("TFDataset_train", train_dataset, envir = runtime_env)
-  assign("TFDatasetIterator_train", reticulate::as_iterator(train_dataset), envir = runtime_env)
-  assign("TFDataset_inference", inference_dataset, envir = runtime_env)
-  assign("TFDatasetIterator_inference", reticulate::as_iterator(inference_dataset), envir = runtime_env)
-
-  invisible(runtime_env)
 }
 
 analysis2_seed_runtime_batch <- function(runtime_env, batch_l) {
-  assign("batch_l", batch_l, envir = runtime_env)
-  assign("batch_l_cal", batch_l, envir = runtime_env)
-  assign("jax_batchx", batch_l$XPred, envir = runtime_env)
-  assign("jax_batchy", batch_l$YTrue, envir = runtime_env)
-  if ("XPred" %in% names(batch_l)) {
-    assign("nCovars_real", batch_l$XPred$shape[[3]], envir = runtime_env)
-  }
-  invisible(runtime_env)
+  analysis2_ndm_internal(".ndm_seed_runtime_batch")(runtime_env, batch_l)
 }
 
 analysis2_solver_profile <- function(runtime_env, profile = "default") {

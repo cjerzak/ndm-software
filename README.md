@@ -178,8 +178,8 @@ For full execution rather than dry runs, the package also exposes
 `ndm_prepare_runtime()`, `ndm_prepare_data()`, `ndm_build_model()`,
 `ndm_train()`, `ndm_predict()`, and `ndm_fit()`. Those workflows need backend
 setup plus runtime globals and data inputs beyond the lightweight tutorial
-above. `ndm_prepare_runtime()` requires `fastmatch`; simulation data helpers
-also require `zoo`; training and artifact restore paths use
+above. `ndm_prepare_runtime()` requires `fastmatch`; the simulation in-memory
+compatibility path (`SkipTfRecords = TRUE`) also requires `zoo`; training and artifact restore paths use
 `rrapply`, checkpointed training uses `zip`, and multidisease training also
 uses `zoo`.
 

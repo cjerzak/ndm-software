@@ -48,8 +48,8 @@ manifest. Required for publication; dry runs may omit it.}
 
 \item{parallel_workers}{Positive integer number of forked BaseID workers on
 Linux. Inputs are prepared before forking. macOS and Windows use the
-deterministic serial path because TensorFlow/JAX runtimes are not fork-safe
-there.}
+deterministic serial path because TensorFlow/JAX runtimes are not
+fork-safe there.}
 
 \item{overwrite}{Logical scalar controlling whether existing canonical
 TFRecords should be regenerated.}

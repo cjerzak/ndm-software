@@ -278,6 +278,163 @@ test_that("prediction and loss surface missing runtime bindings clearly", {
   )
 })
 
+test_that("ndm_train preserves runtime training condition identity", {
+  signaled <- new.env(parent = emptyenv())
+  stage_condition <- function(stage) {
+    structure(
+      list(
+        message = paste(stage, "sentinel"),
+        call = NULL,
+        stage = stage,
+        token = paste0("token-", stage)
+      ),
+      class = c(paste0("ndm_test_", stage, "_error"), "error", "condition")
+    )
+  }
+
+  local_mocked_bindings(
+    .ndm_source_runtime_file = function(path, env) {
+      stage <- if (grepl("TrainDefine", path, fixed = TRUE)) "define" else "loop"
+      signaled[[stage]] <- stage_condition(stage)
+      stop(signaled[[stage]])
+    },
+    .package = "ndm"
+  )
+
+  define_error <- tryCatch(
+    ndm_train(ndm_test_runtime_env(), run_define = TRUE, run_loop = FALSE),
+    error = identity
+  )
+  loop_error <- tryCatch(
+    ndm_train(ndm_test_runtime_env(), run_define = FALSE, run_loop = TRUE),
+    error = identity
+  )
+
+  expect_identical(define_error, signaled$define)
+  expect_identical(loop_error, signaled$loop)
+  expect_s3_class(define_error, "ndm_test_define_error")
+  expect_s3_class(loop_error, "ndm_test_loop_error")
+  expect_identical(conditionMessage(define_error), "define sentinel")
+  expect_identical(conditionMessage(loop_error), "loop sentinel")
+})
+
+test_that("simulation data preparation uses the canonical runtime path", {
+  env <- ndm_new_runtime_env()
+  calls <- character()
+
+  local_mocked_bindings(
+    .ndm_prepare_canonical_sim_runtime = function(runtime_env, ...) {
+      calls <<- c(calls, "canonical_sim")
+      invisible(list(runtime_env = runtime_env))
+    },
+    ndm_source_runtime_data = function(...) {
+      calls <<- c(calls, "legacy_source")
+      invisible(env)
+    },
+    .package = "ndm"
+  )
+
+  ndm_prepare_data(env, generator = "sim")
+
+  expect_identical(calls, "canonical_sim")
+  expect_identical(env$ndm_data_generator, "sim")
+})
+
+test_that("inherited SkipTfRecords selects and reaches compatibility sources", {
+  for (generator in c("real", "sim")) {
+    parent <- new.env(parent = globalenv())
+    parent$SkipTfRecords <- TRUE
+    env <- ndm_new_runtime_env(parent = parent)
+    calls <- character()
+    observed_skip <- NULL
+
+    local_mocked_bindings(
+      .ndm_require_namespaces = function(...) invisible(TRUE),
+      .ndm_prepare_canonical_sim_runtime = function(...) {
+        calls <<- c(calls, "canonical_sim")
+        invisible(env)
+      },
+      .ndm_preflight_canonical_real_runtime = function(...) {
+        calls <<- c(calls, "canonical_real_preflight")
+        invisible(env)
+      },
+      ndm_source_runtime_data = function(env, generator, ...) {
+        calls <<- c(calls, paste0("compatibility_", generator))
+        observed_skip <<- get0(
+          "SkipTfRecords",
+          envir = env,
+          inherits = FALSE,
+          ifnotfound = NULL
+        )
+        invisible(env)
+      },
+      .package = "ndm"
+    )
+
+    ndm_prepare_data(env, generator = generator)
+
+    expect_identical(calls, paste0("compatibility_", generator), info = generator)
+    expect_identical(observed_skip, TRUE, info = generator)
+    expect_identical(env$SkipTfRecords, TRUE, info = generator)
+    expect_identical(env$ndm_data_generator, generator, info = generator)
+  }
+})
+
+test_that("real canonical preflight completes before compatibility source", {
+  env <- ndm_new_runtime_env()
+  calls <- character()
+
+  local_mocked_bindings(
+    .ndm_preflight_canonical_real_runtime = function(...) {
+      calls <<- c(calls, "preflight")
+      invisible(env)
+    },
+    ndm_source_runtime_data = function(...) {
+      calls <<- c(calls, "source")
+      invisible(env)
+    },
+    .package = "ndm"
+  )
+
+  ndm_prepare_data(env, generator = "real")
+
+  expect_identical(calls, c("preflight", "source"))
+  expect_identical(env$SkipTfRecords, FALSE)
+  expect_identical(env$ndm_data_generator, "real")
+})
+
+test_that("data preparation stamps provenance only after successful preflight", {
+  for (generator in c("sim", "real")) {
+    env <- ndm_new_runtime_env()
+    source_called <- FALSE
+    sentinel <- structure(
+      list(message = paste(generator, "canonical preflight failed"), call = NULL),
+      class = c("ndm_test_preflight_error", "error", "condition")
+    )
+
+    local_mocked_bindings(
+      .ndm_prepare_canonical_sim_runtime = function(...) stop(sentinel),
+      .ndm_preflight_canonical_real_runtime = function(...) stop(sentinel),
+      ndm_source_runtime_data = function(...) {
+        source_called <<- TRUE
+        invisible(env)
+      },
+      .package = "ndm"
+    )
+
+    observed <- tryCatch(
+      ndm_prepare_data(env, generator = generator),
+      error = identity
+    )
+    expect_identical(observed, sentinel, info = generator)
+    expect_false(source_called, info = generator)
+    expect_false(
+      exists("ndm_data_generator", envir = env, inherits = FALSE),
+      info = generator
+    )
+  }
+})
+
 test_that("ndm_fit threads runtime, data, build, and train stages for real workflows", {
   calls <- character()
   seen <- new.env(parent = emptyenv())

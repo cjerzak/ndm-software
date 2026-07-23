@@ -463,63 +463,44 @@
   
   # read canonical tfrecords
   { 
-    skip_tfrecords <- exists("SkipTfRecords", inherits = FALSE) && isTRUE(SkipTfRecords)
+    skip_tfrecords <- isTRUE(get0(
+      "SkipTfRecords",
+      envir = environment(),
+      inherits = TRUE,
+      ifnotfound = FALSE
+    ))
 
     if(skip_tfrecords){
       print2("Skipping TFRecord setup; simulation batches will stay in-memory.")
     }
 
-    if(!skip_tfrecords){
-    # warning("Forcing small sample size in tfrecord for testing!"); nSamplesTrain <- sample(c(10,100,1000),1);Sys.sleep(10)
-    tf <- reticulate::import("tensorflow")
-    RESHUFFLE_EACH_ITERATION <- isTRUE(get0("ReshuffleEachIteration", inherits = TRUE, ifnotfound = FALSE))
-    
-    parse_single_example_fxn <- function(example_proto){
-      # Define the features to be extracted.
-      parseText <- paste(sapply(names(batch_l),function(nl){
-        sprintf("
-        '%s' = tf$io$FixedLenFeature(list(), tf$string),
-        '%s_shape' = tf$io$FixedLenFeature(list(), tf$string)
-        ",nl,nl) }),collapse = ",")
-      eval(parse(text = sprintf("feature_description <- list(
-                                %s )", parseText )))
-      
-      # Parse the input `tf.train.Example` proto using the dictionary above.
-      parseText <- paste(sapply(names(batch_l),function(nl){
-        sprintf("
-        '%s' = tf$cast(tf$reshape(tf$io$parse_tensor(example[['%s']], out_type = tf$float32), 
-                                  tf$io$parse_tensor(example[['%s_shape']], out_type = tf$int32)), 
-                                  dtype = %s)
-        ",nl, nl, nl, DefaultDtypeTf) }),collapse = ",")
-      example <- tf$io$parse_single_example(example_proto, feature_description)
-      eval(parse(text = sprintf("data <- list(%s)",parseText)))
-      return(data)
-    }
-    read_from_tfrecord <- function(file, batchSize, TfRecords_BufferScaler = 10L, nTake = NULL){
-      raw_dataset <- tf$data$TFRecordDataset( file )
-      parsed_dataset <- raw_dataset$map( parse_single_example_fxn )
-      if(!is.null(nTake)){ parsed_dataset <- parsed_dataset$take(nTake) } # take only first nTake elements 
-      parsed_dataset <- parsed_dataset$shuffle(buffer_size = tf$constant(as.integer(TfRecords_BufferScaler*batchSize), 
-                                                                         dtype=tf$int64),
-                                               reshuffle_each_iteration = RESHUFFLE_EACH_ITERATION)
-      parsed_dataset <- parsed_dataset$batch( batchSize )
-      return( parsed_dataset )
-    }
-  
     nBatch_SimGridGen <- if(exists("nBatch_SimGridGen", inherits = FALSE)) ai(nBatch_SimGridGen) else 256L
-    tfrecord_file_train <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "train", SimEntry$BaseID) 
-    tfrecord_file_inference <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "inference", SimEntry$BaseID) 
     nMonteEval <- if(exists("nMonteEval", inherits = FALSE)) ai(nMonteEval) else ceiling(1000/nBatch_SimGridGen)
-    nTimesLookValidation <- nTimesLookValidationInference
-    
-    TFDatasetIterator_train <- reticulate::as_iterator(
-          TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
-                                                batchSize = nBatch, 
-                                                nTake = ai(SimEntry$nSamplesTrain) ) )
-    TFDatasetIterator_inference <- reticulate::as_iterator( 
-      TFDataset_inference <- read_from_tfrecord(file = tfrecord_file_inference, 
-                                                batchSize = nBatch)
+    n_times_look_validation <- get0(
+      "nTimesLookValidationInference",
+      inherits = TRUE,
+      ifnotfound = get0("nTimesLookahead", inherits = TRUE, ifnotfound = NULL)
     )
+    if(!is.null(n_times_look_validation)){
+      nTimesLookValidation <- ai(n_times_look_validation)
+    }
+
+    if(!skip_tfrecords){
+      canonical_paths <- utils::getFromNamespace(".ndm_canonical_tfrecord_paths", "ndm")(
+        TfRecordDir,
+        SimEntry$BaseID
+      )
+      utils::getFromNamespace(".ndm_attach_canonical_tfrecords", "ndm")(
+        runtime_env = environment(),
+        train_file = canonical_paths$train_file,
+        inference_file = canonical_paths$inference_file,
+        schema_kind = "sim",
+        batch_size = ai(nBatch),
+        shuffle_train = TRUE,
+        reshuffle_train = isTRUE(get0("ReshuffleEachIteration", inherits = TRUE, ifnotfound = FALSE)),
+        run_seed = get0("SEED_", inherits = TRUE, ifnotfound = NULL),
+        max_train_examples = ai(SimEntry$nSamplesTrain)
+      )
     }
   }
 }

@@ -20,7 +20,7 @@ reset_train_iterator <- function(){
   TFDatasetIterator_train
 }
 batch_has_expected_shape <- function(dat_, expected_batch_size){
-  if("try-error" %in% class(dat_) || is.null(dat_) || length(dat_) == 0L){
+  if(is.null(dat_) || length(dat_) == 0L){
     return(FALSE)
   }
   batch_dims <- try(vapply(dat_, function(l_){ as.integer(np$array(l_$shape)[[1]]) }, integer(1)), TRUE)
@@ -32,14 +32,24 @@ batch_has_expected_shape <- function(dat_, expected_batch_size){
 }
 next_train_batch <- function(max_attempts = 100L){
   for(attempt_i in seq_len(max_attempts)){
-    dat_ <- try(reticulate::iter_next(TFDatasetIterator_train), TRUE)
+    dat_ <- reticulate::iter_next(TFDatasetIterator_train)
     if(batch_has_expected_shape(dat_, nBatch)){
       return(TFConst2JAXArray(dat_))
     }
-    print2(sprintf("Resetting train iterator in TrainDo.R [attempt %s]", attempt_i))
-    reset_train_iterator()
+    if(attempt_i < max_attempts){
+      print2(sprintf("Resetting train iterator in TrainDo.R [attempt %s]", attempt_i))
+      reset_train_iterator()
+    }
   }
-  stop("Too many malformed batches in TrainDo.R")
+  stop(
+    sprintf(
+      "Could not obtain a full training batch of %s examples after %s attempts (%s retries) in TrainDo.R.",
+      nBatch,
+      max_attempts,
+      max(0L, max_attempts - 1L)
+    ),
+    call. = FALSE
+  )
 }
 save_eqx_enabled <- isTRUE(get0("SaveEqx", ifnotfound = TRUE))
 recover_checkpoint_at <- get0("RecoverCheckpointAt", ifnotfound = NULL)

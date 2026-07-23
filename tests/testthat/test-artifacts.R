@@ -93,7 +93,8 @@ test_that("prepare helpers stamp provenance on runtime environments", {
   )
   ndm_prepare_data(
     runtime_env = env,
-    generator = "sim"
+    generator = "sim",
+    runtime_globals = list(SkipTfRecords = TRUE)
   )
 
   expect_identical(env$ndm_config, cfg)

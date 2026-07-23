@@ -1499,60 +1499,34 @@
             SIM_GLOBAL_SCALE_VAR)
     }
     {
-        skip_tfrecords <- exists("SkipTfRecords", inherits = FALSE) &&
-            isTRUE(SkipTfRecords)
+        skip_tfrecords <- isTRUE(get0("SkipTfRecords", envir = environment(),
+            inherits = TRUE, ifnotfound = FALSE))
         if (skip_tfrecords) {
             print2("Skipping TFRecord setup; simulation batches will stay in-memory.")
         }
+        nBatch_SimGridGen <- if (exists("nBatch_SimGridGen",
+            inherits = FALSE))
+            ai(nBatch_SimGridGen)
+        else 256L
+        nMonteEval <- if (exists("nMonteEval", inherits = FALSE))
+            ai(nMonteEval)
+        else ceiling(1000/nBatch_SimGridGen)
+        n_times_look_validation <- get0("nTimesLookValidationInference",
+            inherits = TRUE, ifnotfound = get0("nTimesLookahead",
+                inherits = TRUE, ifnotfound = NULL))
+        if (!is.null(n_times_look_validation)) {
+            nTimesLookValidation <- ai(n_times_look_validation)
+        }
         if (!skip_tfrecords) {
-            tf <- reticulate::import("tensorflow")
-            RESHUFFLE_EACH_ITERATION <- isTRUE(get0("ReshuffleEachIteration",
-                inherits = TRUE, ifnotfound = FALSE))
-            parse_single_example_fxn <- function(example_proto) {
-                parseText <- paste(sapply(names(batch_l), function(nl) {
-                  sprintf("\n        '%s' = tf$io$FixedLenFeature(list(), tf$string),\n        '%s_shape' = tf$io$FixedLenFeature(list(), tf$string)\n        ",
-                    nl, nl)
-                }), collapse = ",")
-                eval(parse(text = sprintf("feature_description <- list(\n                                %s )",
-                  parseText)))
-                parseText <- paste(sapply(names(batch_l), function(nl) {
-                  sprintf("\n        '%s' = tf$cast(tf$reshape(tf$io$parse_tensor(example[['%s']], out_type = tf$float32), \n                                  tf$io$parse_tensor(example[['%s_shape']], out_type = tf$int32)), \n                                  dtype = %s)\n        ",
-                    nl, nl, nl, DefaultDtypeTf)
-                }), collapse = ",")
-                example <- tf$io$parse_single_example(example_proto,
-                  feature_description)
-                eval(parse(text = sprintf("data <- list(%s)",
-                  parseText)))
-                return(data)
-            }
-            read_from_tfrecord <- function(file, batchSize, TfRecords_BufferScaler = 10L,
-                nTake = NULL) {
-                raw_dataset <- tf$data$TFRecordDataset(file)
-                parsed_dataset <- raw_dataset$map(parse_single_example_fxn)
-                if (!is.null(nTake)) {
-                  parsed_dataset <- parsed_dataset$take(nTake)
-                }
-                parsed_dataset <- parsed_dataset$shuffle(buffer_size = tf$constant(as.integer(TfRecords_BufferScaler *
-                  batchSize), dtype = tf$int64), reshuffle_each_iteration = RESHUFFLE_EACH_ITERATION)
-                parsed_dataset <- parsed_dataset$batch(batchSize)
-                return(parsed_dataset)
-            }
-            nBatch_SimGridGen <- if (exists("nBatch_SimGridGen",
-                inherits = FALSE))
-                ai(nBatch_SimGridGen)
-            else 256L
-            tfrecord_file_train <- sprintf("%s/%s_%s.tfrecord",
-                TfRecordDir, "train", SimEntry$BaseID)
-            tfrecord_file_inference <- sprintf("%s/%s_%s.tfrecord",
-                TfRecordDir, "inference", SimEntry$BaseID)
-            nMonteEval <- if (exists("nMonteEval", inherits = FALSE))
-                ai(nMonteEval)
-            else ceiling(1000/nBatch_SimGridGen)
-            nTimesLookValidation <- nTimesLookValidationInference
-            TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train,
-                batchSize = nBatch, nTake = ai(SimEntry$nSamplesTrain)))
-            TFDatasetIterator_inference <- reticulate::as_iterator(TFDataset_inference <- read_from_tfrecord(file = tfrecord_file_inference,
-                batchSize = nBatch))
+            canonical_paths <- (utils::getFromNamespace(".ndm_canonical_tfrecord_paths",
+                "ndm"))(TfRecordDir, SimEntry$BaseID)
+            (utils::getFromNamespace(".ndm_attach_canonical_tfrecords",
+                "ndm"))(runtime_env = environment(), train_file = canonical_paths$train_file,
+                inference_file = canonical_paths$inference_file,
+                schema_kind = "sim", batch_size = ai(nBatch),
+                shuffle_train = TRUE, reshuffle_train = isTRUE(get0("ReshuffleEachIteration",
+                  inherits = TRUE, ifnotfound = FALSE)), run_seed = get0("SEED_",
+                  inherits = TRUE, ifnotfound = NULL), max_train_examples = ai(SimEntry$nSamplesTrain))
         }
     }
 })
@@ -1978,73 +1952,25 @@
     }
     print2("Apply infrastructure to read canonical tfrecords in DataGenerator_Real.R")
     {
-        tf <- reticulate::import("tensorflow")
-        try(tf$config$experimental$set_memory_growth(T), T)
-        RESHUFFLE_EACH_ITERATION <- F
         rm(sampled_places, sampled_times)
-        parse_single_example_fxn <- function(example_proto) {
-            feat_names <- names(batch_l)
-            fd_text <- paste(sapply(feat_names, function(nm) {
-                sprintf("'%s' = tf$io$FixedLenFeature(list(), tf$string),\n               '%s_shape' = tf$io$FixedLenFeature(list(), tf$string)",
-                  nm, nm)
-            }), collapse = ",")
-            eval(parse(text = sprintf("feature_description <- list(%s)",
-                fd_text)))
-            saved_out_types <- sapply(feat_names, function(nm) {
-                d <- try(as.character(eval(parse(text = sprintf("batch_l$%s$dtype",
-                  nm)))), silent = TRUE)
-                if (!inherits(d, "try-error")) {
-                  if (grepl("bool", d))
-                    "tf$bool"
-                  else if (grepl("int", d))
-                    "tf$int32"
-                  else "tf$float32"
-                }
-                else {
-                  if (grepl("mask", nm))
-                    "tf$bool"
-                  else "tf$float32"
-                }
-            }, USE.NAMES = TRUE)
-            cast_types <- vapply(names(saved_out_types), function(nm) {
-                out_t <- saved_out_types[[nm]]
-                if (out_t == "tf$float32")
-                  DefaultDtypeTf
-                else out_t
-            }, "", USE.NAMES = TRUE)
-            example <- tf$io$parse_single_example(example_proto,
-                feature_description)
-            parse_text <- paste(mapply(function(nm, out_t, cast_t) {
-                sprintf("\n        '%s' = tf$cast(\n                 tf$reshape(\n                   tf$io$parse_tensor(example[['%s']], out_type = %s),\n                   tf$io$parse_tensor(example[['%s_shape']], out_type = tf$int32)\n                 ),\n                 dtype = %s\n               )",
-                  nm, nm, out_t, nm, cast_t)
-            }, names(saved_out_types), unname(saved_out_types),
-                unname(cast_types)), collapse = ",")
-            eval(parse(text = sprintf("data <- list(%s)", parse_text)))
-            return(data)
+        skip_tfrecords <- isTRUE(get0("SkipTfRecords", envir = environment(),
+            inherits = TRUE, ifnotfound = FALSE))
+        if (skip_tfrecords) {
+            print2("Skipping TFRecord setup; real-data batches will stay in-memory.")
         }
-        read_from_tfrecord <- function(file, batchSize, TfRecords_BufferScaler = 10L,
-            nTake = NULL, shuffle = T) {
-            raw_dataset = tf$data$TFRecordDataset(file)
-            parsed_dataset = raw_dataset$map(parse_single_example_fxn)
-            if (!is.null(nTake)) {
-                parsed_dataset <- parsed_dataset$take(nTake)
-            }
-            if (shuffle == T) {
-                parsed_dataset <- parsed_dataset$shuffle(buffer_size = tf$constant(as.integer(TfRecords_BufferScaler *
-                  batchSize), dtype = tf$int64), reshuffle_each_iteration = RESHUFFLE_EACH_ITERATION)
-            }
-            parsed_dataset <- parsed_dataset$batch(batchSize)
-            return(parsed_dataset)
+        if (!skip_tfrecords) {
+            canonical_paths <- (utils::getFromNamespace(".ndm_canonical_tfrecord_paths",
+                "ndm"))(TfRecordDir, RealEntry$BaseID)
+            (utils::getFromNamespace(".ndm_attach_canonical_tfrecords",
+                "ndm"))(runtime_env = environment(), train_file = canonical_paths$train_file,
+                inference_file = canonical_paths$inference_file,
+                schema_kind = "real", batch_size = ai(nBatch),
+                shuffle_train = TRUE, reshuffle_train = TRUE,
+                run_seed = get0("SEED_", inherits = TRUE, ifnotfound = NULL),
+                max_train_examples = ai(RealEntry$nSamplesTrain),
+                max_inference_examples = get0("nObsInference",
+                  inherits = TRUE, ifnotfound = NULL))
         }
-        tfrecord_file_train <- sprintf("%s/%s_%s.tfrecord", TfRecordDir,
-            "train", as.character(RealEntry$BaseID))
-        tfrecord_file_inference <- sprintf("%s/%s_%s.tfrecord",
-            TfRecordDir, "inference", as.character(RealEntry$BaseID))
-        TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train,
-            batchSize = nBatch, shuffle = F, nTake = ai(RealEntry$nSamplesTrain))$shuffle(buffer_size = tf$constant(as.integer(10 *
-            nBatch), dtype = tf$int64), reshuffle_each_iteration = T))
-        TFDatasetIterator_inference <- reticulate::as_iterator(TFDataset_inference <- read_from_tfrecord(file = tfrecord_file_inference,
-            batchSize = nBatch, shuffle = F))
     }
     print2("Done with this round of SuperLModel_DataGenerator_Real.R!")
 })
@@ -3674,6 +3600,8 @@
             }
             return(return_v)
         }
+        .ndm_select_model_targets <- utils::getFromNamespace(".ndm_select_model_targets",
+            "ndm")
         for (prior_sampling in unique(c(DoPriorSamplingAutoDiff,
             F))) {
             GetPred_inference <- switch_filter_jit(jax$vmap(function(ModelList,
@@ -3696,6 +3624,10 @@
             getLoss_train <- function(ModelList, x, y, y_mask,
                 i, state, PriorList, PolicyList, GetPredSaveAtInfo,
                 seed) {
+                model_targets <- .ndm_select_model_targets(y = y,
+                  y_mask = y_mask, n_outcomes = nOutcomes, jnp = jnp)
+                loss_y <- model_targets$y
+                loss_y_mask <- model_targets$y_mask
                 GetPred_output <- GetPred_train(ModelList, x,
                   state, PriorList, PolicyList, GetPredSaveAtInfo,
                   seed)
@@ -3703,8 +3635,8 @@
                 GetPred_output <- GetPred_output[[1]]
                 {
                   student_t_loss <- ndm_student_t_masked_nll(jax = jax,
-                    jnp = jnp, y = y, location = GetPred_output$y_mu,
-                    scale = GetPred_output$y_sigma, mask = y_mask,
+                    jnp = jnp, y = loss_y, location = GetPred_output$y_mu,
+                    scale = GetPred_output$y_sigma, mask = loss_y_mask,
                     df = 4, scale_floor = 0.001)
                   likelihood_loss <- student_t_loss$loss
                   local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
@@ -3722,9 +3654,9 @@
                   weighted_kl <- jnp$array(as.numeric(neuralode_kl_weight),
                     dtype = GetPred_output$y_mu$dtype) * (local_kl +
                     persistent_kl)
-                  observation_mask <- y_mask$astype(GetPred_output$y_mu$dtype)
+                  observation_mask <- loss_y_mask$astype(GetPred_output$y_mu$dtype)
                   mean_squared_error <- jnp$sum(jnp$square(GetPred_output$y_mu -
-                    y) * observation_mask)/jnp$maximum(jnp$sum(observation_mask),
+                    loss_y) * observation_mask)/jnp$maximum(jnp$sum(observation_mask),
                     jnp$array(1, dtype = GetPred_output$y_mu$dtype))
                   weighted_mean_loss <- jnp$array(ifelse(ModelType ==
                     "NeuralODE", neuralode_mean_loss_weight,
@@ -5701,8 +5633,7 @@
     TFDatasetIterator_train <<- reticulate::as_iterator(TFDataset_train)
     TFDatasetIterator_train
 }, batch_has_expected_shape <- function(dat_, expected_batch_size) {
-    if ("try-error" %in% class(dat_) || is.null(dat_) || length(dat_) ==
-        0L) {
+    if (is.null(dat_) || length(dat_) == 0L) {
         return(FALSE)
     }
     batch_dims <- try(vapply(dat_, function(l_) {
@@ -5717,16 +5648,18 @@
         batch_size)
 }, next_train_batch <- function(max_attempts = 100L) {
     for (attempt_i in seq_len(max_attempts)) {
-        dat_ <- try(reticulate::iter_next(TFDatasetIterator_train),
-            TRUE)
+        dat_ <- reticulate::iter_next(TFDatasetIterator_train)
         if (batch_has_expected_shape(dat_, nBatch)) {
             return(TFConst2JAXArray(dat_))
         }
-        print2(sprintf("Resetting train iterator in TrainDo.R [attempt %s]",
-            attempt_i))
-        reset_train_iterator()
+        if (attempt_i < max_attempts) {
+            print2(sprintf("Resetting train iterator in TrainDo.R [attempt %s]",
+                attempt_i))
+            reset_train_iterator()
+        }
     }
-    stop("Too many malformed batches in TrainDo.R")
+    stop(sprintf("Could not obtain a full training batch of %s examples after %s attempts (%s retries) in TrainDo.R.",
+        nBatch, max_attempts, max(0L, max_attempts - 1L)), call. = FALSE)
 }, save_eqx_enabled <- isTRUE(get0("SaveEqx", ifnotfound = TRUE)),
     recover_checkpoint_at <- get0("RecoverCheckpointAt", ifnotfound = NULL),
     if (isTRUE(recover_checkpoint_at)) {
@@ -9457,6 +9390,8 @@
     "ndm_software_env"
 }, analysis2_call <- function(pkg, name, ...) {
     do.call(getExportedValue(pkg, name), list(...))
+}, analysis2_ndm_internal <- function(name) {
+    utils::getFromNamespace(name, analysis2_require_ndm())
 }, analysis2_import_tensorflow <- function(ndm_pkg = analysis2_require_ndm(),
     float_type = "32") {
     backend <- analysis2_call(ndm_pkg, "ndm_initialize_backend",
@@ -10065,13 +10000,7 @@
         data_inputs = analysis2_resolve_real_inputs(ndmdatasets_pkg,
             bundle, dataset_spec))
 }, analysis2_batch_to_runtime_jax <- function(x, runtime_env) {
-    if (is.list(x)) {
-        return(lapply(x, analysis2_batch_to_runtime_jax, runtime_env = runtime_env))
-    }
-    if (inherits(x, "python.builtin.object")) {
-        x <- reticulate::py_to_r(x)
-    }
-    runtime_env$jnp$array(x)
+    analysis2_ndm_internal(".ndm_batch_to_runtime_jax")(x, runtime_env)
 }, analysis2_real_get_batch_factory <- function(ndmdatasets_pkg,
     prepared_state, dataset_spec, runtime_env) {
     function(nBatch = NULL, training = TRUE, INPUT_REF_DAT = NULL,
@@ -10313,51 +10242,20 @@
         dataset_spec = dataset_spec, seed = seed)
 }, analysis2_sim_outcome_sd <- function(ndmdatasets_pkg, dataset_spec,
     scaler, n_batch = 32L, n_outer = 4L) {
-    values <- c()
-    counter <- 0L
-    for (i in seq_len(n_outer)) {
-        for (j in seq_len(n_batch)) {
-            counter <- counter + 1L
-            example <- analysis2_call(ndmdatasets_pkg, "ndm_sim_make_example",
-                dataset_spec = dataset_spec, scaler = scaler,
-                seed = 6000L + counter)
-            values <- c(values, as.numeric(example$YTrue[, 1L]))
-        }
-    }
-    stats::sd(values, na.rm = TRUE)
+    analysis2_ndm_internal(".ndm_sim_outcome_sd")(dataset_spec = dataset_spec,
+        scaler = scaler, n_batch = n_batch, n_outer = n_outer,
+        dataset_call = function(name, ...) analysis2_call(ndmdatasets_pkg,
+            name, ...))
 }, analysis2_sim_get_batch_factory <- function(ndmdatasets_pkg,
     dataset_spec, scaler, runtime_env) {
-    function(nBatch = NULL, training = TRUE, openBrowser = FALSE,
-        INPUT_REF_DAT = NULL, finalGenLocID = NULL, finalGenTimeID = NULL,
-        nTimes = dataset_spec$n_time_steps %||% ((dataset_spec$context_length +
-            dataset_spec$lookahead) * 4L), nTimesLook = dataset_spec$lookahead,
-        PolicyList = list(ComputeScenario = FALSE, Scenario = NULL)) {
-        if (isTRUE(openBrowser)) {
-            browser()
-        }
-        if (is.null(nBatch) || is.na(nBatch) || nBatch <= 0L) {
-            stop("`nBatch` must be a positive integer.", call. = FALSE)
-        }
-        local_spec <- dataset_spec
-        local_spec$n_time_steps <- as.integer(nTimes)
-        local_spec$lookahead <- as.integer(nTimesLook)
-        compute_scenario <- isTRUE(PolicyList$ComputeScenario)
-        policy_scenario <- PolicyList$Scenario %||% numeric(local_spec$n_time_steps)
-        examples <- lapply(seq_len(nBatch), function(i) {
-            analysis2_call(ndmdatasets_pkg, "ndm_sim_make_example",
-                dataset_spec = local_spec, scaler = scaler, seed = 5000L +
-                  i, compute_scenario = compute_scenario, policy_scenario = policy_scenario)
-        })
-        stacked <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_stack_batches",
-            examples)
-        analysis2_batch_to_runtime_jax(stacked, runtime_env = runtime_env)
-    }
+    analysis2_ndm_internal(".ndm_sim_get_batch_factory")(dataset_spec = dataset_spec,
+        scaler = scaler, runtime_env = runtime_env, dataset_call = function(name,
+            ...) analysis2_call(ndmdatasets_pkg, name, ...))
 }, analysis2_tfrecord_paths <- function(output_dir, base_id) {
-    list(train_file = file.path(output_dir, sprintf("train_%s.tfrecord",
-        base_id)), inference_file = file.path(output_dir, sprintf("inference_%s.tfrecord",
-        base_id)))
+    analysis2_ndm_internal(".ndm_canonical_tfrecord_paths")(output_dir,
+        base_id)
 }, analysis2_manifest_path <- function(file) {
-    paste0(file, ".manifest.rds")
+    analysis2_ndm_internal(".ndm_canonical_manifest_path")(file)
 }, analysis2_has_canonical_tfrecords <- function(paths) {
     all(file.exists(c(paths$train_file, paths$inference_file,
         analysis2_manifest_path(paths$train_file), analysis2_manifest_path(paths$inference_file))))
@@ -10469,37 +10367,11 @@
 }, analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg,
     paths, schema_kind, dataset_spec, n_train, n_inference, source_sha256 = NULL,
     verify_checksum = TRUE) {
-    train_manifest <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_validate_tfrecord_artifact",
-        file = paths$train_file, schema = schema_kind, expected_dataset_spec = dataset_spec,
-        expected_split = "train", expected_seed = 0L, verify_checksum = isTRUE(verify_checksum),
-        verify_readable = FALSE)
-    if (as.numeric(train_manifest$n_examples) < as.numeric(n_train)) {
-        stop("Canonical training TFRecord has ", train_manifest$n_examples,
-            " examples; the selected run requires at least ",
-            as.integer(n_train), ".", call. = FALSE)
-    }
-    inference_manifest <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_validate_tfrecord_artifact",
-        file = paths$inference_file, schema = schema_kind, expected_n_examples = as.integer(n_inference),
-        expected_dataset_spec = dataset_spec, expected_split = "inference",
-        expected_seed = 0L, verify_checksum = isTRUE(verify_checksum),
-        verify_readable = FALSE)
-    if (!identical(train_manifest$scaler_sha256, inference_manifest$scaler_sha256)) {
-        stop("Canonical train and inference TFRecords were built with different scalers.",
-            call. = FALSE)
-    }
-    if (!is.null(source_sha256)) {
-        train_source <- train_manifest$metadata$source_sha256 %||%
-            NULL
-        inference_source <- inference_manifest$metadata$source_sha256 %||%
-            NULL
-        if (!identical(train_source, source_sha256) || !identical(inference_source,
-            source_sha256)) {
-            stop("Canonical real TFRecords were built from different source tables.",
-                call. = FALSE)
-        }
-    }
-    invisible(list(paths = paths, train = train_manifest, inference = inference_manifest,
-        verify_checksum = isTRUE(verify_checksum)))
+    analysis2_ndm_internal(".ndm_validate_canonical_tfrecord_pair")(paths = paths,
+        schema_kind = schema_kind, dataset_spec = dataset_spec,
+        n_train = n_train, n_inference = n_inference, source_sha256 = source_sha256,
+        verify_checksum = verify_checksum, dataset_call = function(name,
+            ...) analysis2_call(ndmdatasets_pkg, name, ...))
 }, analysis2_preflight_expected_tfrecords <- function(mode, write_plan,
     grid, tfrecord_dir, ndmdatasets_pkg, outcome_metric = "inc_death",
     data_subset = "high_income", real_bundle = NULL) {
@@ -10548,39 +10420,18 @@
 }, analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
     runtime_env, train_file, inference_file, schema_kind, batch_size,
     shuffle_train = FALSE, run_seed = NULL, verify_checksum = TRUE) {
-    tf <- runtime_env$tf %||% analysis2_import_tensorflow()
-    max_train_examples <- get0("nSamplesTrain", envir = runtime_env,
-        inherits = TRUE, ifnotfound = NULL)
-    max_inference_examples <- get0("nObsInference", envir = runtime_env,
-        inherits = TRUE, ifnotfound = NULL)
-    train_dataset <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_read_tfrecord_dataset",
-        file = train_file, batch_size = batch_size, schema = schema_kind,
-        max_examples = max_train_examples, shuffle = isTRUE(shuffle_train),
-        shuffle_seed = if (is.null(run_seed))
+    analysis2_ndm_internal(".ndm_attach_canonical_tfrecords")(runtime_env = runtime_env,
+        train_file = train_file, inference_file = inference_file,
+        schema_kind = schema_kind, batch_size = batch_size, shuffle_train = shuffle_train,
+        reshuffle_train = shuffle_train, run_seed = if (is.null(run_seed))
             NULL
-        else analysis2_as_int(run_seed), reshuffle_each_iteration = isTRUE(shuffle_train),
-        verify_checksum = isTRUE(verify_checksum), tensorflow = tf)
-    inference_dataset <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_read_tfrecord_dataset",
-        file = inference_file, batch_size = batch_size, schema = schema_kind,
-        max_examples = max_inference_examples, shuffle = FALSE,
-        shuffle_seed = NULL, reshuffle_each_iteration = FALSE,
-        verify_checksum = isTRUE(verify_checksum), tensorflow = tf)
-    assign("TFDataset_train", train_dataset, envir = runtime_env)
-    assign("TFDatasetIterator_train", reticulate::as_iterator(train_dataset),
-        envir = runtime_env)
-    assign("TFDataset_inference", inference_dataset, envir = runtime_env)
-    assign("TFDatasetIterator_inference", reticulate::as_iterator(inference_dataset),
-        envir = runtime_env)
-    invisible(runtime_env)
+        else analysis2_as_int(run_seed), verify_checksum = verify_checksum,
+        tensorflow = runtime_env$tf %||% analysis2_import_tensorflow(),
+        dataset_call = function(name, ...) analysis2_call(ndmdatasets_pkg,
+            name, ...))
 }, analysis2_seed_runtime_batch <- function(runtime_env, batch_l) {
-    assign("batch_l", batch_l, envir = runtime_env)
-    assign("batch_l_cal", batch_l, envir = runtime_env)
-    assign("jax_batchx", batch_l$XPred, envir = runtime_env)
-    assign("jax_batchy", batch_l$YTrue, envir = runtime_env)
-    if ("XPred" %in% names(batch_l)) {
-        assign("nCovars_real", batch_l$XPred$shape[[3]], envir = runtime_env)
-    }
-    invisible(runtime_env)
+    analysis2_ndm_internal(".ndm_seed_runtime_batch")(runtime_env,
+        batch_l)
 }, analysis2_solver_profile <- function(runtime_env, profile = "default") {
     profile <- match.arg(tolower(profile), c("default", "loose",
         "tight", "alternative"))

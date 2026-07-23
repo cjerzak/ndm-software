@@ -1,3 +1,28 @@
+test_that("canonical sim fixtures preserve legacy scaling workload", {
+  expect_identical(
+    ndm_test_sim_fit_scaling_batches(1L, 2L, 8L),
+    1L
+  )
+  expect_identical(
+    ndm_test_sim_fit_scaling_batches(2L, 12L, 8L),
+    12L
+  )
+  expect_identical(
+    ndm_test_sim_fit_scaling_batches(1L, 1L, 17L),
+    2L
+  )
+
+  grid <- ndm_test_sim_fit_grid(
+    sim_entry = list(),
+    n_samples_train = 4L,
+    n_times_lookahead = 4L,
+    scaling_outer_loops = 2L,
+    scaling_inner_loops = 12L,
+    n_batch_sim_grid_gen = 8L
+  )
+  expect_identical(grid$scaling_batches, 12L)
+})
+
 test_that("simulated pandemic fits improve across model families and endogeneity levels", {
   ndm_skip_if_no_sim_backend()
 

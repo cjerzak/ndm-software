@@ -521,102 +521,35 @@
 
   print2("Apply infrastructure to read canonical tfrecords in DataGenerator_Real.R")
   { 
-      # warning("Forcing small sample size in tfrecord for testing!"); nSamplesTrain <- sample(c(10,100,1000),1);Sys.sleep(10)
-      tf <- reticulate::import("tensorflow")
-      try(tf$config$experimental$set_memory_growth(T),T)
-      RESHUFFLE_EACH_ITERATION <- F
-      
       # release holds on times and places from tests
       rm(sampled_places,sampled_times)
-      
-      parse_single_example_fxn <- function(example_proto){
-        # Names to parse: take from the last sampled batch (same fields as TFRecords)
-        feat_names <- names(batch_l)
-        
-        # 1) FixedLenFeature spec: data (bytes) + shape (bytes) for each feature
-        fd_text <- paste(
-          sapply(feat_names, function(nm) {
-            sprintf("'%s' = tf$io$FixedLenFeature(list(), tf$string),
-               '%s_shape' = tf$io$FixedLenFeature(list(), tf$string)", nm, nm)
-          }),
-          collapse = ","
-        )
-        eval(parse(text = sprintf("feature_description <- list(%s)", fd_text)))
-        
-        # 2) Infer the **saved** dtype for each feature (match the writer's downcast)
-        #    float64/float32 -> tf$float32; int64/int32 -> tf$int32; bool -> tf$bool
-        saved_out_types <- sapply(feat_names, function(nm) {
-          d <- try(as.character(eval(parse(text = sprintf("batch_l$%s$dtype", nm)))), silent = TRUE)
-          if (!inherits(d, "try-error")) {
-            if (grepl("bool", d)) "tf$bool"
-            else if (grepl("int",  d)) "tf$int32"
-            else                       "tf$float32"
-          } else {
-            # Fallback if batch_l isn't around: masks -> bool; everything else -> float32
-            if (grepl("mask", nm)) "tf$bool" else "tf$float32"
-          }
-        }, USE.NAMES = TRUE)
-        
-        # 3) Choose cast dtype exposed to the model:
-        #    - floats -> DefaultDtypeTf (e.g., tf$float32 / tf$bfloat16)
-        #    - ints   -> keep tf$int32
-        #    - bools  -> keep tf$bool
-        cast_types <- vapply(names(saved_out_types), function(nm) {
-          out_t <- saved_out_types[[nm]]
-          if (out_t == "tf$float32") DefaultDtypeTf else out_t
-        }, "", USE.NAMES = TRUE)
-        
-        # 4) Parse example and build per-field parse ops with correct dtypes
-        example <- tf$io$parse_single_example(example_proto, feature_description)
-        
-        parse_text <- paste(
-          mapply(function(nm, out_t, cast_t) {
-            sprintf("
-        '%s' = tf$cast(
-                 tf$reshape(
-                   tf$io$parse_tensor(example[['%s']], out_type = %s),
-                   tf$io$parse_tensor(example[['%s_shape']], out_type = tf$int32)
-                 ),
-                 dtype = %s
-               )",
-                    nm, nm, out_t, nm, cast_t)
-          }, names(saved_out_types), unname(saved_out_types), unname(cast_types)),
-          collapse = ","
-        )
-        
-        eval(parse(text = sprintf("data <- list(%s)", parse_text)))
-        return(data)
+      skip_tfrecords <- isTRUE(get0(
+        "SkipTfRecords",
+        envir = environment(),
+        inherits = TRUE,
+        ifnotfound = FALSE
+      ))
+      if(skip_tfrecords){
+        print2("Skipping TFRecord setup; real-data batches will stay in-memory.")
       }
-      
-      read_from_tfrecord <- function(file, batchSize, 
-                                     TfRecords_BufferScaler = 10L, nTake = NULL, shuffle = T){
-        raw_dataset = tf$data$TFRecordDataset( file )
-        parsed_dataset = raw_dataset$map( parse_single_example_fxn )
-        if(!is.null(nTake)){ parsed_dataset <- parsed_dataset$take(nTake) } # take only first nTake elements 
-        if(shuffle == T){ 
-          parsed_dataset <- parsed_dataset$shuffle(buffer_size = tf$constant(as.integer(TfRecords_BufferScaler*batchSize), 
-                                                                             dtype=tf$int64),
-                                                   reshuffle_each_iteration = RESHUFFLE_EACH_ITERATION)
-        }
-        parsed_dataset <- parsed_dataset$batch( batchSize )
-        return( parsed_dataset )
+      if(!skip_tfrecords){
+        canonical_paths <- utils::getFromNamespace(".ndm_canonical_tfrecord_paths", "ndm")(
+          TfRecordDir,
+          RealEntry$BaseID
+        )
+        utils::getFromNamespace(".ndm_attach_canonical_tfrecords", "ndm")(
+          runtime_env = environment(),
+          train_file = canonical_paths$train_file,
+          inference_file = canonical_paths$inference_file,
+          schema_kind = "real",
+          batch_size = ai(nBatch),
+          shuffle_train = TRUE,
+          reshuffle_train = TRUE,
+          run_seed = get0("SEED_", inherits = TRUE, ifnotfound = NULL),
+          max_train_examples = ai(RealEntry$nSamplesTrain),
+          max_inference_examples = get0("nObsInference", inherits = TRUE, ifnotfound = NULL)
+        )
       }
-      
-      tfrecord_file_train <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "train", as.character(RealEntry$BaseID)) 
-      tfrecord_file_inference <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "inference", as.character(RealEntry$BaseID)) 
-      TFDatasetIterator_train <- reticulate::as_iterator(
-        TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
-                                              batchSize = nBatch, 
-                                              shuffle = F,
-                                              nTake = ai(RealEntry$nSamplesTrain))$shuffle(
-                                                                        buffer_size = tf$constant(as.integer(10*nBatch), 
-                                                                                                  dtype=tf$int64),
-                                                                        reshuffle_each_iteration = T)
-      )
-      TFDatasetIterator_inference <- reticulate::as_iterator( 
-        TFDataset_inference <- read_from_tfrecord(file = tfrecord_file_inference, 
-                                                  batchSize = nBatch, 
-                                                  shuffle = F) )
   }
   print2("Done with this round of SuperLModel_DataGenerator_Real.R!")
 }

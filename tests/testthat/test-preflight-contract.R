@@ -36,7 +36,7 @@ test_that("canonical pair preflight enforces pair scaler and real source identit
   calls <- list()
   env$analysis2_call <- function(pkg, name, file, ...) {
     calls[[file]] <<- list(...)
-    manifest()
+    manifest(n_examples = if (identical(file, "inference")) 1L else 8L)
   }
   expect_silent(env$analysis2_validate_canonical_tfrecord_pair(
     "ndmdatasets", paths, "real", list(), 4L, 1L, source_sha256 = "current"
@@ -57,7 +57,11 @@ test_that("canonical pair preflight enforces pair scaler and real source identit
   )
 
   env$analysis2_call <- function(pkg, name, file, ...) {
-    if (identical(file, "train")) manifest() else manifest(scaler = "different")
+    if (identical(file, "train")) {
+      manifest()
+    } else {
+      manifest(scaler = "different", n_examples = 1L)
+    }
   }
   expect_error(
     env$analysis2_validate_canonical_tfrecord_pair(
@@ -66,7 +70,12 @@ test_that("canonical pair preflight enforces pair scaler and real source identit
     "different scalers"
   )
 
-  env$analysis2_call <- function(pkg, name, file, ...) manifest(source = "stale")
+  env$analysis2_call <- function(pkg, name, file, ...) {
+    manifest(
+      source = "stale",
+      n_examples = if (identical(file, "inference")) 1L else 8L
+    )
+  }
   expect_error(
     env$analysis2_validate_canonical_tfrecord_pair(
       "ndmdatasets", paths, "real", list(), 1L, 1L, source_sha256 = "current"
