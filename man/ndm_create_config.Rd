@@ -41,9 +41,8 @@ Use `"32"` or `"64"`.}
 \item{force_to_gpu}{Logical scalar requiring a CUDA-capable JAX GPU when
 `TRUE`.}
 
-\item{resave_tfrecords}{Logical scalar preserved for compatibility with
-existing run workflows. Multidisease workflows reject `TRUE` because the
-legacy TFRecord-regeneration path has been retired.}
+\item{resave_tfrecords}{Logical scalar preserved for compatibility. Public
+training APIs require \code{FALSE}; prepare canonical inputs before training.}
 
 \item{gpu_mem_frac}{Optional finite GPU memory fraction in `(0, 1]`.}
 

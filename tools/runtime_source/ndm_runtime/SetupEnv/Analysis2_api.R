@@ -331,7 +331,7 @@ analysis2_mode_defaults <- function(mode) {
       solver_profile = "default",
       model_type = NULL,
       respect_grid_model_type = TRUE,
-      resave_tfrecords = TRUE,
+      resave_tfrecords = FALSE,
       run_figures = FALSE,
       project_root = NULL,
       raw_data_dir = NULL,
@@ -506,7 +506,21 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
   spec$model_type <- analysis2_normalize_string(spec$model_type)
   spec$respect_grid_model_type <- isTRUE(spec$respect_grid_model_type %||% defaults$respect_grid_model_type)
   spec$force_to_gpu <- isTRUE(spec$force_to_gpu %||% defaults$force_to_gpu)
-  spec$resave_tfrecords <- isTRUE(spec$resave_tfrecords %||% defaults$resave_tfrecords)
+  resave_tfrecords <- spec$resave_tfrecords %||% defaults$resave_tfrecords
+  if (!identical(resave_tfrecords, FALSE)) {
+    guidance <- switch(
+      mode,
+      real = "Use `ndm_bootstrap_real_tfrecords()` before training.",
+      sim = "Use `ndm_bootstrap_sim_tfrecords()` before training.",
+      "Prepare multidisease inputs outside the training runner."
+    )
+    stop(
+      "`resave_tfrecords = TRUE` is no longer supported by training workflows. ",
+      guidance,
+      call. = FALSE
+    )
+  }
+  spec$resave_tfrecords <- FALSE
   spec$run_figures <- isTRUE(spec$run_figures %||% FALSE)
   spec$dry_run <- isTRUE(spec$dry_run %||% FALSE)
   spec$help <- isTRUE(spec$help %||% FALSE)
@@ -673,7 +687,7 @@ analysis2_usage <- function(mode, paths = analysis2_paths()) {
       "  --solver_profile=default|loose|tight|alternative",
       "  --model_type=DecoderOnly|NeuralODE",
       "  --respect_grid_model_type=TRUE|FALSE",
-      "  --resave_tfrecords=TRUE|FALSE",
+      "  --resave_tfrecords=FALSE (TRUE is unsupported; prepare inputs before training)",
       "  --run_figures=TRUE|FALSE",
       "  --tfrecord_dir=PATH",
       "  --dry_run=TRUE",
@@ -1253,10 +1267,10 @@ analysis2_bootstrap_write_sim_tfrecord <- function(base_id,
                                                    artifact_n_samples_train,
                                                    row_values,
                                                    tfrecord_dir,
+                                                   producer,
                                                    ndmdatasets_pkg,
                                                    resolve_backend,
                                                    overwrite = FALSE) {
-  paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
   model_type <- analysis2_model_type(
     opts = list(model_type = NULL, respect_grid_model_type = TRUE),
     grid_model_type = row_values$ModelType,
@@ -1281,6 +1295,7 @@ analysis2_bootstrap_write_sim_tfrecord <- function(base_id,
     dataset_spec = dataset_spec,
     output_dir = tfrecord_dir,
     training_spec = training_spec,
+    producer = producer,
     batch_size = 128L,
     seed = 0L,
     overwrite = isTRUE(overwrite),
@@ -1298,6 +1313,7 @@ analysis2_bootstrap_sim_tfrecords <- function(project_root,
                                               grid,
                                               base_ids = NULL,
                                               tfrecord_dir,
+                                              producer = NULL,
                                               parallel_workers = 1L,
                                               overwrite = FALSE,
                                               dry_run = FALSE) {
@@ -1316,6 +1332,9 @@ analysis2_bootstrap_sim_tfrecords <- function(project_root,
     base_ids = base_ids,
     tfrecord_dir = tfrecord_dir
   )
+  if (!isTRUE(dry_run) && is.null(producer)) {
+    stop("`producer` is required when publishing canonical TFRecords.", call. = FALSE)
+  }
 
   if (nrow(write_plan) == 0L) {
     write_plan$status <- character()
@@ -1337,7 +1356,6 @@ analysis2_bootstrap_sim_tfrecords <- function(project_root,
     )
     return(write_plan)
   }
-
   old_wd <- tryCatch(getwd(), error = function(e) NULL)
   if (!is.null(old_wd) && nzchar(old_wd)) {
     on.exit(setwd(old_wd), add = TRUE)
@@ -1371,6 +1389,7 @@ analysis2_bootstrap_sim_tfrecords <- function(project_root,
       artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]],
       row_values = row_values,
       tfrecord_dir = tfrecord_dir,
+      producer = producer,
       ndmdatasets_pkg = ndmdatasets_pkg,
       resolve_backend = resolve_backend,
       overwrite = overwrite
@@ -1407,10 +1426,10 @@ analysis2_bootstrap_write_real_tfrecord <- function(base_id,
                                                     tfrecord_dir,
                                                     outcome_metric,
                                                     data_subset,
+                                                    producer,
                                                     ndmdatasets_pkg,
                                                     resolve_backend,
                                                     overwrite = FALSE) {
-  paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
   model_type <- analysis2_model_type(
     opts = list(model_type = NULL, respect_grid_model_type = TRUE),
     grid_model_type = row_values$ModelType,
@@ -1443,6 +1462,7 @@ analysis2_bootstrap_write_real_tfrecord <- function(base_id,
     dataset_spec = dataset_spec,
     output_dir = tfrecord_dir,
     training_spec = training_spec,
+    producer = producer,
     batch_size = 64L,
     seed = 0L,
     overwrite = isTRUE(overwrite),
@@ -1463,6 +1483,7 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
                                                raw_data_dir,
                                                outcome_metric = "inc_death",
                                                data_subset = "high_income",
+                                               producer = NULL,
                                                parallel_workers = 1L,
                                                overwrite = FALSE,
                                                dry_run = FALSE) {
@@ -1481,6 +1502,9 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
     base_ids = base_ids,
     tfrecord_dir = tfrecord_dir
   )
+  if (!isTRUE(dry_run) && is.null(producer)) {
+    stop("`producer` is required when publishing canonical TFRecords.", call. = FALSE)
+  }
 
   if (nrow(write_plan) == 0L) {
     write_plan$status <- character()
@@ -1499,7 +1523,6 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
     )
     return(write_plan)
   }
-
   old_wd <- tryCatch(getwd(), error = function(e) NULL)
   if (!is.null(old_wd) && nzchar(old_wd)) {
     on.exit(setwd(old_wd), add = TRUE)
@@ -1545,6 +1568,7 @@ analysis2_bootstrap_real_tfrecords <- function(project_root,
       tfrecord_dir = tfrecord_dir,
       outcome_metric = outcome_metric,
       data_subset = data_subset,
+      producer = producer,
       ndmdatasets_pkg = ndmdatasets_pkg,
       resolve_backend = resolve_backend,
       overwrite = overwrite
@@ -2233,70 +2257,137 @@ analysis2_has_canonical_tfrecords <- function(paths) {
   )))
 }
 
-analysis2_assert_canonical_tfrecords <- function(paths, base_id, output_dir) {
-  if (analysis2_has_canonical_tfrecords(paths)) {
-    return(invisible(paths))
-  }
-
-  legacy_files <- file.exists(c(paths$train_file, paths$inference_file))
-  if (any(legacy_files)) {
-    stop(
-      "Found TFRecord files for BaseID ", base_id, " under ", output_dir,
-      " but they are missing canonical `.manifest.rds` sidecars. ",
-      "Regenerate them with `--resave_tfrecords=TRUE`.",
-      call. = FALSE
-    )
-  }
-
-  stop(
-    "Missing canonical TFRecords for BaseID ", base_id, " under ", output_dir,
-    ". Regenerate them with `--resave_tfrecords=TRUE`.",
-    call. = FALSE
+analysis2_trusted_artifact_index <- function(tfrecord_dir) {
+  trusted_dir <- Sys.getenv("ANALYSIS2_TRUSTED_TFRECORD_DIR", unset = NA_character_)
+  expected_sha256 <- Sys.getenv(
+    "ANALYSIS2_TRUSTED_ARTIFACT_INDEX_SHA256",
+    unset = NA_character_
   )
+  present <- !is.na(c(trusted_dir, expected_sha256))
+  if (!any(present)) {
+    return(NULL)
+  }
+  if (!all(present) || !nzchar(trusted_dir) ||
+      !grepl("^[0-9a-f]{64}$", expected_sha256)) {
+    stop("Trusted TFRecord preflight context has missing or malformed environment markers.", call. = FALSE)
+  }
+
+  tryCatch({
+    active_dir <- normalizePath(tfrecord_dir, winslash = "/", mustWork = TRUE)
+    trusted_dir <- normalizePath(trusted_dir, winslash = "/", mustWork = TRUE)
+    if (!identical(active_dir, trusted_dir)) {
+      stop("the active TFRecord directory does not match the trusted directory")
+    }
+    index_file <- file.path(active_dir, "artifact_checksums.tsv")
+    if (!file.exists(index_file)) {
+      stop("the trusted artifact index is missing")
+    }
+    if (!identical(
+      digest::digest(file = index_file, algo = "sha256", serialize = FALSE),
+      expected_sha256
+    )) {
+      stop("the trusted artifact index SHA-256 does not match")
+    }
+    artifacts <- utils::read.delim(
+      index_file,
+      sep = "\t",
+      header = TRUE,
+      stringsAsFactors = FALSE,
+      check.names = FALSE,
+      quote = "\"",
+      comment.char = ""
+    )
+    required_columns <- c(
+      "BaseID", "artifact_type", "sidecar", "relative_path", "bytes",
+      "modified_utc", "sha256"
+    )
+    if (!all(required_columns %in% names(artifacts)) ||
+        anyDuplicated(artifacts$relative_path)) {
+      stop("the trusted artifact index has invalid columns or duplicate paths")
+    }
+    list(tfrecord_dir = active_dir, artifacts = artifacts)
+  }, error = function(e) {
+    stop("Trusted TFRecord preflight context is invalid: ", conditionMessage(e), call. = FALSE)
+  })
 }
 
-analysis2_preflight_canonical_tfrecords <- function(base_ids,
-                                                    tfrecord_dir) {
-  missing_base_ids <- integer()
-  legacy_base_ids <- integer()
-
-  for (base_id in analysis2_unique_preserve_order(as.integer(base_ids))) {
-    paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
-
-    if (analysis2_has_canonical_tfrecords(paths)) {
-      next
-    }
-
-    if (any(file.exists(c(paths$train_file, paths$inference_file)))) {
-      legacy_base_ids <- c(legacy_base_ids, base_id)
-    } else {
-      missing_base_ids <- c(missing_base_ids, base_id)
-    }
+analysis2_trusted_index_covers_pair <- function(trusted_index, paths) {
+  if (is.null(trusted_index)) {
+    return(FALSE)
+  }
+  abort <- function(reason) {
+    stop("Trusted artifact index does not cover the active TFRecord pair: ", reason, call. = FALSE)
+  }
+  required_files <- c(
+    paths$train_file,
+    analysis2_manifest_path(paths$train_file),
+    paths$inference_file,
+    analysis2_manifest_path(paths$inference_file)
+  )
+  if (!all(file.exists(required_files))) {
+    abort("a record or manifest sidecar is missing")
+  }
+  if (!all(vapply(required_files, function(file) {
+        identical(
+          dirname(normalizePath(file, winslash = "/", mustWork = TRUE)),
+          trusted_index$tfrecord_dir
+        )
+      }, logical(1)))) {
+    abort("an artifact resolves outside the trusted directory")
   }
 
-  if (length(legacy_base_ids) > 0L) {
-    stop(
-      "Found TFRecord files missing canonical `.manifest.rds` sidecars for BaseID(s) ",
-      paste(sort(unique(legacy_base_ids)), collapse = ", "),
-      " under ",
-      tfrecord_dir,
-      ". Regenerate them with `--resave_tfrecords=TRUE`.",
-      call. = FALSE
-    )
+  relative_paths <- basename(required_files)
+  row_index <- match(relative_paths, trusted_index$artifacts$relative_path)
+  if (anyNA(row_index)) {
+    abort("a required artifact index row is missing")
+  }
+  rows <- trusted_index$artifacts[row_index, , drop = FALSE]
+  base_id <- sub("^train_(.+)\\.tfrecord$", "\\1", basename(paths$train_file))
+  expected_types <- c("train", "train", "inference", "inference")
+  expected_sidecars <- c(FALSE, TRUE, FALSE, TRUE)
+  indexed_bytes <- suppressWarnings(as.numeric(rows$bytes))
+  actual_bytes <- as.numeric(file.info(required_files)$size)
+
+  row_metadata_matches <-
+    identical(as.character(rows$relative_path), relative_paths) &&
+      identical(as.character(rows$BaseID), rep(base_id, 4L)) &&
+      identical(as.character(rows$artifact_type), expected_types) &&
+      identical(tolower(as.character(rows$sidecar)), tolower(as.character(expected_sidecars))) &&
+      !anyNA(indexed_bytes) && identical(indexed_bytes, actual_bytes) &&
+      all(grepl("^[0-9a-f]{64}$", as.character(rows$sha256)))
+  if (!row_metadata_matches) {
+    abort("indexed path, identity, type, size, or SHA metadata disagrees")
   }
 
-  if (length(missing_base_ids) > 0L) {
-    stop(
-      "Missing canonical TFRecords for BaseID(s) ",
-      paste(sort(unique(missing_base_ids)), collapse = ", "),
-      " under ",
-      tfrecord_dir,
-      ". Regenerate them with `--resave_tfrecords=TRUE`.",
-      call. = FALSE
-    )
+  sidecar_rows <- c(2L, 4L)
+  actual_sidecar_sha256 <- vapply(
+    required_files[sidecar_rows],
+    function(file) digest::digest(
+      file = file,
+      algo = "sha256",
+      serialize = FALSE
+    ),
+    character(1),
+    USE.NAMES = FALSE
+  )
+  if (!identical(actual_sidecar_sha256, as.character(rows$sha256[sidecar_rows]))) {
+    abort("a manifest sidecar SHA-256 disagrees with the trusted index")
   }
 
-  invisible(TRUE)
+  manifests <- lapply(required_files[sidecar_rows], readRDS)
+  record_rows <- c(1L, 3L)
+  manifest_matches <- vapply(seq_along(manifests), function(i) {
+    record <- manifests[[i]]$record
+    row <- record_rows[[i]]
+    is.list(record) &&
+      identical(as.character(record$file), relative_paths[[row]]) &&
+      identical(as.numeric(record$bytes), indexed_bytes[[row]]) &&
+      identical(as.character(record$sha256), as.character(rows$sha256[[row]]))
+  }, logical(1))
+  if (!all(manifest_matches)) {
+    abort("manifest record metadata disagrees with the trusted index")
+  }
+  TRUE
 }
 
 analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg,
@@ -2305,19 +2396,26 @@ analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg,
                                                        dataset_spec,
                                                        n_train,
                                                        n_inference,
-                                                       source_sha256 = NULL) {
+                                                       source_sha256 = NULL,
+                                                       verify_checksum = TRUE) {
   train_manifest <- analysis2_call(
     ndmdatasets_pkg,
     "ndm_datasets_validate_tfrecord_artifact",
     file = paths$train_file,
     schema = schema_kind,
-    expected_n_examples = as.integer(n_train),
     expected_dataset_spec = dataset_spec,
     expected_split = "train",
     expected_seed = 0L,
-    verify_checksum = TRUE,
+    verify_checksum = isTRUE(verify_checksum),
     verify_readable = FALSE
   )
+  if (as.numeric(train_manifest$n_examples) < as.numeric(n_train)) {
+    stop(
+      "Canonical training TFRecord has ", train_manifest$n_examples,
+      " examples; the selected run requires at least ", as.integer(n_train), ".",
+      call. = FALSE
+    )
+  }
   inference_manifest <- analysis2_call(
     ndmdatasets_pkg,
     "ndm_datasets_validate_tfrecord_artifact",
@@ -2327,7 +2425,7 @@ analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg,
     expected_dataset_spec = dataset_spec,
     expected_split = "inference",
     expected_seed = 0L,
-    verify_checksum = TRUE,
+    verify_checksum = isTRUE(verify_checksum),
     verify_readable = FALSE
   )
   if (!identical(train_manifest$scaler_sha256, inference_manifest$scaler_sha256)) {
@@ -2341,7 +2439,12 @@ analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg,
       stop("Canonical real TFRecords were built from different source tables.", call. = FALSE)
     }
   }
-  invisible(list(paths = paths, train = train_manifest, inference = inference_manifest))
+  invisible(list(
+    paths = paths,
+    train = train_manifest,
+    inference = inference_manifest,
+    verify_checksum = isTRUE(verify_checksum)
+  ))
 }
 
 analysis2_preflight_expected_tfrecords <- function(mode,
@@ -2357,6 +2460,7 @@ analysis2_preflight_expected_tfrecords <- function(mode,
   } else {
     NULL
   }
+  trusted_index <- analysis2_trusted_artifact_index(tfrecord_dir)
   validated_pairs <- list()
   for (plan_idx in seq_len(nrow(write_plan))) {
     canonical_row <- write_plan$canonical_row[[plan_idx]]
@@ -2387,7 +2491,8 @@ analysis2_preflight_expected_tfrecords <- function(mode,
         dataset_spec = dataset_spec,
         n_train = write_plan$artifact_n_samples_train[[plan_idx]],
         n_inference = n_inference,
-        source_sha256 = source_sha256
+        source_sha256 = source_sha256,
+        verify_checksum = !analysis2_trusted_index_covers_pair(trusted_index, paths)
       ),
       error = function(e) {
         stop(
@@ -2410,7 +2515,8 @@ analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
                                                  schema_kind,
                                                  batch_size,
                                                  shuffle_train = FALSE,
-                                                 run_seed = NULL) {
+                                                 run_seed = NULL,
+                                                 verify_checksum = TRUE) {
   tf <- runtime_env$tf %||% analysis2_import_tensorflow()
   max_train_examples <- get0("nSamplesTrain", envir = runtime_env, inherits = TRUE, ifnotfound = NULL)
   max_inference_examples <- get0("nObsInference", envir = runtime_env, inherits = TRUE, ifnotfound = NULL)
@@ -2424,6 +2530,7 @@ analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
     shuffle = isTRUE(shuffle_train),
     shuffle_seed = if (is.null(run_seed)) NULL else analysis2_as_int(run_seed),
     reshuffle_each_iteration = isTRUE(shuffle_train),
+    verify_checksum = isTRUE(verify_checksum),
     tensorflow = tf
   )
 
@@ -2437,6 +2544,7 @@ analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
     shuffle = FALSE,
     shuffle_seed = NULL,
     reshuffle_each_iteration = FALSE,
+    verify_checksum = isTRUE(verify_checksum),
     tensorflow = tf
   )
 
@@ -2457,44 +2565,6 @@ analysis2_seed_runtime_batch <- function(runtime_env, batch_l) {
     assign("nCovars_real", batch_l$XPred$shape[[3]], envir = runtime_env)
   }
   invisible(runtime_env)
-}
-
-analysis2_write_real_tfrecords <- function(ndmdatasets_pkg,
-                                           bundle,
-                                           dataset_spec,
-                                           training_spec,
-                                           output_dir,
-                                           tensorflow) {
-  analysis2_dir_create(output_dir)
-  analysis2_call(
-    ndmdatasets_pkg,
-    "ndm_real_write_tfrecords",
-    table_bundle = bundle,
-    dataset_spec = dataset_spec,
-    output_dir = output_dir,
-    training_spec = training_spec,
-    batch_size = 64L,
-    tensorflow = tensorflow,
-    quiet = TRUE
-  )
-}
-
-analysis2_write_sim_tfrecords <- function(ndmdatasets_pkg,
-                                          dataset_spec,
-                                          training_spec,
-                                          output_dir,
-                                          tensorflow) {
-  analysis2_dir_create(output_dir)
-  analysis2_call(
-    ndmdatasets_pkg,
-    "ndm_sim_write_tfrecords",
-    dataset_spec = dataset_spec,
-    output_dir = output_dir,
-    training_spec = training_spec,
-    batch_size = 128L,
-    tensorflow = tensorflow,
-    quiet = TRUE
-  )
 }
 
 analysis2_solver_profile <- function(runtime_env, profile = "default") {
@@ -2867,7 +2937,6 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
   analysis_name <- spec$analysis_name
   analysis_date <- Sys.Date()
   outer_iterations <- spec$outer
-  resave_tfrecords <- isTRUE(spec$resave_tfrecords)
   outcome_metric <- spec$outcome_metric
   raw_data_dir <- normalizePath(
     spec$raw_data_dir,
@@ -2908,64 +2977,16 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
     outcome_metric = outcome_metric,
     quiet = TRUE
   )
-  if (!isTRUE(resave_tfrecords)) {
-    analysis2_preflight_expected_tfrecords(
-      mode = "real",
-      write_plan = write_plan,
-      grid = real_grid,
-      tfrecord_dir = tfrecord_dir,
-      ndmdatasets_pkg = ndmdatasets_pkg,
-      outcome_metric = outcome_metric,
-      data_subset = spec$data_subset,
-      real_bundle = bundle
-    )
-  }
-
-  if (isTRUE(resave_tfrecords)) {
-    ndm_pkg <- analysis2_require_ndm()
-    tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
-    written_base_ids <- integer()
-
-    for (plan_idx in seq_len(nrow(write_plan))) {
-      canonical_row <- write_plan$canonical_row[[plan_idx]]
-      row_values <- analysis2_normalize_row_values(
-        analysis2_row_to_list(real_grid[canonical_row, , drop = FALSE])
-      )
-      model_type <- analysis2_model_type(spec, row_values$ModelType, default = "DecoderOnly")
-      dataset_spec <- analysis2_real_dataset_spec(
-        ndmdatasets_pkg = ndmdatasets_pkg,
-        row_values = row_values,
-        outcome_metric = outcome_metric,
-        data_subset = spec$data_subset
-      )
-      training_spec <- analysis2_real_training_spec(ndmdatasets_pkg, row_values, model_type = model_type)
-      training_spec$n_samples_train <- as.integer(write_plan$artifact_n_samples_train[[plan_idx]])
-
-      analysis2_log(
-        sprintf(
-          "Regenerating canonical real TFRecords for BaseID %s from row %s with nSamplesTrain %s",
-          row_values$BaseID,
-          canonical_row,
-          write_plan$artifact_n_samples_train[[plan_idx]]
-        )
-      )
-      analysis2_write_real_tfrecords(
-        ndmdatasets_pkg = ndmdatasets_pkg,
-        bundle = bundle,
-        dataset_spec = dataset_spec,
-        training_spec = training_spec,
-        output_dir = tfrecord_dir,
-        tensorflow = tensorflow
-      )
-      written_base_ids <- c(written_base_ids, analysis2_as_int(row_values$BaseID))
-    }
-
-    return(invisible(list(
-      written_base_ids = sort(unique(written_base_ids)),
-      tfrecord_dir = tfrecord_dir,
-      write_plan = write_plan
-    )))
-  }
+  validated_artifacts <- analysis2_preflight_expected_tfrecords(
+    mode = "real",
+    write_plan = write_plan,
+    grid = real_grid,
+    tfrecord_dir = tfrecord_dir,
+    ndmdatasets_pkg = ndmdatasets_pkg,
+    outcome_metric = outcome_metric,
+    data_subset = spec$data_subset,
+    real_bundle = bundle
+  )
 
   ndm_pkg <- analysis2_require_ndm()
   for (outer_iteration in outer_iterations) {
@@ -3070,7 +3091,10 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
       schema_kind = "real",
       batch_size = get("nBatch", envir = runtime_env),
       shuffle_train = TRUE,
-      run_seed = run_seed
+      run_seed = run_seed,
+      verify_checksum = validated_artifacts[[
+        as.character(analysis2_as_int(row_values$BaseID))
+      ]]$verify_checksum
     )
     analysis2_expose_runtime_env(runtime_env)
 
@@ -3130,7 +3154,6 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
   analysis_name <- spec$analysis_name
   analysis_date <- Sys.Date()
   outer_iterations <- spec$outer
-  resave_tfrecords <- isTRUE(spec$resave_tfrecords)
   tfrecord_dir <- normalizePath(spec$tfrecord_dir, winslash = "/", mustWork = FALSE)
   grid_file <- normalizePath(spec$grid_file, winslash = "/", mustWork = TRUE)
 
@@ -3158,62 +3181,19 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
   analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
   analysis2_log_nsgd_calibration("sim", nsgd_calibration)
   ndmdatasets_pkg <- analysis2_require_ndmdatasets()
-  validated_artifacts <- NULL
-  if (!isTRUE(resave_tfrecords)) {
-    validated_artifacts <- analysis2_preflight_expected_tfrecords(
-      mode = "sim",
-      write_plan = write_plan,
-      grid = sim_grid,
-      tfrecord_dir = tfrecord_dir,
-      ndmdatasets_pkg = ndmdatasets_pkg
-    )
-  }
+  validated_artifacts <- analysis2_preflight_expected_tfrecords(
+    mode = "sim",
+    write_plan = write_plan,
+    grid = sim_grid,
+    tfrecord_dir = tfrecord_dir,
+    ndmdatasets_pkg = ndmdatasets_pkg
+  )
 
   sim_covariates <- c(
     XPred_c_sqrt = "inc_case_per_capita_sqrt",
     XPred_h_sqrt = "inc_hosp_per_capita_sqrt",
     XPred_d_sqrt = "inc_death_per_capita_sqrt"
   )
-
-  if (isTRUE(resave_tfrecords)) {
-    ndm_pkg <- analysis2_require_ndm()
-    tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
-    written_base_ids <- integer()
-
-    for (plan_idx in seq_len(nrow(write_plan))) {
-      canonical_row <- write_plan$canonical_row[[plan_idx]]
-      row_values <- analysis2_normalize_row_values(
-        analysis2_row_to_list(sim_grid[canonical_row, , drop = FALSE])
-      )
-      model_type <- analysis2_model_type(spec, row_values$ModelType, default = "DecoderOnly")
-      dataset_spec <- analysis2_sim_dataset_spec(ndmdatasets_pkg, row_values)
-      training_spec <- analysis2_sim_training_spec(ndmdatasets_pkg, row_values, model_type = model_type)
-      training_spec$n_samples_train <- as.integer(write_plan$artifact_n_samples_train[[plan_idx]])
-
-      analysis2_log(
-        sprintf(
-          "Regenerating canonical sim TFRecords for BaseID %s from row %s with nSamplesTrain %s",
-          row_values$BaseID,
-          canonical_row,
-          write_plan$artifact_n_samples_train[[plan_idx]]
-        )
-      )
-      analysis2_write_sim_tfrecords(
-        ndmdatasets_pkg = ndmdatasets_pkg,
-        dataset_spec = dataset_spec,
-        training_spec = training_spec,
-        output_dir = tfrecord_dir,
-        tensorflow = tensorflow
-      )
-      written_base_ids <- c(written_base_ids, analysis2_as_int(row_values$BaseID))
-    }
-
-    return(invisible(list(
-      written_base_ids = sort(unique(written_base_ids)),
-      tfrecord_dir = tfrecord_dir,
-      write_plan = write_plan
-    )))
-  }
 
   ndm_pkg <- analysis2_require_ndm()
   for (outer_iteration in outer_iterations) {
@@ -3322,7 +3302,8 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
       schema_kind = "sim",
       batch_size = get("nBatch", envir = runtime_env),
       shuffle_train = TRUE,
-      run_seed = run_seed
+      run_seed = run_seed,
+      verify_checksum = validated_artifacts[[artifact_key]]$verify_checksum
     )
     analysis2_expose_runtime_env(runtime_env)
 

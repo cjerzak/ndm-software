@@ -461,7 +461,7 @@
   rm(SIM_GLOBAL_SCALE_MEAN_l,SIM_GLOBAL_SCALE_SD_l,SIM_GLOBAL_OUTCOME_SD_l, SIM_GLOBAL_SCALE_VAR)
   }
   
-  # apply infrastructure to resave tfrecords 
+  # read canonical tfrecords
   { 
     skip_tfrecords <- exists("SkipTfRecords", inherits = FALSE) && isTRUE(SkipTfRecords)
 
@@ -474,18 +474,6 @@
     tf <- reticulate::import("tensorflow")
     RESHUFFLE_EACH_ITERATION <- isTRUE(get0("ReshuffleEachIteration", inherits = TRUE, ifnotfound = FALSE))
     
-    # helper fxn 
-    bytes_feature <- function(value){
-        tf$train$Feature(bytes_list=tf$train$BytesList(value=list(value$numpy())))
-      }
-    SerializeFromListEntry <- function(l_){
-        feature = dict(
-          'data' = bytes_feature(lapply(l_, function(l__) {tf$io$serialize_tensor(l__) })),
-          'shape' = bytes_feature(tf$io$serialize_tensor(l_$shape))
-        )
-        example_proto <- tf$train$Example(features = tf$train$Features(feature = feature))
-        return( example_proto$SerializeToString() )
-    }
     parse_single_example_fxn <- function(example_proto){
       # Define the features to be extracted.
       parseText <- paste(sapply(names(batch_l),function(nl){
@@ -519,138 +507,11 @@
     }
   
     nBatch_SimGridGen <- if(exists("nBatch_SimGridGen", inherits = FALSE)) ai(nBatch_SimGridGen) else 256L
-    if(!dir.exists(TfRecordDir)){ dir.create(TfRecordDir) }
     tfrecord_file_train <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "train", SimEntry$BaseID) 
     tfrecord_file_inference <- sprintf('%s/%s_%s.tfrecord', TfRecordDir, "inference", SimEntry$BaseID) 
     nMonteEval <- if(exists("nMonteEval", inherits = FALSE)) ai(nMonteEval) else ceiling(1000/nBatch_SimGridGen)
     nTimesLookValidation <- nTimesLookValidationInference
     
-    # resave runs 
-    if(SimEntry$nSamplesTrain == nSamples_max & 
-        ReSaveTfRecords & 
-          (SimEntry$ResaveThisTFRecord==1)){
-      #nSamplesTrain <- SimEntry$nSamplesTrain <- 1000; message("CRITICAL UNCOMMENTED SNIPPET FOR FAST DEBUG MODE!") 
-      if(!is.na(COMMAND_ARG_INPUT) & SimEntry$nSamplesTrain == 1000){
-        stop("CRITICAL ERROR: FAST TESTING MODE SEEN IN FINAL TFRECORD CREATION RUN!")
-      }
-        
-      for(type_ in c("train","inference")){ 
-        if(type_ == "train"){
-          tf_record_writer <- tf$io$TFRecordWriter( tfrecord_file_train  ) 
-          nTimesLookValidation_ <- nTimesLookahead
-          input_df_red_in <- NULL
-        }
-        if(type_ == "inference"){
-          tf_record_writer <- tf$io$TFRecordWriter( tfrecord_file_inference  ) 
-          nTimesLookValidation_ <- nTimesLookValidationInference
-          input_df_red_in_ <- NULL 
-        }
-        nOuter <- ifelse(type_ == "train", 
-                         yes = c(ceiling(nSamplesTrain/nBatch_SimGridGen)),
-                         no = c(nMonteEval))[[1]]
-        
-        # setup completion bar  
-        library(progress); start_time <- Sys.time();pb <- progress_bar$new(
-          total   = nOuter,
-          format  = "  [:bar] :percent | Elapsed: :elapsed | ETA: :eta | ETT: :ett",
-          clear   = FALSE, show_after = 0)
-        
-        for(b_ in 1:nOuter){
-          ett_formatted <- "Calculating for progress bars..."; if(b_ > 1) {
-            elapsed_secs <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
-            total_secs    <- (elapsed_secs / b_) * nOuter
-            ett_formatted <- sprintf("%02d:%02d:%02d", 
-                                     floor(total_secs / 3600), floor((total_secs %% 3600) / 60), floor(total_secs %% 60))
-          }
-          pb$tick(tokens = list("ett" = ett_formatted))
-          
-          ok_ <- F; max_retries <- 10L; retry_count <- 0L
-          while(!ok_ && retry_count < max_retries){
-            retry_count <- retry_count + 1L
-            batch_l <- try(GetBatch_sim( nBatch_SimGridGen,
-                                         INPUT_REF_DAT = input_df_red_in_,
-                                         nTimesLook = nTimesLookValidation_), T)
-            if(!"try-error" %in% class(batch_l)){ ok_ <- T } # go on
-            if(b_ %% 2 == 0){ gc(); py_gc$collect()  }
-          }
-          if(!ok_) stop(sprintf("GetBatch_sim failed after %d retries at batch %d", max_retries, b_))
-          for(ii_ in 0L:(nBatch_SimGridGen-1L)){ 
-            tfrecordExampleText <- sapply(1:length(batch_l), function(l_){
-              THE_TYPE_ <- eval(parse(text = sprintf("batch_l$%s$dtype", names(batch_l)[l_])))
-              THE_SAVETYPE_ <- if(grepl(THE_TYPE_, pattern="float64")) {
-                "tf$float32"
-              } else if(grepl(THE_TYPE_, pattern="float32")) {
-                "tf$float32"
-              } else if(grepl(THE_TYPE_, pattern="int64")) {
-                "tf$int32"
-              } else if(grepl(THE_TYPE_, pattern="int32")) {
-                "tf$int32"
-              } else {
-                stop(sprintf("Unsupported dtype: %s for batch element '%s'", THE_TYPE_, names(batch_l)[l_]))
-              }
-              sprintf("
-              %s = tf$train$Feature(bytes_list=tf$train$BytesList(value=list(
-                                              tf$io$serialize_tensor(tf$constant( jnp$take(batch_l$%s,ii_, axis = 0L), %s ))$numpy()))),
-              %s_shape = tf$train$Feature(bytes_list=tf$train$BytesList(value=list(
-                                               tf$io$serialize_tensor(tf$constant( jnp$take(batch_l$%s, ii_, axis = 0L) )$shape)$numpy())))
-              ", names(batch_l)[l_], names(batch_l)[l_], THE_SAVETYPE_, names(batch_l)[l_], names(batch_l)[l_]
-               )})
-            tfrecordExampleText <- paste(tfrecordExampleText,collapse = ",")
-            
-            # Create a feature & example 
-            eval(parse(text = sprintf("example <- tf$train$Example(features=tf$train$Features(feature=dict( %s ) ))", tfrecordExampleText )))
-            
-            # Write the Example to the TFRecord file
-            tf_record_writer$write( example$SerializeToString() )
-        }
-        }
-        tf_record_writer$close(); gc()
-        
-        if(type_ == "inference"){
-          TFDatasetIterator_inference <- reticulate::as_iterator( 
-            TFDataset_inference <- read_from_tfrecord(file = tfrecord_file_inference, 
-                                                      batchSize = nBatch))
-          rss_mat <- c(); it <- reticulate::as_iterator(TFDataset_inference)
-          repeat{
-            b <- try(reticulate::iter_next(it), silent = TRUE)
-            if(inherits(b, "try-error")) break
-            if(is.null(b)) break
-            
-            # sanity plots
-            # simCovariates
-            # plot(np$array(b$YTrue)[if_<-sample(1:10,1),,1])
-            # plot(c(np$array(b$XPred)[if_,,col_<-3]*SIM_GLOBAL_SCALE_SD[col_]+SIM_GLOBAL_SCALE_MEAN[col_],np$array(b$YTrue_out)[if_,,1]))
-            # plot(c(np$array(b$YTrue)[if_, 1:nTimesPast, 1],np$array(b$YTrue_out)[if_,,1]))
-            
-            # for(re in 1:4){ plot(c(np$array(b$XPred)[if_,,re])) }
-            # plot(c(np$array(b$YTrue)[if_, 1:nTimesPast, 1]))
-            # cor(np$array(b$YTrue)[if_, 1:nTimesPast, 1],np$array(b$XPred)[if_,,])
-            # plot(np$array(b$YTrue)[if_, 1:nTimesPast, 1], np$array(b$XPred)[if_,,3]);abline(a=0,b=1)
-            # note: the shift / SDs are not TRUE (noise is also added), 
-            # so don't expect perfect recovery of those parameters (fat tailed exacerbates)
-            
-            y_true_out <- np$array(b$YTrue_out)[,,1]
-            last <- np$array(b$YTrue)[,nTimesPast,1]
-            y_base  <- matrix(last, nrow = length(last), ncol = dim(y_true_out)[2], byrow = FALSE)
-            
-            rss_mat <- rbind(rss_mat, (y_true_out - y_base)^2)
-          }
-          RSS <- c(colSums(rss_mat)); MRSS <- c(colMeans(rss_mat))
-          names(RSS) <- paste("RSS",1:length(RSS),sep="")
-          names(MRSS) <- paste("MRSS",1:length(MRSS),sep="")
-          
-          # write results to disk for further analysis
-          dir.create(SaveBaseRSS_dir <- sprintf("./SavedResults/Sim/BaseRSSResults_%s",AnalysisName))
-          write.csv(t(as.matrix(c(BaseID = as.vector(SimEntry$BaseID[1]),RSS,MRSS))),
-                   sprintf("%s/RSS_BaseID%s.csv",SaveBaseRSS_dir,SimEntry$BaseID[1]) )
-        }
-       
-        # run tests    
-        #TFDataset <- read_from_tfrecord(file = tfrecord_file, batchSize = nBatch)
-        #TFDatasetIterator <- reticulate::as_iterator( TFDataset )
-        #TFDataBatch <- reticulate::iter_next( TFDatasetIterator )
-      }
-    }
     TFDatasetIterator_train <- reticulate::as_iterator(
           TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train, 
                                                 batchSize = nBatch, 

@@ -53,7 +53,7 @@ ndm_create_sim_run_config(
   solver_profile = "default",
   model_type = NULL,
   respect_grid_model_type = TRUE,
-  resave_tfrecords = TRUE,
+  resave_tfrecords = FALSE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords",
     analysis_name),
   dry_run = FALSE
@@ -134,9 +134,11 @@ standard deviations.}
 
 \item{respect_grid_model_type}{Logical scalar indicating whether grid rows may override the requested model type.}
 
-\item{resave_tfrecords}{Logical scalar controlling TFRecord regeneration.
-Supported for real and simulation workflows. Multidisease workflows reject
-\code{TRUE} because the legacy regeneration path has been retired.}
+\item{resave_tfrecords}{Logical scalar retained for compatibility. Training
+workflows require \code{FALSE}. For real and simulation runs, build canonical
+artifacts separately with \code{ndm_bootstrap_real_tfrecords()} or
+\code{ndm_bootstrap_sim_tfrecords()}. Prepare multidisease inputs outside the
+training runner.}
 
 \item{tfrecord_dir}{Optional TFRecord output directory.}
 
@@ -156,13 +158,9 @@ Supported for real and simulation workflows. Multidisease workflows reject
 }
 \value{
 The \code{ndm_create_*_run_config()} helpers return classed lists describing
-the requested workflow. \code{ndm_run_real()} and \code{ndm_run_sim()} return
-a dry-run preview when \code{config$dry_run} is \code{TRUE}, a list containing
-\code{written_base_ids}, \code{tfrecord_dir}, and \code{write_plan} when
-\code{config$resave_tfrecords} is \code{TRUE}, and otherwise the underlying
-workflow result. \code{ndm_run_multidisease()} returns a dry-run preview when
-\code{config$dry_run} is \code{TRUE} and otherwise the underlying workflow
-result.
+the requested workflow. Each \code{ndm_run_*()} function returns a dry-run
+preview when \code{config$dry_run} is \code{TRUE} and otherwise the underlying
+workflow result.
 }
 \description{
 Package-native configuration constructors and workflow runners for the

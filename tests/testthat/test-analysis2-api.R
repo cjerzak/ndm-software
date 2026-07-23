@@ -11,6 +11,7 @@ test_that("canonical sim bootstrap coordinates concurrent writers per BaseID", {
     resave_flags = c(0L, 1L)
   )
   tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", analysis_name)
+  producer <- ndm_test_tfrecord_producer()
 
   workers <- list(
     parallel::mcparallel(
@@ -19,6 +20,7 @@ test_that("canonical sim bootstrap coordinates concurrent writers per BaseID", {
         analysis_name = analysis_name,
         grid = grid,
         base_ids = 1L,
+        producer = producer,
         overwrite = FALSE,
         dry_run = FALSE
       )
@@ -29,6 +31,7 @@ test_that("canonical sim bootstrap coordinates concurrent writers per BaseID", {
         analysis_name = analysis_name,
         grid = grid,
         base_ids = 1L,
+        producer = producer,
         overwrite = FALSE,
         dry_run = FALSE
       )
@@ -44,6 +47,7 @@ test_that("canonical sim bootstrap coordinates concurrent writers per BaseID", {
   expect_equal(sum(statuses == "written"), 1L)
   expect_equal(sum(statuses %in% c("skipped_existing", "skipped_locked_existing")), 1L)
   expect_equal(manifest$metadata$n_examples, 1024L)
+  expect_identical(manifest$producer, producer)
 })
 
 test_that("canonical sim bootstrap dry run plans one row per BaseID in raw order", {
@@ -98,6 +102,17 @@ test_that("canonical real bootstrap exposes an explicit BaseID-scoped dry-run pl
   expect_false(dir.exists(file.path(project_root, "Data", "RunTFRecords")))
 })
 
+test_that("canonical publication requires producer metadata", {
+  expect_error(
+    ndm_bootstrap_sim_tfrecords(project_root = tempdir(), grid = data.frame()),
+    "`producer` is required"
+  )
+  expect_error(
+    ndm_bootstrap_real_tfrecords(project_root = tempdir(), grid = data.frame()),
+    "`producer` is required"
+  )
+})
+
 test_that("canonical sim bootstrap writes the first 10 canonical BaseIDs once each", {
   ndm_require_runner_test_stack("package-native sim bootstrap integration tests")
 
@@ -118,6 +133,7 @@ test_that("canonical sim bootstrap writes the first 10 canonical BaseIDs once ea
     analysis_name = analysis_name,
     grid = grid,
     base_ids = 1:10,
+    producer = ndm_test_tfrecord_producer(),
     overwrite = FALSE,
     dry_run = FALSE
   )
@@ -142,6 +158,7 @@ test_that("Analysis2 training TFRecord shuffle is reproducible from run_seed", {
     analysis_name = "SeededShuffle",
     grid = grid,
     tfrecord_dir = tfrecord_dir,
+    producer = ndm_test_tfrecord_producer(),
     overwrite = TRUE,
     dry_run = FALSE
   )
@@ -193,6 +210,7 @@ test_that("canonical sim bootstrap skips existing artifacts on rerun", {
     project_root = project_root,
     analysis_name = analysis_name,
     grid = grid,
+    producer = ndm_test_tfrecord_producer(),
     parallel_workers = 2L,
     overwrite = FALSE,
     dry_run = FALSE
@@ -201,6 +219,7 @@ test_that("canonical sim bootstrap skips existing artifacts on rerun", {
     project_root = project_root,
     analysis_name = analysis_name,
     grid = grid,
+    producer = ndm_test_tfrecord_producer(),
     overwrite = FALSE,
     dry_run = FALSE
   )
@@ -293,62 +312,8 @@ test_that("canonical bootstraps treat production row and pair identities as run 
   expect_equal(real_plan$BaseID, 1L)
 })
 
-test_that("package-native sim runner regenerates canonical TFRecords in non-dry mode", {
-  ndm_require_runner_test_stack("package-native sim runner tests")
-
-  project_root <- ndm_test_runner_project_root()
-  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
-  old_wd <- getwd()
-  on.exit(setwd(old_wd), add = TRUE)
-
-  analysis_name <- "SimNonDry"
-  grid <- ndm_test_make_sim_run_grid()
-  grid_path <- file.path(
-    project_root,
-    "Data",
-    "RunGrids",
-    "SimGrids",
-    sprintf("SimGrid_%s.csv", analysis_name)
-  )
-  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", analysis_name)
-
-  ndm_test_write_grid(grid, grid_path)
-
-  resave <- ndm_run_sim(
-    ndm_create_sim_run_config(
-      project_root = project_root,
-      analysis_name = analysis_name,
-      grid = grid,
-      outer = 1L,
-      model_type = "DecoderOnly",
-      dry_run = FALSE,
-      resave_tfrecords = TRUE
-    )
-  )
-
-  expect_equal(resave$written_base_ids, 1L)
-  expect_true(is.data.frame(resave$write_plan))
-  expect_equal(resave$write_plan$artifact_n_samples_train, 4L)
-  ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = 1L)
-
-  from_file <- ndm_run_sim(
-    ndm_create_sim_run_config(
-      project_root = project_root,
-      analysis_name = analysis_name,
-      grid_file = grid_path,
-      outer = 1L,
-      model_type = "DecoderOnly",
-      dry_run = FALSE,
-      resave_tfrecords = TRUE
-    )
-  )
-
-  expect_equal(from_file$written_base_ids, 1L)
-  ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = 1L)
-})
-
-test_that("package-native sim runner regenerates one canonical TFRecord per BaseID", {
-  ndm_require_runner_test_stack("package-native sim duplicate BaseID tests")
+test_that("package-native sim runner consumes a requested canonical prefix", {
+  ndm_require_runner_test_stack("package-native sim canonical prefix tests")
 
   project_root <- ndm_test_runner_project_root()
   on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
@@ -362,106 +327,40 @@ test_that("package-native sim runner regenerates one canonical TFRecord per Base
   )
   tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "SimTFRecords", analysis_name)
 
-  resave <- ndm_run_sim(
+  ndm_bootstrap_sim_tfrecords(
+    project_root = project_root,
+    analysis_name = analysis_name,
+    grid = grid,
+    producer = ndm_test_tfrecord_producer(),
+    overwrite = FALSE
+  )
+
+  manifest <- ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")
+  expect_equal(manifest$metadata$n_examples, 8L)
+
+  result <- ndm_run_sim(
     ndm_create_sim_run_config(
       project_root = project_root,
       analysis_name = analysis_name,
       grid = grid,
-      outer = c(2L, 1L),
-      model_type = "DecoderOnly",
-      dry_run = FALSE,
-      resave_tfrecords = TRUE
-    )
-  )
-
-  manifest <- ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")
-
-  expect_equal(resave$written_base_ids, 1L)
-  expect_equal(nrow(resave$write_plan), 1L)
-  expect_equal(resave$write_plan$selected_rows, "2,1")
-  expect_equal(resave$write_plan$canonical_row, 2L)
-  expect_equal(resave$write_plan$artifact_n_samples_train, 8L)
-  expect_equal(manifest$metadata$n_examples, 8L)
-})
-
-test_that("package-native real runner regenerates canonical TFRecords and completes non-dry runs", {
-  ndm_require_runner_test_stack("package-native real runner tests")
-
-  project_root <- ndm_test_runner_project_root()
-  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
-  old_wd <- getwd()
-  on.exit(setwd(old_wd), add = TRUE)
-
-  analysis_name <- "RealNonDry"
-  raw_data_dir <- ndm_test_copy_raw_covid_fixture(project_root)
-  grid <- ndm_test_make_real_run_grid()
-  grid_path <- file.path(
-    project_root,
-    "Data",
-    "RunGrids",
-    "RealGrids",
-    sprintf("RealGrid_%s.csv", analysis_name)
-  )
-  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "RealTFRecords", analysis_name)
-  holder_folder <- file.path(project_root, "SavedResults", "Real", sprintf("Results_%s", analysis_name))
-  saved_model_root <- file.path(project_root, "SavedModels", "FromReal")
-
-  ndm_test_write_grid(grid, grid_path)
-
-  resave_config <- ndm_create_real_run_config(
-    project_root = project_root,
-    analysis_name = analysis_name,
-    grid = grid,
-    outer = 1L,
-    model_type = "NeuralODE",
-    resave_tfrecords = TRUE,
-    raw_data_dir = raw_data_dir,
-    outcome_metric = "inc_death",
-    data_subset = "all",
-    dry_run = FALSE
-  )
-  expect_false("config_file" %in% names(resave_config))
-
-  resave <- ndm_run_real(resave_config)
-
-  expect_equal(resave$written_base_ids, 1L)
-  expect_true(is.data.frame(resave$write_plan))
-  expect_equal(resave$write_plan$artifact_n_samples_train, 4L)
-  ndm_test_assert_canonical_tfrecords(tfrecord_dir, base_id = 1L)
-
-  result <- ndm_run_real(
-    ndm_create_real_run_config(
-      project_root = project_root,
-      analysis_name = analysis_name,
-      grid_file = grid_path,
       outer = 1L,
-      model_type = "NeuralODE",
+      model_type = "DecoderOnly",
       force_to_gpu = FALSE,
+      max_sgd_steps = 1L,
       resave_tfrecords = FALSE,
-      raw_data_dir = raw_data_dir,
-      outcome_metric = "inc_death",
-      data_subset = "all",
       dry_run = FALSE
     )
   )
 
   expect_true(isTRUE(result))
-  expect_true(dir.exists(holder_folder))
-  expect_gt(length(list.files(holder_folder, full.names = TRUE)), 0L)
-  expect_true(dir.exists(saved_model_root))
-  expect_gte(
-    length(list.files(saved_model_root, pattern = paste0("^Model_", analysis_name), full.names = TRUE)),
-    1L
+  expect_equal(
+    ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")$n_examples,
+    8L
   )
-  csv_files <- list.files(holder_folder, pattern = "\\.csv$", full.names = TRUE, recursive = TRUE)
-  expect_gt(length(csv_files), 0L)
-  metrics <- utils::read.csv(csv_files[[1L]], stringsAsFactors = FALSE)
-  expect_true(all(c("nSGDPolicy", "nSGDAnchorMaxSamplesTrain", "nSGDAnchorScope") %in% names(metrics)))
-  expect_true(all(metrics$nSGDPolicy == "anchored_mode_max_nSamplesTrain"))
 })
 
-test_that("package-native real runner reuses duplicate BaseID TFRecords after canonical regeneration", {
-  ndm_require_runner_test_stack("package-native real duplicate BaseID tests")
+test_that("package-native real runner consumes a requested canonical prefix", {
+  ndm_require_runner_test_stack("package-native real canonical prefix tests")
 
   project_root <- ndm_test_runner_project_root()
   on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
@@ -476,37 +375,30 @@ test_that("package-native real runner reuses duplicate BaseID TFRecords after ca
   )
   tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "RealTFRecords", analysis_name)
 
-  resave <- ndm_run_real(
-    ndm_create_real_run_config(
-      project_root = project_root,
-      analysis_name = analysis_name,
-      grid = grid,
-      outer = c(2L, 1L),
-      model_type = "NeuralODE",
-      resave_tfrecords = TRUE,
-      raw_data_dir = raw_data_dir,
-      outcome_metric = "inc_death",
-      data_subset = "all",
-      dry_run = FALSE
-    )
+  ndm_bootstrap_real_tfrecords(
+    project_root = project_root,
+    analysis_name = analysis_name,
+    grid = grid,
+    raw_data_dir = raw_data_dir,
+    outcome_metric = "inc_death",
+    data_subset = "all",
+    producer = ndm_test_tfrecord_producer(),
+    overwrite = FALSE
   )
 
   manifest <- ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")
-  expect_equal(resave$written_base_ids, 1L)
-  expect_equal(nrow(resave$write_plan), 1L)
-  expect_equal(resave$write_plan$selected_rows, "2,1")
-  expect_equal(resave$write_plan$canonical_row, 2L)
-  expect_equal(resave$write_plan$artifact_n_samples_train, 8L)
   expect_equal(manifest$metadata$n_examples, 8L)
+  expect_identical(manifest$producer, ndm_test_tfrecord_producer())
 
   result <- ndm_run_real(
     ndm_create_real_run_config(
       project_root = project_root,
       analysis_name = analysis_name,
       grid = grid,
-      outer = c(2L, 1L),
+      outer = 1L,
       model_type = "NeuralODE",
       force_to_gpu = FALSE,
+      max_sgd_steps = 1L,
       resave_tfrecords = FALSE,
       raw_data_dir = raw_data_dir,
       outcome_metric = "inc_death",
@@ -516,64 +408,52 @@ test_that("package-native real runner reuses duplicate BaseID TFRecords after ca
   )
 
   expect_true(isTRUE(result))
+  expect_equal(
+    ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")$n_examples,
+    8L
+  )
 })
 
-test_that("package-native sim runner rejects non-max canonical flags within a BaseID", {
-  ndm_require_runner_test_stack("package-native sim flag validation tests")
-
-  project_root <- ndm_test_runner_project_root()
-  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
-
-  grid <- ndm_test_make_sim_duplicate_base_grid(
-    n_samples_train = c(4L, 8L),
-    resave_flags = c(1L, 0L)
+test_that("training run configs reject inline TFRecord regeneration", {
+  constructors <- list(
+    real = ndm_create_real_run_config,
+    sim = ndm_create_sim_run_config,
+    multidisease = ndm_create_multidisease_run_config
+  )
+  guidance <- c(
+    real = "ndm_bootstrap_real_tfrecords",
+    sim = "ndm_bootstrap_sim_tfrecords",
+    multidisease = "Prepare multidisease inputs outside the training runner"
   )
 
-  expect_error(
-    ndm_run_sim(
-      ndm_create_sim_run_config(
-        project_root = project_root,
-        analysis_name = "SimBadFlag",
-        grid = grid,
-        outer = c(1L, 2L),
-        model_type = "DecoderOnly",
-        dry_run = FALSE,
-        resave_tfrecords = TRUE
+  for (mode in names(constructors)) {
+    expect_error(
+      constructors[[mode]](project_root = tempdir(), resave_tfrecords = TRUE),
+      guidance[[mode]],
+      info = mode
+    )
+  }
+
+  runtime <- ndm:::.ndm_new_run_impl_env()
+  for (mode in names(constructors)) {
+    for (invalid_value in list(TRUE, 1L, "TRUE")) {
+      spec <- runtime$analysis2_mode_defaults(mode)
+      spec$project_root <- tempdir()
+      spec$resave_tfrecords <- invalid_value
+      expect_error(
+        runtime$analysis2_normalize_run_spec(
+          spec,
+          mode = mode,
+          paths = list(project_root = tempdir())
+        ),
+        guidance[[mode]],
+        info = paste("runtime", mode, deparse(invalid_value))
       )
-    ),
-    "requires the flagged row to use the largest `nSamplesTrain`"
-  )
+    }
+  }
 })
 
-test_that("package-native sim runner rejects conflicting dataset fields within a BaseID", {
-  ndm_require_runner_test_stack("package-native sim duplicate field validation tests")
-
-  project_root <- ndm_test_runner_project_root()
-  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
-
-  grid <- ndm_test_make_sim_duplicate_base_grid(
-    n_samples_train = c(4L, 8L),
-    resave_flags = c(0L, 1L)
-  )
-  grid$gamma[[2L]] <- 0.4
-
-  expect_error(
-    ndm_run_sim(
-      ndm_create_sim_run_config(
-        project_root = project_root,
-        analysis_name = "SimConflict",
-        grid = grid,
-        outer = c(1L, 2L),
-        model_type = "DecoderOnly",
-        dry_run = FALSE,
-        resave_tfrecords = TRUE
-      )
-    ),
-    "disagree on dataset-defining fields.*gamma"
-  )
-})
-
-test_that("package-native multidisease runner completes a non-dry run", {
+test_that("package-native multidisease runner fails closed when canonical artifacts are missing", {
   ndm_require_runner_test_stack("package-native multidisease runner tests")
 
   project_root <- ndm_test_multidisease_project_root()
@@ -583,34 +463,56 @@ test_that("package-native multidisease runner completes a non-dry run", {
 
   analysis_name <- "MultidiseaseNonDry"
   grid <- ndm_test_make_multidisease_run_grid()
-  holder_folder <- file.path(project_root, "SavedResults", "Real", sprintf("Results_%s", analysis_name))
+  tfrecord_dir <- file.path(project_root, "Data", "RunTFRecords", "RealTFRecords", analysis_name)
 
   ndm_test_write_ihme_fixture(project_root)
 
-  result <- ndm_run_multidisease(
-    ndm_create_multidisease_run_config(
-      project_root = project_root,
-      analysis_name = analysis_name,
-      grid = grid,
-      outer = 1L,
-      model_type = "NeuralODE",
-      force_to_gpu = FALSE,
-      data_format = "IHME",
-      disease_names = "hiv",
-      data_subset = "all",
-      outcome_metric = "CountValue",
-      dry_run = FALSE
-    )
+  expect_error(
+    ndm_run_multidisease(
+      ndm_create_multidisease_run_config(
+        project_root = project_root,
+        analysis_name = analysis_name,
+        grid = grid,
+        outer = 1L,
+        model_type = "NeuralODE",
+        force_to_gpu = FALSE,
+        data_format = "IHME",
+        disease_names = "hiv",
+        data_subset = "all",
+        outcome_metric = "CountValue",
+        dry_run = FALSE
+      )
+    ),
+    "Prepare multidisease inputs outside the training runner"
   )
+  expect_false(dir.exists(tfrecord_dir))
+})
 
-  expect_true(isTRUE(result))
-  expect_true(dir.exists(holder_folder))
-  expect_gt(length(list.files(holder_folder, full.names = TRUE)), 0L)
-  csv_files <- list.files(holder_folder, pattern = "\\.csv$", full.names = TRUE, recursive = TRUE)
-  expect_gt(length(csv_files), 0L)
-  metrics <- utils::read.csv(csv_files[[1L]], stringsAsFactors = FALSE)
-  expect_true(all(c("nSGDPolicy", "nSGDAnchorMaxSamplesTrain", "nSGDAnchorScope") %in% names(metrics)))
-  expect_true(all(metrics$nSGDPolicy == "anchored_mode_max_nSamplesTrain"))
+test_that("multidisease compatibility driver cannot enable inline TFRecord writing", {
+  driver_source <- ndm:::.ndm_embedded_runtime_sources[[
+    "SetupEnv/Analysis2_legacy_multidisease_driver.R"
+  ]]
+
+  expect_match(
+    driver_source,
+    "Canonical multidisease TFRecords are missing",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    "Prepare multidisease inputs outside the training runner",
+    fixed = TRUE
+  )
+  expect_false(grepl(
+    "ReSaveTfRecords <- TRUE",
+    driver_source,
+    fixed = TRUE
+  ))
+  expect_false(grepl(
+    "generating them on demand",
+    driver_source,
+    fixed = TRUE
+  ))
 })
 
 test_that("package-native sim dry runs anchor nSGD to the largest sibling sim grid", {
@@ -820,6 +722,7 @@ test_that("run configs expose production checkpoint and preregistered sensitivit
   expect_equal(config$prior_sd_multiplier, 2)
   expect_equal(config$solver_profile, "tight")
   expect_equal(config$neuralode_mean_loss_weight, 0.3)
+  expect_false(config$resave_tfrecords)
   expect_error(
     ndm_create_sim_run_config(project_root = tempdir(), n_checkpoints = 0L),
     "positive integer"
@@ -929,14 +832,4 @@ test_that("multidisease runner errors when legacy driver omits result", {
     "without assigning `analysis2_multidisease_result`"
   )
   expect_identical(getwd(), old_wd)
-})
-
-test_that("multidisease run configs reject retired TFRecord regeneration", {
-  expect_error(
-    ndm_create_multidisease_run_config(
-      project_root = tempdir(),
-      resave_tfrecords = TRUE
-    ),
-    "no longer supported for multidisease workflows"
-  )
 })

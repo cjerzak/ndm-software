@@ -176,6 +176,24 @@ test_that("generated embedded runtime sources stay in sync with runtime source f
   }
 })
 
+test_that("real and simulation data generators only read canonical TFRecords", {
+  source_root <- runtime_registry_source_root()
+  generators <- vapply(
+    c(
+      "SetupData/SuperLModel_DataGenerator_Real.R",
+      "SetupData/SuperLModel_DataGenerator_Sim.R"
+    ),
+    function(relative_path) runtime_source_text(source_root, relative_path),
+    character(1L)
+  )
+
+  expect_true(all(grepl("tf$data$TFRecordDataset", generators, fixed = TRUE)))
+  expect_true(all(grepl("TFDatasetIterator_train", generators, fixed = TRUE)))
+  expect_false(any(grepl("TFRecordWriter", generators, fixed = TRUE)))
+  expect_false(any(grepl("dir.create(TfRecordDir", generators, fixed = TRUE)))
+  expect_false(grepl("inference_support_", generators[[1L]], fixed = TRUE))
+})
+
 test_that("runtime source keeps NeuralODE and transformer regression fixes", {
   source_root <- runtime_registry_source_root()
   build_ml <- runtime_source_text(source_root, "ModelDefiners/SuperLModel_BuildML.R")

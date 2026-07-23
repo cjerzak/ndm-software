@@ -58,7 +58,7 @@
       "gpu_mem_frac: null",
       "neuralode_kl_weight: 1.0",
       "neuralode_mean_loss_weight: 0.0",
-      "resave_tfrecords: true",
+      "resave_tfrecords: false",
       "run_figures: false",
       "tfrecord_dir: Data/RunTFRecords/SimTFRecords/BigSimsLatest",
       "dry_run: false"

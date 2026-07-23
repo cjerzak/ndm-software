@@ -45,7 +45,9 @@ Before building, training, predicting, or restoring artifacts from a runtime
 environment, initialize the backend for the target conda environment with
 `ndm_initialize_backend()`. `ndm_prepare_runtime()` requires the
 `fastmatch` package. `ndm_prepare_data(generator = "sim")` additionally
-requires `progress` and `zoo`.
+requires `zoo`. The compatibility fields
+`resave_tfrecords` and `ReSaveTfRecords` must remain `FALSE` in configs,
+runtime environments, and runtime globals.
 }
 \examples{
 env <- ndm_new_runtime_env()

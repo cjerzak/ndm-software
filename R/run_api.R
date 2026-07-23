@@ -58,11 +58,11 @@
 #' @param model_type Optional model family override.
 #' @param respect_grid_model_type Logical scalar indicating whether grid rows
 #'   should be allowed to override the requested model type.
-#' @param resave_tfrecords Logical scalar controlling TFRecord regeneration.
-#'   Supported for real and simulation workflows. Multidisease workflows reject
-#'   `TRUE` because the legacy regeneration path has been retired. When
-#'   selected rows share a `BaseID`, regeneration writes one canonical TFRecord
-#'   pair per `BaseID` using the largest `nSamplesTrain` among those rows.
+#' @param resave_tfrecords Logical scalar retained for compatibility. Training
+#'   workflows require `FALSE`. For real and simulation runs, build canonical
+#'   artifacts separately with [ndm_bootstrap_real_tfrecords()] or
+#'   [ndm_bootstrap_sim_tfrecords()]. Prepare multidisease inputs outside the
+#'   training runner.
 #' @param tfrecord_dir Optional TFRecord output directory.
 #' @param raw_data_dir Real-data input directory.
 #' @param outcome_metric Outcome metric name for real-data or multidisease runs.
@@ -73,12 +73,9 @@
 #'   resolving paths and grid rows.
 #'
 #' @returns `ndm_create_*_run_config()` returns a classed list describing the
-#'   requested workflow. `ndm_run_real()` and `ndm_run_sim()` return a dry-run
-#'   preview when `config$dry_run` is `TRUE`, a list containing
-#'   `written_base_ids`, `tfrecord_dir`, and `write_plan` when
-#'   `config$resave_tfrecords` is `TRUE`, and otherwise the underlying workflow
-#'   result. `ndm_run_multidisease()` returns a dry-run preview when
-#'   `config$dry_run` is `TRUE` and otherwise the underlying workflow result.
+#'   requested workflow. Each `ndm_run_*()` function returns a dry-run preview
+#'   when `config$dry_run` is `TRUE` and otherwise the underlying workflow
+#'   result.
 #'
 #' @examples
 #' \dontrun{
@@ -169,7 +166,7 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       solver_profile = "default",
                                       model_type = NULL,
                                       respect_grid_model_type = TRUE,
-                                      resave_tfrecords = TRUE,
+                                      resave_tfrecords = FALSE,
                                       tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
                                       dry_run = FALSE) {
   if (!is.null(grid)) {
@@ -275,10 +272,12 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
 #' @param tfrecord_dir Output directory for canonical TFRecords.
 #' @param overwrite Logical scalar controlling whether existing canonical
 #'   TFRecords should be regenerated.
+#' @param producer Nonempty named producer metadata stored in every artifact
+#'   manifest. Required for publication; dry runs may omit it.
 #' @param parallel_workers Positive integer number of forked BaseID workers on
-#'   Linux. Real-data source tables are prepared once before forking. macOS and
-#'   Windows use the deterministic serial path because TensorFlow/JAX runtimes
-#'   are not fork-safe there.
+#'   Linux. Inputs are prepared before forking. macOS and Windows use the
+#'   deterministic serial path because TensorFlow/JAX runtimes are not
+#'   fork-safe there.
 #' @param dry_run Logical scalar indicating whether to return the canonical
 #'   write plan without writing TFRecords.
 #'
@@ -293,10 +292,14 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
                                         grid_file = file.path("Data", "RunGrids", "SimGrids", sprintf("SimGrid_%s.csv", analysis_name)),
                                         base_ids = NULL,
                                         tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
+                                        producer = NULL,
                                         parallel_workers = 1L,
                                         overwrite = FALSE,
                                         dry_run = FALSE) {
   project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
+  if (!isTRUE(dry_run) && is.null(producer)) {
+    stop("`producer` is required when publishing canonical TFRecords.", call. = FALSE)
+  }
 
   if (!is.null(grid)) {
     grid_file <- NULL
@@ -329,6 +332,7 @@ ndm_bootstrap_sim_tfrecords <- function(project_root = getwd(),
     grid = sim_grid,
     base_ids = base_ids,
     tfrecord_dir = tfrecord_dir,
+    producer = producer,
     parallel_workers = as.integer(parallel_workers),
     overwrite = isTRUE(overwrite),
     dry_run = isTRUE(dry_run)
@@ -363,10 +367,14 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
                                          raw_data_dir = file.path("Data", "MainData"),
                                          outcome_metric = "inc_death",
                                          data_subset = "high_income",
+                                         producer = NULL,
                                          parallel_workers = 1L,
                                          overwrite = FALSE,
                                          dry_run = FALSE) {
   project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
+  if (!isTRUE(dry_run) && is.null(producer)) {
+    stop("`producer` is required when publishing canonical TFRecords.", call. = FALSE)
+  }
   if (!is.null(grid)) {
     grid_file <- NULL
   }
@@ -398,6 +406,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     raw_data_dir = raw_data_dir,
     outcome_metric = as.character(outcome_metric),
     data_subset = as.character(data_subset),
+    producer = producer,
     parallel_workers = as.integer(parallel_workers),
     overwrite = isTRUE(overwrite),
     dry_run = isTRUE(dry_run)
@@ -405,14 +414,25 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
 }
 
 .ndm_validate_resave_tfrecords <- function(mode, resave_tfrecords) {
-  if (identical(mode, "multidisease") && isTRUE(resave_tfrecords)) {
-    stop(
-      "`resave_tfrecords = TRUE` is no longer supported for multidisease workflows.",
-      call. = FALSE
-    )
+  if (is.null(resave_tfrecords) || identical(resave_tfrecords, FALSE)) {
+    return(invisible(TRUE))
   }
 
-  invisible(TRUE)
+  guidance <- switch(
+    mode,
+    real = "Use `ndm_bootstrap_real_tfrecords()` before training.",
+    sim = "Use `ndm_bootstrap_sim_tfrecords()` before training.",
+    multidisease = "Prepare multidisease inputs outside the training runner.",
+    paste(
+      "Use `ndm_bootstrap_real_tfrecords()` or `ndm_bootstrap_sim_tfrecords()` before training.",
+      "Prepare multidisease inputs outside the training runner."
+    )
+  )
+  stop(
+    "`resave_tfrecords = TRUE` is no longer supported by training workflows. ",
+    guidance,
+    call. = FALSE
+  )
 }
 
 .ndm_run_env_get <- function(env, name) {
@@ -826,6 +846,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
 })
 
 .ndm_call_analysis2_runner <- function(mode, config) {
+  .ndm_validate_resave_tfrecords(mode, config$resave_tfrecords)
   api_env <- .ndm_legacy_run_env()
   run_fun <- get(.ndm_run_mode_fun_name(mode), envir = api_env, inherits = FALSE)
   run_fun(.ndm_run_config_to_args(config))
@@ -864,6 +885,5 @@ ndm_run_multidisease <- function(config = ndm_create_multidisease_run_config()) 
   if (!inherits(config, "ndm_multidisease_run_config")) {
     stop("`config` must inherit from class 'ndm_multidisease_run_config'.", call. = FALSE)
   }
-  .ndm_validate_resave_tfrecords("multidisease", config$resave_tfrecords)
   .ndm_call_analysis2_runner("multidisease", config)
 }

@@ -1,3 +1,12 @@
+.ndm_requests_tfrecord_regeneration <- function(runtime_env, value_sources = list()) {
+  flags <- c("resave_tfrecords", "ReSaveTfRecords")
+  is_invalid <- function(value) !is.null(value) && !identical(value, FALSE)
+  any(vapply(flags, function(flag) {
+    is_invalid(get0(flag, envir = runtime_env, inherits = TRUE)) ||
+      any(vapply(value_sources, function(values) is_invalid(values[[flag]]), logical(1)))
+  }, logical(1)))
+}
+
 #' Prepare a local runtime for execution
 #'
 #' These wrappers load package-owned runtime components into an isolated
@@ -8,7 +17,9 @@
 #' environment, initialize the backend for the target conda environment with
 #' `ndm_initialize_backend()`. `ndm_prepare_runtime()` requires the
 #' `fastmatch` package. `ndm_prepare_data(generator = "sim")` additionally
-#' requires `progress` and `zoo`.
+#' requires `zoo`. The compatibility fields
+#' `resave_tfrecords` and `ReSaveTfRecords` must remain `FALSE` in configs,
+#' runtime environments, and runtime globals.
 #'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.
@@ -34,6 +45,10 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
   if (!inherits(config, "ndm_config")) {
     stop("`config` must inherit from class 'ndm_config'.", call. = FALSE)
   }
+  .ndm_validate_resave_tfrecords(
+    "generic",
+    .ndm_requests_tfrecord_regeneration(runtime_env, list(config, runtime_globals))
+  )
 
   ndm_set_runtime_globals(runtime_env, list(ndm_config = config))
   ndm_set_runtime_globals(runtime_env, as.list(config))
@@ -67,11 +82,15 @@ ndm_prepare_data <- function(runtime_env,
   }
 
   generator <- match.arg(generator)
+  .ndm_validate_resave_tfrecords(
+    generator,
+    .ndm_requests_tfrecord_regeneration(runtime_env, list(runtime_globals))
+  )
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_set_runtime_globals(runtime_env, list(ndm_data_generator = generator))
   if (identical(generator, "sim")) {
     .ndm_require_namespaces(
-      c("progress", "zoo"),
+      "zoo",
       context = "ndm_prepare_data(generator = 'sim')"
     )
   }
@@ -232,7 +251,7 @@ ndm_prepare_data <- function(runtime_env,
 #' upstream runtime and data globals required by the selected workflow.
 #' `ndm_train()` requires `rrapply`; it also requires `zip` when checkpointing
 #' is enabled and `zoo` for multidisease training. Simulation paths inherit the
-#' `progress` and `zoo` requirements documented on [ndm_prepare_runtime()].
+#' `zoo` requirement documented on [ndm_prepare_runtime()].
 #'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.

@@ -97,7 +97,7 @@ These functions assume the backend has already been initialized with
 upstream runtime and data globals required by the selected workflow.
 `ndm_train()` requires `rrapply`; it also requires `zip` when checkpointing
 is enabled and `zoo` for multidisease training. Simulation paths inherit the
-`progress` and `zoo` requirements documented on [ndm_prepare_runtime()].
+`zoo` requirement documented on [ndm_prepare_runtime()].
 }
 \examples{
 cfg <- ndm_create_config()

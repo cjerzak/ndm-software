@@ -6,7 +6,6 @@ ndm_require_runner_test_stack <- function(context) {
       "reticulate",
       "fastmatch",
       "rrapply",
-      "progress",
       "yaml",
       "zip",
       "zoo",
@@ -19,6 +18,10 @@ ndm_test_runner_project_root <- function(prefix = "ndm-runner-") {
   root <- tempfile(prefix)
   dir.create(root, recursive = TRUE, showWarnings = FALSE)
   root
+}
+
+ndm_test_tfrecord_producer <- function() {
+  list(contract = "ndm-test-producer-v1")
 }
 
 ndm_test_write_grid <- function(grid, path) {

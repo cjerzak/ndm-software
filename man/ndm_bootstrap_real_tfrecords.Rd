@@ -15,6 +15,7 @@ ndm_bootstrap_real_tfrecords(
   raw_data_dir = file.path("Data", "MainData"),
   outcome_metric = "inc_death",
   data_subset = "high_income",
+  producer = NULL,
   parallel_workers = 1L,
   overwrite = FALSE,
   dry_run = FALSE
@@ -42,10 +43,13 @@ first appearance.}
 
 \item{data_subset}{Real-data subset passed to `ndmdatasets`.}
 
+\item{producer}{Nonempty named producer metadata stored in every artifact
+manifest. Required for publication; dry runs may omit it.}
+
 \item{parallel_workers}{Positive integer number of forked BaseID workers on
-Linux. Real-data source tables are prepared once before forking. macOS and
-Windows use the deterministic serial path because TensorFlow/JAX runtimes are
-not fork-safe there.}
+Linux. Inputs are prepared before forking. macOS and Windows use the
+deterministic serial path because TensorFlow/JAX runtimes are not fork-safe
+there.}
 
 \item{overwrite}{Logical scalar controlling whether existing canonical
 TFRecords should be regenerated.}

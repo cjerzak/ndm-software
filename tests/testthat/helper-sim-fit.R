@@ -125,7 +125,7 @@ ndm_test_fit_sim_case <- function(model_type,
     backbone = "transformer",
     float_type = "32",
     force_to_gpu = FALSE,
-    resave_tfrecords = TRUE
+    resave_tfrecords = FALSE
   )
   if (is.list(config_overrides) && length(config_overrides) > 0L) {
     config_defaults <- utils::modifyList(config_defaults, config_overrides)
@@ -559,7 +559,9 @@ ndm_test_sim_parity_neural_config_overrides <- function() {
   list(
     neuralode_optim_dt0 = 1e-2,
     neuralode_optim_controller = "pid",
-    neuralode_init_state_logit_offset = c(2.5, 0, 0, 0),
+    # A modest susceptible-state offset is strong enough to encode the SEIRS
+    # ordering without pinning the initial simplex near an overconfident corner.
+    neuralode_init_state_logit_offset = c(1.0, 0, 0, 0),
     neuralode_init_state_logit_scale_max = 1.0,
     neuralode_variational = TRUE,
     neuralode_kl_weight = 1e-3,

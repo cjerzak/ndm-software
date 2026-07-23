@@ -481,7 +481,8 @@
   if (isTRUE(.ndm_runtime_get0(runtime_env, "resave_tfrecords", ifnotfound = FALSE)) ||
       isTRUE(.ndm_runtime_get0(runtime_env, "ReSaveTfRecords", ifnotfound = FALSE))) {
     stop(
-      "`resave_tfrecords = TRUE` is no longer supported for multidisease workflows.",
+      "`resave_tfrecords = TRUE` is no longer supported for multidisease workflows. ",
+      "Prepare multidisease inputs outside the training runner.",
       call. = FALSE
     )
   }

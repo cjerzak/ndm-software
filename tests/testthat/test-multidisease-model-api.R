@@ -263,6 +263,6 @@ test_that("multidisease preparation rejects retired TFRecord regeneration", {
 
   expect_error(
     ndm_prepare_data(env, generator = "multidisease"),
-    "no longer supported for multidisease workflows"
+    "Prepare multidisease inputs outside the training runner"
   )
 })

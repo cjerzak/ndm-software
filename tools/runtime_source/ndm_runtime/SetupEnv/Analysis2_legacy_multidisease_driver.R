@@ -225,18 +225,18 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
                                                        RealEntry, sep = "_")), collapse = "__")
   
   # setup for tfrecord 
-  TfRecordDir<-sprintf("./Data/RunTFRecords/RealTFRecords/%s",AnalysisName)
-  if(!dir.exists(TfRecordDir)){
-    dir.create(TfRecordDir, recursive = TRUE, showWarnings = FALSE)
-  }
-  need_canonical_tfrecords <- !all(file.exists(c(
+  TfRecordDir <- analysis2_multidisease_spec$tfrecord_dir
+  required_tfrecords <- c(
     sprintf('%s/%s_%s.tfrecord', TfRecordDir, "train", RealEntry$BaseID),
     sprintf('%s/%s_%s.tfrecord', TfRecordDir, "inference", RealEntry$BaseID)
-  )))
-  if(!ReSaveTfRecords){
-    if(need_canonical_tfrecords){
-      warning(sprintf("Canonical TFRecords missing for BaseID %s; generating them on demand in DataGenerator_Real.R", RealEntry$BaseID))
-    }
+  )
+  missing_tfrecords <- required_tfrecords[!file.exists(required_tfrecords)]
+  if(length(missing_tfrecords) > 0L){
+    stop(sprintf(
+      "Canonical multidisease TFRecords are missing for BaseID %s: %s. Prepare multidisease inputs outside the training runner.",
+      RealEntry$BaseID,
+      paste(missing_tfrecords, collapse = ", ")
+    ), call. = FALSE)
   }
   
   # Forces 
@@ -408,13 +408,7 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   
   # setup data generator
   print2( "Defining data acquisition process..." )
-  if(need_canonical_tfrecords){
-    ReSaveTfRecords <- TRUE
-  }
   ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real.R")
-  if(need_canonical_tfrecords){
-    ReSaveTfRecords <- FALSE
-  }
 
   if(!ReSaveTfRecords){
   if(any(!sapply(unique(RealGrid$BaseID), function(s_){

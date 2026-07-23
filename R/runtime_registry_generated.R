@@ -1508,17 +1508,6 @@
             tf <- reticulate::import("tensorflow")
             RESHUFFLE_EACH_ITERATION <- isTRUE(get0("ReshuffleEachIteration",
                 inherits = TRUE, ifnotfound = FALSE))
-            bytes_feature <- function(value) {
-                tf$train$Feature(bytes_list = tf$train$BytesList(value = list(value$numpy())))
-            }
-            SerializeFromListEntry <- function(l_) {
-                feature = dict(data = bytes_feature(lapply(l_,
-                  function(l__) {
-                    tf$io$serialize_tensor(l__)
-                  })), shape = bytes_feature(tf$io$serialize_tensor(l_$shape)))
-                example_proto <- tf$train$Example(features = tf$train$Features(feature = feature))
-                return(example_proto$SerializeToString())
-            }
             parse_single_example_fxn <- function(example_proto) {
                 parseText <- paste(sapply(names(batch_l), function(nl) {
                   sprintf("\n        '%s' = tf$io$FixedLenFeature(list(), tf$string),\n        '%s_shape' = tf$io$FixedLenFeature(list(), tf$string)\n        ",
@@ -1552,9 +1541,6 @@
                 inherits = FALSE))
                 ai(nBatch_SimGridGen)
             else 256L
-            if (!dir.exists(TfRecordDir)) {
-                dir.create(TfRecordDir)
-            }
             tfrecord_file_train <- sprintf("%s/%s_%s.tfrecord",
                 TfRecordDir, "train", SimEntry$BaseID)
             tfrecord_file_inference <- sprintf("%s/%s_%s.tfrecord",
@@ -1563,129 +1549,6 @@
                 ai(nMonteEval)
             else ceiling(1000/nBatch_SimGridGen)
             nTimesLookValidation <- nTimesLookValidationInference
-            if (SimEntry$nSamplesTrain == nSamples_max & ReSaveTfRecords &
-                (SimEntry$ResaveThisTFRecord == 1)) {
-                if (!is.na(COMMAND_ARG_INPUT) & SimEntry$nSamplesTrain ==
-                  1000) {
-                  stop("CRITICAL ERROR: FAST TESTING MODE SEEN IN FINAL TFRECORD CREATION RUN!")
-                }
-                for (type_ in c("train", "inference")) {
-                  if (type_ == "train") {
-                    tf_record_writer <- tf$io$TFRecordWriter(tfrecord_file_train)
-                    nTimesLookValidation_ <- nTimesLookahead
-                    input_df_red_in <- NULL
-                  }
-                  if (type_ == "inference") {
-                    tf_record_writer <- tf$io$TFRecordWriter(tfrecord_file_inference)
-                    nTimesLookValidation_ <- nTimesLookValidationInference
-                    input_df_red_in_ <- NULL
-                  }
-                  nOuter <- ifelse(type_ == "train", yes = c(ceiling(nSamplesTrain/nBatch_SimGridGen)),
-                    no = c(nMonteEval))[[1]]
-                  library(progress)
-                  start_time <- Sys.time()
-                  pb <- progress_bar$new(total = nOuter, format = "  [:bar] :percent | Elapsed: :elapsed | ETA: :eta | ETT: :ett",
-                    clear = FALSE, show_after = 0)
-                  for (b_ in 1:nOuter) {
-                    ett_formatted <- "Calculating for progress bars..."
-                    if (b_ > 1) {
-                      elapsed_secs <- as.numeric(difftime(Sys.time(),
-                        start_time, units = "secs"))
-                      total_secs <- (elapsed_secs/b_) * nOuter
-                      ett_formatted <- sprintf("%02d:%02d:%02d",
-                        floor(total_secs/3600), floor((total_secs%%3600)/60),
-                        floor(total_secs%%60))
-                    }
-                    pb$tick(tokens = list(ett = ett_formatted))
-                    ok_ <- F
-                    max_retries <- 10L
-                    retry_count <- 0L
-                    while (!ok_ && retry_count < max_retries) {
-                      retry_count <- retry_count + 1L
-                      batch_l <- try(GetBatch_sim(nBatch_SimGridGen,
-                        INPUT_REF_DAT = input_df_red_in_, nTimesLook = nTimesLookValidation_),
-                        T)
-                      if (!"try-error" %in% class(batch_l)) {
-                        ok_ <- T
-                      }
-                      if (b_%%2 == 0) {
-                        gc()
-                        py_gc$collect()
-                      }
-                    }
-                    if (!ok_)
-                      stop(sprintf("GetBatch_sim failed after %d retries at batch %d",
-                        max_retries, b_))
-                    for (ii_ in 0L:(nBatch_SimGridGen - 1L)) {
-                      tfrecordExampleText <- sapply(1:length(batch_l),
-                        function(l_) {
-                          THE_TYPE_ <- eval(parse(text = sprintf("batch_l$%s$dtype",
-                            names(batch_l)[l_])))
-                          THE_SAVETYPE_ <- if (grepl(THE_TYPE_,
-                            pattern = "float64")) {
-                            "tf$float32"
-                          }
-                          else if (grepl(THE_TYPE_, pattern = "float32")) {
-                            "tf$float32"
-                          }
-                          else if (grepl(THE_TYPE_, pattern = "int64")) {
-                            "tf$int32"
-                          }
-                          else if (grepl(THE_TYPE_, pattern = "int32")) {
-                            "tf$int32"
-                          }
-                          else {
-                            stop(sprintf("Unsupported dtype: %s for batch element '%s'",
-                              THE_TYPE_, names(batch_l)[l_]))
-                          }
-                          sprintf("\n              %s = tf$train$Feature(bytes_list=tf$train$BytesList(value=list(\n                                              tf$io$serialize_tensor(tf$constant( jnp$take(batch_l$%s,ii_, axis = 0L), %s ))$numpy()))),\n              %s_shape = tf$train$Feature(bytes_list=tf$train$BytesList(value=list(\n                                               tf$io$serialize_tensor(tf$constant( jnp$take(batch_l$%s, ii_, axis = 0L) )$shape)$numpy())))\n              ",
-                            names(batch_l)[l_], names(batch_l)[l_],
-                            THE_SAVETYPE_, names(batch_l)[l_],
-                            names(batch_l)[l_])
-                        })
-                      tfrecordExampleText <- paste(tfrecordExampleText,
-                        collapse = ",")
-                      eval(parse(text = sprintf("example <- tf$train$Example(features=tf$train$Features(feature=dict( %s ) ))",
-                        tfrecordExampleText)))
-                      tf_record_writer$write(example$SerializeToString())
-                    }
-                  }
-                  tf_record_writer$close()
-                  gc()
-                  if (type_ == "inference") {
-                    TFDatasetIterator_inference <- reticulate::as_iterator(TFDataset_inference <- read_from_tfrecord(file = tfrecord_file_inference,
-                      batchSize = nBatch))
-                    rss_mat <- c()
-                    it <- reticulate::as_iterator(TFDataset_inference)
-                    repeat {
-                      b <- try(reticulate::iter_next(it), silent = TRUE)
-                      if (inherits(b, "try-error"))
-                        break
-                      if (is.null(b))
-                        break
-                      y_true_out <- np$array(b$YTrue_out)[, ,
-                        1]
-                      last <- np$array(b$YTrue)[, nTimesPast,
-                        1]
-                      y_base <- matrix(last, nrow = length(last),
-                        ncol = dim(y_true_out)[2], byrow = FALSE)
-                      rss_mat <- rbind(rss_mat, (y_true_out -
-                        y_base)^2)
-                    }
-                    RSS <- c(colSums(rss_mat))
-                    MRSS <- c(colMeans(rss_mat))
-                    names(RSS) <- paste("RSS", 1:length(RSS),
-                      sep = "")
-                    names(MRSS) <- paste("MRSS", 1:length(MRSS),
-                      sep = "")
-                    dir.create(SaveBaseRSS_dir <- sprintf("./SavedResults/Sim/BaseRSSResults_%s",
-                      AnalysisName))
-                    write.csv(t(as.matrix(c(BaseID = as.vector(SimEntry$BaseID[1]),
-                      RSS, MRSS))), sprintf("%s/RSS_BaseID%s.csv",
-                      SaveBaseRSS_dir, SimEntry$BaseID[1]))
-                  }
-                }
-            }
             TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train,
                 batchSize = nBatch, nTake = ai(SimEntry$nSamplesTrain)))
             TFDatasetIterator_inference <- reticulate::as_iterator(TFDataset_inference <- read_from_tfrecord(file = tfrecord_file_inference,
@@ -2113,38 +1976,12 @@
         jax_batchy <- batch_l$YTrue
         nCovars_real <- jax_batchx$shape[[3]]
     }
-    print2("Apply infrastructure to save tfrecords in DataGenerator_Real.R")
+    print2("Apply infrastructure to read canonical tfrecords in DataGenerator_Real.R")
     {
         tf <- reticulate::import("tensorflow")
         try(tf$config$experimental$set_memory_growth(T), T)
         RESHUFFLE_EACH_ITERATION <- F
         rm(sampled_places, sampled_times)
-        bytes_feature <- function(value) {
-            tf$train$Feature(bytes_list = tf$train$BytesList(value = list(value$numpy())))
-        }
-        SerializeFromListEntry <- function(l_) {
-            feature = dict(data = bytes_feature(lapply(l_, function(l__) {
-                tf$io$serialize_tensor(l__)
-            })), shape = bytes_feature(tf$io$serialize_tensor(l_$shape)))
-            example_proto <- tf$train$Example(features = tf$train$Features(feature = feature))
-            return(example_proto$SerializeToString())
-        }
-        parse_single_example_fxn_OLD <- function(example_proto) {
-            parseText <- paste(sapply(names(batch_l), function(nl) {
-                sprintf("\n          '%s' = tf$io$FixedLenFeature(list(), tf$string),\n          '%s_shape' = tf$io$FixedLenFeature(list(), tf$string)",
-                  nl, nl)
-            }), collapse = ",")
-            eval(parse(text = sprintf("feature_description <- list( %s )",
-                parseText)))
-            parseText <- paste(sapply(names(batch_l), function(nl) {
-                sprintf("\n          '%s' = tf$cast(tf$reshape(tf$io$parse_tensor(example[['%s']], out_type = tf$float32), \n                                    tf$io$parse_tensor(example[['%s_shape']], out_type = tf$int32)), \n                                    dtype = %s)\n          ",
-                  nl, nl, nl, DefaultDtypeTf)
-            }), collapse = ",")
-            example <- tf$io$parse_single_example(example_proto,
-                feature_description)
-            eval(parse(text = sprintf("data <- list(%s)", parseText)))
-            return(data)
-        }
         parse_single_example_fxn <- function(example_proto) {
             feat_names <- names(batch_l)
             fd_text <- paste(sapply(feat_names, function(nm) {
@@ -2199,220 +2036,10 @@
             parsed_dataset <- parsed_dataset$batch(batchSize)
             return(parsed_dataset)
         }
-        nBatch_RealGridGen <- 16L
-        if (!dir.exists(TfRecordDir)) {
-            dir.create(TfRecordDir)
-        }
         tfrecord_file_train <- sprintf("%s/%s_%s.tfrecord", TfRecordDir,
             "train", as.character(RealEntry$BaseID))
         tfrecord_file_inference <- sprintf("%s/%s_%s.tfrecord",
             TfRecordDir, "inference", as.character(RealEntry$BaseID))
-        nObsInference <- as.integer(get0("nObsInference", inherits = TRUE,
-            ifnotfound = 1024L))
-        nTimesLookValidation <- nTimesLookValidationInference
-        inference_sampling <- tolower(trimws(as.character(get0("inferenceSampling",
-            inherits = TRUE, ifnotfound = "random"))))
-        if (!inference_sampling %in% c("random", "complete_locations")) {
-            stop(sprintf("Unknown inferenceSampling='%s'. Expected 'random' or 'complete_locations'.",
-                inference_sampling))
-        }
-        evaluation_locations <- NULL
-        if (identical(inference_sampling, "complete_locations")) {
-            evaluation_horizon <- suppressWarnings(as.integer(get0("evaluationHorizon",
-                inherits = TRUE, ifnotfound = nTimesLookValidationInference)))
-            if (is.na(evaluation_horizon) || evaluation_horizon <
-                1L || evaluation_horizon > nTimesLookValidationInference) {
-                stop("evaluationHorizon must be between 1 and nTimesLookValidationInference.")
-            }
-            origin_time <- as.integer(times_out[[1L]])
-            required_times <- unique(c(seq.int(origin_time -
-                abs(maxTimesPast) + 1L, origin_time), seq.int(origin_time +
-                1L, origin_time + evaluation_horizon)))
-            location_ids <- sort(unique(as.character(input_df_red_full$location_id)))
-            support_rows <- lapply(location_ids, function(location_id) {
-                observed_times <- sort(unique(as.integer(truth_df_red$time_id[truth_df_red$location_id ==
-                  location_id])))
-                missing_times <- setdiff(required_times, observed_times)
-                data.frame(location_id = location_id, eligible = length(missing_times) ==
-                  0L, missing_time_ids = paste(missing_times,
-                  collapse = "|"), stringsAsFactors = FALSE)
-            })
-            support <- do.call(rbind, support_rows)
-            support$origin_time_id <- origin_time
-            support$evaluation_horizon <- evaluation_horizon
-            support$context_length <- abs(maxTimesPast)
-            support_path <- file.path(TfRecordDir, sprintf("inference_support_%s.csv",
-                as.character(RealEntry$BaseID)))
-            utils::write.csv(support, support_path, row.names = FALSE)
-            evaluation_locations <- support$location_id[support$eligible]
-            if (length(evaluation_locations) == 0L) {
-                stop("complete_locations inference found no locations with complete context and outcomes.")
-            }
-            nObsInference <- length(evaluation_locations)
-            print2(sprintf("Complete-location inference: %s eligible of %s locations; support=%s",
-                length(evaluation_locations), nrow(support),
-                support_path))
-        }
-        if (RealEntry$nSamplesTrain == nSamples_max & ReSaveTfRecords &
-            (RealEntry$ResaveThisTFRecord == 1)) {
-            for (type_ in c("train", "inference")) {
-                if (type_ == "train") {
-                  tf_record_writer = tf$io$TFRecordWriter(tfrecord_file_train)
-                  nTimesLookValidation_ <- nTimesLookahead
-                  input_df_red_use_ <- input_df_red_in
-                }
-                if (type_ == "inference") {
-                  tf_record_writer = tf$io$TFRecordWriter(tfrecord_file_inference)
-                  nTimesLookValidation_ <- nTimesLookValidationInference
-                  input_df_red_use_ <- input_df_red_out
-                }
-                nOuter <- ifelse(type_ == "train", yes = c(ceiling(nSamplesTrain/nBatch_RealGridGen)),
-                  no = c(nObsInference))[[1]]
-                for (b_ in 1:nOuter) {
-                  print2(sprintf("%s of %s [%.2f%%], saving tfrecored [%s]",
-                    b_, nOuter, 100 * b_/nOuter, type_))
-                  if (type_ == "train") {
-                    ok_ctr_ <- 0
-                    ok_ <- F
-                    while (ok_ == F) {
-                      ok_ctr_ <- ok_ctr_ + 1
-                      if (ok_ctr_ == 10000) {
-                        stop("ok_ctr_ > 10000 in DataGenerator_Real.R [at for(b_ in 1:nOuter)]")
-                      }
-                      batch_l <- try(GetBatch_real(nBatch = nBatch_RealGridGen,
-                        INPUT_REF_DAT = input_df_red_use_, nTimesLook = nTimesLookValidation_,
-                        training = (type_ == "train")), T)
-                      if ("try-error" %in% class(batch_l)) {
-                        print("Error in GetBatch_real() [in for(b_ in 1:nOuter)]...")
-                      }
-                      if (!"try-error" %in% class(batch_l)) {
-                        ok_ <- T
-                      }
-                      if (b_%%2 == 0) {
-                        gc()
-                        py_gc$collect()
-                      }
-                    }
-                  }
-                  if (type_ == "inference") {
-                    ok_ctr_ <- 0
-                    ok_ <- F
-                    while (ok_ == F) {
-                      ok_ctr_ <- ok_ctr_ + 1
-                      max_inference_attempts <- if (identical(inference_sampling,
-                        "complete_locations"))
-                        1L
-                      else 10000L
-                      if (ok_ctr_ > max_inference_attempts) {
-                        stop(sprintf("Inference batch generation failed for BaseID=%s record=%s sampling=%s.",
-                          RealEntry$BaseID, b_, inference_sampling))
-                      }
-                      place_pool <- if (identical(inference_sampling,
-                        "complete_locations")) {
-                        evaluation_locations[[b_]]
-                      }
-                      else {
-                        sample(as.character(unique(input_df_red_out$location_id)),
-                          1)
-                      }
-                      sl_dat <- c()
-                      place_counter__ <- 0
-                      for (loc_id in place_pool) {
-                        time_counter__ <- 0
-                        time_pool <- if (identical(inference_sampling,
-                          "complete_locations")) {
-                          as.character(times_out[[1L]])
-                        }
-                        else {
-                          sample(as.character(times_out), 1)
-                        }
-                        for (time_iter in time_pool) {
-                          batch_l <- try(GetBatch(training = F,
-                            finalGenLocID = loc_id, finalGenTimeID = f2n(time_iter),
-                            INPUT_REF_DAT = input_df_red_full,
-                            nTimesLook = nTimesLookValidation_,
-                            openBrowser = F), T)
-                          if (T == F) {
-                            stop("NORMALIZATION ANALYSIS")
-                            colMeans(input_df_red_full[, dataInputs_colnames_TO_NORMALIZE],
-                              na.rm = T)
-                            colMeans(input_df_red_in[, dataInputs_colnames_TO_NORMALIZE],
-                              na.rm = T)
-                            colMeans(input_df_red_out[, dataInputs_colnames_TO_NORMALIZE],
-                              na.rm = T)
-                            table(input_df_red_out$time_id)
-                            plot(input_df_red_in[, dataInputs_colnames_TO_NORMALIZE[i_ <- 2]],
-                              na.rm = T, ylim = c(-5, 5))
-                            plot(input_df_red_out[, dataInputs_colnames_TO_NORMALIZE[i_]],
-                              na.rm = T, ylim = c(-5, 5))
-                            input_df_red_tmp
-                            plot(tapply(input_df_red_full[, dataInputs_colnames_TO_NORMALIZE[i_]],
-                              input_df_red_full$time_id, function(x) {
-                                mean(x, na.rm = T)
-                              }))
-                            abline(v = times_out, h = 0)
-                            plot(tapply(input_df_red_out[, dataInputs_colnames_TO_NORMALIZE[i_]],
-                              input_df_red_out$time_id, function(x) {
-                                mean(x, na.rm = T)
-                              }))
-                            plot(tapply(input_df_red_in[, dataInputs_colnames_TO_NORMALIZE[i_]],
-                              input_df_red_in$time_id, function(x) {
-                                mean(x, na.rm = T)
-                              }))
-                            input_df_red_use_
-                          }
-                        }
-                      }
-                      if ("try-error" %in% class(batch_l)) {
-                        print("Error in GetBatch_real() [in type_=='inference' arm]...")
-                      }
-                      if (!"try-error" %in% class(batch_l)) {
-                        ok_ <- T
-                      }
-                      if (b_%%2 == 0) {
-                        gc()
-                        py_gc$collect()
-                      }
-                    }
-                  }
-                  for (ii_ in 0L:(batch_l[[1]]$shape[[1]] - 1L)) {
-                    tfrecordExampleText <- sapply(1:length(batch_l),
-                      function(l_) {
-                        THE_TYPE_ <- as.character(eval(parse(text = sprintf("batch_l$%s$dtype",
-                          names(batch_l)[l_]))))
-                        THE_SAVETYPE_ <- if (grepl(THE_TYPE_,
-                          pattern = "float")) {
-                          "tf$float32"
-                        }
-                        else if (grepl(THE_TYPE_, pattern = "int")) {
-                          "tf$int32"
-                        }
-                        else if (grepl(THE_TYPE_, pattern = "bool")) {
-                          "tf$bool"
-                        }
-                        else {
-                          warning(sprintf("Unknown dtype '%s', defaulting to tf$float32",
-                            THE_TYPE_))
-                          "tf$float32"
-                        }
-                        sprintf(" %s = tf$train$Feature(bytes_list=\n                                tf$train$BytesList(value=list( \n                                  tf$io$serialize_tensor(tf$constant( jnp$take(batch_l$%s,\n                                       ii_, axis = 0L), %s ))$numpy()))),\n                        %s_shape = tf$train$Feature(bytes_list=tf$train$BytesList(value=list( tf$io$serialize_tensor(tf$constant( jnp$take(batch_l$%s, ii_, axis = 0L) )$shape)$numpy())))",
-                          names(batch_l)[l_], names(batch_l)[l_],
-                          THE_SAVETYPE_, names(batch_l)[l_],
-                          names(batch_l)[l_])
-                      })
-                    tfrecordExampleText <- paste(tfrecordExampleText,
-                      collapse = ",")
-                    eval(parse(text = sprintf("example <- tf$train$Example(features=tf$train$Features(feature=dict( %s ) ))",
-                      tfrecordExampleText)))
-                    tf_record_writer$write(example$SerializeToString())
-                  }
-                }
-                rm(input_df_red_use_)
-                tf_record_writer$close()
-                print2(sprintf("Done writing tfrecords for: %s!",
-                  type_))
-            }
-        }
         TFDatasetIterator_train <- reticulate::as_iterator(TFDataset_train <- read_from_tfrecord(file = tfrecord_file_train,
             batchSize = nBatch, shuffle = F, nTake = ai(RealEntry$nSamplesTrain))$shuffle(buffer_size = tf$constant(as.integer(10 *
             nBatch), dtype = tf$int64), reshuffle_each_iteration = T))
@@ -9447,7 +9074,7 @@
         gpu_mem_frac = NULL, neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
         n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
         solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
-        resave_tfrecords = TRUE, run_figures = FALSE, project_root = NULL,
+        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
         raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = NULL,
         data_subset = NULL, disease_names = NULL, data_format = NULL,
         dry_run = FALSE, help = FALSE), multidisease = list(mode = "multidisease",
@@ -9570,8 +9197,15 @@
     spec$respect_grid_model_type <- isTRUE(spec$respect_grid_model_type %||%
         defaults$respect_grid_model_type)
     spec$force_to_gpu <- isTRUE(spec$force_to_gpu %||% defaults$force_to_gpu)
-    spec$resave_tfrecords <- isTRUE(spec$resave_tfrecords %||%
-        defaults$resave_tfrecords)
+    resave_tfrecords <- spec$resave_tfrecords %||% defaults$resave_tfrecords
+    if (!identical(resave_tfrecords, FALSE)) {
+        guidance <- switch(mode, real = "Use `ndm_bootstrap_real_tfrecords()` before training.",
+            sim = "Use `ndm_bootstrap_sim_tfrecords()` before training.",
+            "Prepare multidisease inputs outside the training runner.")
+        stop("`resave_tfrecords = TRUE` is no longer supported by training workflows. ",
+            guidance, call. = FALSE)
+    }
+    spec$resave_tfrecords <- FALSE
     spec$run_figures <- isTRUE(spec$run_figures %||% FALSE)
     spec$dry_run <- isTRUE(spec$dry_run %||% FALSE)
     spec$help <- isTRUE(spec$help %||% FALSE)
@@ -9710,10 +9344,10 @@
         "  --n_checkpoints=POSITIVE_INTEGER", "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)",
         "  --prior_sd_multiplier=POSITIVE_NUMBER", "  --solver_profile=default|loose|tight|alternative",
         "  --model_type=DecoderOnly|NeuralODE", "  --respect_grid_model_type=TRUE|FALSE",
-        "  --resave_tfrecords=TRUE|FALSE", "  --run_figures=TRUE|FALSE",
-        "  --tfrecord_dir=PATH", "  --dry_run=TRUE", "  --help",
-        extra_flags, "", "Examples:", paste0("  ", default_example)),
-        collapse = "\n")
+        "  --resave_tfrecords=FALSE (TRUE is unsupported; prepare inputs before training)",
+        "  --run_figures=TRUE|FALSE", "  --tfrecord_dir=PATH",
+        "  --dry_run=TRUE", "  --help", extra_flags, "", "Examples:",
+        paste0("  ", default_example)), collapse = "\n")
 }, analysis2_print_usage <- function(mode, paths = analysis2_paths()) {
     cat(analysis2_usage(mode, paths = paths), "\n")
     invisible(TRUE)
@@ -10056,8 +9690,7 @@
     "planned"
 }, analysis2_bootstrap_write_sim_tfrecord <- function(base_id,
     canonical_row, artifact_n_samples_train, row_values, tfrecord_dir,
-    ndmdatasets_pkg, resolve_backend, overwrite = FALSE) {
-    paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
+    producer, ndmdatasets_pkg, resolve_backend, overwrite = FALSE) {
     model_type <- analysis2_model_type(opts = list(model_type = NULL,
         respect_grid_model_type = TRUE), grid_model_type = row_values$ModelType,
         default = "DecoderOnly")
@@ -10071,14 +9704,15 @@
         base_id, canonical_row, artifact_n_samples_train))
     result <- analysis2_call(backend$ndmdatasets_pkg, "ndm_sim_bootstrap_tfrecords",
         dataset_spec = dataset_spec, output_dir = tfrecord_dir,
-        training_spec = training_spec, batch_size = 128L, seed = 0L,
-        overwrite = isTRUE(overwrite), verify_readable = FALSE,
+        training_spec = training_spec, producer = producer, batch_size = 128L,
+        seed = 0L, overwrite = isTRUE(overwrite), verify_readable = FALSE,
         lock_timeout_seconds = 3600, lock_poll_seconds = 0.1,
         tensorflow = backend$tensorflow, quiet = TRUE)
     as.character(result$status %||% "written")
 }, analysis2_bootstrap_sim_tfrecords <- function(project_root,
     analysis_name = "BigSimsLatest", grid, base_ids = NULL, tfrecord_dir,
-    parallel_workers = 1L, overwrite = FALSE, dry_run = FALSE) {
+    producer = NULL, parallel_workers = 1L, overwrite = FALSE,
+    dry_run = FALSE) {
     stopifnot(is.data.frame(grid))
     parallel_workers <- as.integer(parallel_workers)
     if (length(parallel_workers) != 1L || is.na(parallel_workers) ||
@@ -10093,6 +9727,10 @@
         mustWork = FALSE)
     write_plan <- analysis2_build_base_id_tfrecord_plan(mode = "sim",
         grid = grid, base_ids = base_ids, tfrecord_dir = tfrecord_dir)
+    if (!isTRUE(dry_run) && is.null(producer)) {
+        stop("`producer` is required when publishing canonical TFRecords.",
+            call. = FALSE)
+    }
     if (nrow(write_plan) == 0L) {
         write_plan$status <- character()
         return(write_plan)
@@ -10131,8 +9769,8 @@
         analysis2_bootstrap_write_sim_tfrecord(base_id = analysis2_as_int(write_plan$BaseID[[plan_idx]]),
             canonical_row = canonical_row, artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]],
             row_values = row_values, tfrecord_dir = tfrecord_dir,
-            ndmdatasets_pkg = ndmdatasets_pkg, resolve_backend = resolve_backend,
-            overwrite = overwrite)
+            producer = producer, ndmdatasets_pkg = ndmdatasets_pkg,
+            resolve_backend = resolve_backend, overwrite = overwrite)
     }
     fork_workers <- parallel_workers > 1L && .Platform$OS.type !=
         "windows" && !identical(Sys.info()[["sysname"]], "Darwin")
@@ -10152,9 +9790,8 @@
     write_plan
 }, analysis2_bootstrap_write_real_tfrecord <- function(base_id,
     canonical_row, artifact_n_samples_train, row_values, tfrecord_dir,
-    outcome_metric, data_subset, ndmdatasets_pkg, resolve_backend,
+    outcome_metric, data_subset, producer, ndmdatasets_pkg, resolve_backend,
     overwrite = FALSE) {
-    paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
     model_type <- analysis2_model_type(opts = list(model_type = NULL,
         respect_grid_model_type = TRUE), grid_model_type = row_values$ModelType,
         default = "DecoderOnly")
@@ -10170,7 +9807,7 @@
     result <- analysis2_call(backend$ndmdatasets_pkg, "ndm_real_bootstrap_tfrecords",
         table_bundle = backend$bundle, dataset_spec = dataset_spec,
         output_dir = tfrecord_dir, training_spec = training_spec,
-        batch_size = 64L, seed = 0L, overwrite = isTRUE(overwrite),
+        producer = producer, batch_size = 64L, seed = 0L, overwrite = isTRUE(overwrite),
         verify_readable = FALSE, lock_timeout_seconds = 3600,
         lock_poll_seconds = 0.1, tensorflow = backend$tensorflow,
         quiet = TRUE)
@@ -10178,7 +9815,8 @@
 }, analysis2_bootstrap_real_tfrecords <- function(project_root,
     analysis_name = "RealApril15", grid, base_ids = NULL, tfrecord_dir,
     raw_data_dir, outcome_metric = "inc_death", data_subset = "high_income",
-    parallel_workers = 1L, overwrite = FALSE, dry_run = FALSE) {
+    producer = NULL, parallel_workers = 1L, overwrite = FALSE,
+    dry_run = FALSE) {
     stopifnot(is.data.frame(grid))
     parallel_workers <- as.integer(parallel_workers)
     if (length(parallel_workers) != 1L || is.na(parallel_workers) ||
@@ -10195,6 +9833,10 @@
         mustWork = !isTRUE(dry_run))
     write_plan <- analysis2_build_base_id_tfrecord_plan(mode = "real",
         grid = grid, base_ids = base_ids, tfrecord_dir = tfrecord_dir)
+    if (!isTRUE(dry_run) && is.null(producer)) {
+        stop("`producer` is required when publishing canonical TFRecords.",
+            call. = FALSE)
+    }
     if (nrow(write_plan) == 0L) {
         write_plan$status <- character()
         return(write_plan)
@@ -10236,8 +9878,8 @@
             canonical_row = canonical_row, artifact_n_samples_train = write_plan$artifact_n_samples_train[[plan_idx]],
             row_values = row_values, tfrecord_dir = tfrecord_dir,
             outcome_metric = outcome_metric, data_subset = data_subset,
-            ndmdatasets_pkg = ndmdatasets_pkg, resolve_backend = resolve_backend,
-            overwrite = overwrite)
+            producer = producer, ndmdatasets_pkg = ndmdatasets_pkg,
+            resolve_backend = resolve_backend, overwrite = overwrite)
     }
     fork_workers <- parallel_workers > 1L && .Platform$OS.type !=
         "windows" && !identical(Sys.info()[["sysname"]], "Darwin")
@@ -10719,59 +10361,128 @@
 }, analysis2_has_canonical_tfrecords <- function(paths) {
     all(file.exists(c(paths$train_file, paths$inference_file,
         analysis2_manifest_path(paths$train_file), analysis2_manifest_path(paths$inference_file))))
-}, analysis2_assert_canonical_tfrecords <- function(paths, base_id,
-    output_dir) {
-    if (analysis2_has_canonical_tfrecords(paths)) {
-        return(invisible(paths))
+}, analysis2_trusted_artifact_index <- function(tfrecord_dir) {
+    trusted_dir <- Sys.getenv("ANALYSIS2_TRUSTED_TFRECORD_DIR",
+        unset = NA_character_)
+    expected_sha256 <- Sys.getenv("ANALYSIS2_TRUSTED_ARTIFACT_INDEX_SHA256",
+        unset = NA_character_)
+    present <- !is.na(c(trusted_dir, expected_sha256))
+    if (!any(present)) {
+        return(NULL)
     }
-    legacy_files <- file.exists(c(paths$train_file, paths$inference_file))
-    if (any(legacy_files)) {
-        stop("Found TFRecord files for BaseID ", base_id, " under ",
-            output_dir, " but they are missing canonical `.manifest.rds` sidecars. ",
-            "Regenerate them with `--resave_tfrecords=TRUE`.",
+    if (!all(present) || !nzchar(trusted_dir) || !grepl("^[0-9a-f]{64}$",
+        expected_sha256)) {
+        stop("Trusted TFRecord preflight context has missing or malformed environment markers.",
             call. = FALSE)
     }
-    stop("Missing canonical TFRecords for BaseID ", base_id,
-        " under ", output_dir, ". Regenerate them with `--resave_tfrecords=TRUE`.",
-        call. = FALSE)
-}, analysis2_preflight_canonical_tfrecords <- function(base_ids,
-    tfrecord_dir) {
-    missing_base_ids <- integer()
-    legacy_base_ids <- integer()
-    for (base_id in analysis2_unique_preserve_order(as.integer(base_ids))) {
-        paths <- analysis2_tfrecord_paths(tfrecord_dir, base_id)
-        if (analysis2_has_canonical_tfrecords(paths)) {
-            next
+    tryCatch({
+        active_dir <- normalizePath(tfrecord_dir, winslash = "/",
+            mustWork = TRUE)
+        trusted_dir <- normalizePath(trusted_dir, winslash = "/",
+            mustWork = TRUE)
+        if (!identical(active_dir, trusted_dir)) {
+            stop("the active TFRecord directory does not match the trusted directory")
         }
-        if (any(file.exists(c(paths$train_file, paths$inference_file)))) {
-            legacy_base_ids <- c(legacy_base_ids, base_id)
+        index_file <- file.path(active_dir, "artifact_checksums.tsv")
+        if (!file.exists(index_file)) {
+            stop("the trusted artifact index is missing")
         }
-        else {
-            missing_base_ids <- c(missing_base_ids, base_id)
+        if (!identical(digest::digest(file = index_file, algo = "sha256",
+            serialize = FALSE), expected_sha256)) {
+            stop("the trusted artifact index SHA-256 does not match")
         }
+        artifacts <- utils::read.delim(index_file, sep = "\t",
+            header = TRUE, stringsAsFactors = FALSE, check.names = FALSE,
+            quote = "\"", comment.char = "")
+        required_columns <- c("BaseID", "artifact_type", "sidecar",
+            "relative_path", "bytes", "modified_utc", "sha256")
+        if (!all(required_columns %in% names(artifacts)) || anyDuplicated(artifacts$relative_path)) {
+            stop("the trusted artifact index has invalid columns or duplicate paths")
+        }
+        list(tfrecord_dir = active_dir, artifacts = artifacts)
+    }, error = function(e) {
+        stop("Trusted TFRecord preflight context is invalid: ",
+            conditionMessage(e), call. = FALSE)
+    })
+}, analysis2_trusted_index_covers_pair <- function(trusted_index,
+    paths) {
+    if (is.null(trusted_index)) {
+        return(FALSE)
     }
-    if (length(legacy_base_ids) > 0L) {
-        stop("Found TFRecord files missing canonical `.manifest.rds` sidecars for BaseID(s) ",
-            paste(sort(unique(legacy_base_ids)), collapse = ", "),
-            " under ", tfrecord_dir, ". Regenerate them with `--resave_tfrecords=TRUE`.",
-            call. = FALSE)
+    abort <- function(reason) {
+        stop("Trusted artifact index does not cover the active TFRecord pair: ",
+            reason, call. = FALSE)
     }
-    if (length(missing_base_ids) > 0L) {
-        stop("Missing canonical TFRecords for BaseID(s) ", paste(sort(unique(missing_base_ids)),
-            collapse = ", "), " under ", tfrecord_dir, ". Regenerate them with `--resave_tfrecords=TRUE`.",
-            call. = FALSE)
+    required_files <- c(paths$train_file, analysis2_manifest_path(paths$train_file),
+        paths$inference_file, analysis2_manifest_path(paths$inference_file))
+    if (!all(file.exists(required_files))) {
+        abort("a record or manifest sidecar is missing")
     }
-    invisible(TRUE)
+    if (!all(vapply(required_files, function(file) {
+        identical(dirname(normalizePath(file, winslash = "/",
+            mustWork = TRUE)), trusted_index$tfrecord_dir)
+    }, logical(1)))) {
+        abort("an artifact resolves outside the trusted directory")
+    }
+    relative_paths <- basename(required_files)
+    row_index <- match(relative_paths, trusted_index$artifacts$relative_path)
+    if (anyNA(row_index)) {
+        abort("a required artifact index row is missing")
+    }
+    rows <- trusted_index$artifacts[row_index, , drop = FALSE]
+    base_id <- sub("^train_(.+)\\.tfrecord$", "\\1", basename(paths$train_file))
+    expected_types <- c("train", "train", "inference", "inference")
+    expected_sidecars <- c(FALSE, TRUE, FALSE, TRUE)
+    indexed_bytes <- suppressWarnings(as.numeric(rows$bytes))
+    actual_bytes <- as.numeric(file.info(required_files)$size)
+    row_metadata_matches <- identical(as.character(rows$relative_path),
+        relative_paths) && identical(as.character(rows$BaseID),
+        rep(base_id, 4L)) && identical(as.character(rows$artifact_type),
+        expected_types) && identical(tolower(as.character(rows$sidecar)),
+        tolower(as.character(expected_sidecars))) && !anyNA(indexed_bytes) &&
+        identical(indexed_bytes, actual_bytes) && all(grepl("^[0-9a-f]{64}$",
+        as.character(rows$sha256)))
+    if (!row_metadata_matches) {
+        abort("indexed path, identity, type, size, or SHA metadata disagrees")
+    }
+    sidecar_rows <- c(2L, 4L)
+    actual_sidecar_sha256 <- vapply(required_files[sidecar_rows],
+        function(file) digest::digest(file = file, algo = "sha256",
+            serialize = FALSE), character(1), USE.NAMES = FALSE)
+    if (!identical(actual_sidecar_sha256, as.character(rows$sha256[sidecar_rows]))) {
+        abort("a manifest sidecar SHA-256 disagrees with the trusted index")
+    }
+    manifests <- lapply(required_files[sidecar_rows], readRDS)
+    record_rows <- c(1L, 3L)
+    manifest_matches <- vapply(seq_along(manifests), function(i) {
+        record <- manifests[[i]]$record
+        row <- record_rows[[i]]
+        is.list(record) && identical(as.character(record$file),
+            relative_paths[[row]]) && identical(as.numeric(record$bytes),
+            indexed_bytes[[row]]) && identical(as.character(record$sha256),
+            as.character(rows$sha256[[row]]))
+    }, logical(1))
+    if (!all(manifest_matches)) {
+        abort("manifest record metadata disagrees with the trusted index")
+    }
+    TRUE
 }, analysis2_validate_canonical_tfrecord_pair <- function(ndmdatasets_pkg,
-    paths, schema_kind, dataset_spec, n_train, n_inference, source_sha256 = NULL) {
+    paths, schema_kind, dataset_spec, n_train, n_inference, source_sha256 = NULL,
+    verify_checksum = TRUE) {
     train_manifest <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_validate_tfrecord_artifact",
-        file = paths$train_file, schema = schema_kind, expected_n_examples = as.integer(n_train),
-        expected_dataset_spec = dataset_spec, expected_split = "train",
-        expected_seed = 0L, verify_checksum = TRUE, verify_readable = FALSE)
+        file = paths$train_file, schema = schema_kind, expected_dataset_spec = dataset_spec,
+        expected_split = "train", expected_seed = 0L, verify_checksum = isTRUE(verify_checksum),
+        verify_readable = FALSE)
+    if (as.numeric(train_manifest$n_examples) < as.numeric(n_train)) {
+        stop("Canonical training TFRecord has ", train_manifest$n_examples,
+            " examples; the selected run requires at least ",
+            as.integer(n_train), ".", call. = FALSE)
+    }
     inference_manifest <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_validate_tfrecord_artifact",
         file = paths$inference_file, schema = schema_kind, expected_n_examples = as.integer(n_inference),
         expected_dataset_spec = dataset_spec, expected_split = "inference",
-        expected_seed = 0L, verify_checksum = TRUE, verify_readable = FALSE)
+        expected_seed = 0L, verify_checksum = isTRUE(verify_checksum),
+        verify_readable = FALSE)
     if (!identical(train_manifest$scaler_sha256, inference_manifest$scaler_sha256)) {
         stop("Canonical train and inference TFRecords were built with different scalers.",
             call. = FALSE)
@@ -10787,7 +10498,8 @@
                 call. = FALSE)
         }
     }
-    invisible(list(paths = paths, train = train_manifest, inference = inference_manifest))
+    invisible(list(paths = paths, train = train_manifest, inference = inference_manifest,
+        verify_checksum = isTRUE(verify_checksum)))
 }, analysis2_preflight_expected_tfrecords <- function(mode, write_plan,
     grid, tfrecord_dir, ndmdatasets_pkg, outcome_metric = "inc_death",
     data_subset = "high_income", real_bundle = NULL) {
@@ -10798,6 +10510,7 @@
     else {
         NULL
     }
+    trusted_index <- analysis2_trusted_artifact_index(tfrecord_dir)
     validated_pairs <- list()
     for (plan_idx in seq_len(nrow(write_plan))) {
         canonical_row <- write_plan$canonical_row[[plan_idx]]
@@ -10821,19 +10534,20 @@
         validated_pair <- tryCatch(analysis2_validate_canonical_tfrecord_pair(ndmdatasets_pkg = ndmdatasets_pkg,
             paths = paths, schema_kind = mode, dataset_spec = dataset_spec,
             n_train = write_plan$artifact_n_samples_train[[plan_idx]],
-            n_inference = n_inference, source_sha256 = source_sha256),
-            error = function(e) {
-                stop("Canonical ", mode, " TFRecord preflight failed for BaseID ",
-                  write_plan$BaseID[[plan_idx]], ": ", conditionMessage(e),
-                  ". Regenerate this artifact before fitting.",
-                  call. = FALSE)
-            })
+            n_inference = n_inference, source_sha256 = source_sha256,
+            verify_checksum = !analysis2_trusted_index_covers_pair(trusted_index,
+                paths)), error = function(e) {
+            stop("Canonical ", mode, " TFRecord preflight failed for BaseID ",
+                write_plan$BaseID[[plan_idx]], ": ", conditionMessage(e),
+                ". Regenerate this artifact before fitting.",
+                call. = FALSE)
+        })
         validated_pairs[[as.character(write_plan$BaseID[[plan_idx]])]] <- validated_pair
     }
     invisible(validated_pairs)
 }, analysis2_attach_canonical_tfrecords <- function(ndmdatasets_pkg,
     runtime_env, train_file, inference_file, schema_kind, batch_size,
-    shuffle_train = FALSE, run_seed = NULL) {
+    shuffle_train = FALSE, run_seed = NULL, verify_checksum = TRUE) {
     tf <- runtime_env$tf %||% analysis2_import_tensorflow()
     max_train_examples <- get0("nSamplesTrain", envir = runtime_env,
         inherits = TRUE, ifnotfound = NULL)
@@ -10845,12 +10559,12 @@
         shuffle_seed = if (is.null(run_seed))
             NULL
         else analysis2_as_int(run_seed), reshuffle_each_iteration = isTRUE(shuffle_train),
-        tensorflow = tf)
+        verify_checksum = isTRUE(verify_checksum), tensorflow = tf)
     inference_dataset <- analysis2_call(ndmdatasets_pkg, "ndm_datasets_read_tfrecord_dataset",
         file = inference_file, batch_size = batch_size, schema = schema_kind,
         max_examples = max_inference_examples, shuffle = FALSE,
         shuffle_seed = NULL, reshuffle_each_iteration = FALSE,
-        tensorflow = tf)
+        verify_checksum = isTRUE(verify_checksum), tensorflow = tf)
     assign("TFDataset_train", train_dataset, envir = runtime_env)
     assign("TFDatasetIterator_train", reticulate::as_iterator(train_dataset),
         envir = runtime_env)
@@ -10867,20 +10581,6 @@
         assign("nCovars_real", batch_l$XPred$shape[[3]], envir = runtime_env)
     }
     invisible(runtime_env)
-}, analysis2_write_real_tfrecords <- function(ndmdatasets_pkg,
-    bundle, dataset_spec, training_spec, output_dir, tensorflow) {
-    analysis2_dir_create(output_dir)
-    analysis2_call(ndmdatasets_pkg, "ndm_real_write_tfrecords",
-        table_bundle = bundle, dataset_spec = dataset_spec, output_dir = output_dir,
-        training_spec = training_spec, batch_size = 64L, tensorflow = tensorflow,
-        quiet = TRUE)
-}, analysis2_write_sim_tfrecords <- function(ndmdatasets_pkg,
-    dataset_spec, training_spec, output_dir, tensorflow) {
-    analysis2_dir_create(output_dir)
-    analysis2_call(ndmdatasets_pkg, "ndm_sim_write_tfrecords",
-        dataset_spec = dataset_spec, output_dir = output_dir,
-        training_spec = training_spec, batch_size = 128L, tensorflow = tensorflow,
-        quiet = TRUE)
 }, analysis2_solver_profile <- function(runtime_env, profile = "default") {
     profile <- match.arg(tolower(profile), c("default", "loose",
         "tight", "alternative"))
@@ -11090,7 +10790,6 @@
     analysis_name <- spec$analysis_name
     analysis_date <- Sys.Date()
     outer_iterations <- spec$outer
-    resave_tfrecords <- isTRUE(spec$resave_tfrecords)
     outcome_metric <- spec$outcome_metric
     raw_data_dir <- normalizePath(spec$raw_data_dir, winslash = "/",
         mustWork = !isTRUE(spec$dry_run))
@@ -11120,39 +10819,10 @@
     bundle <- analysis2_call(ndmdatasets_pkg, "ndm_real_build_tables",
         raw_data_dir = raw_data_dir, outcome_metric = outcome_metric,
         quiet = TRUE)
-    if (!isTRUE(resave_tfrecords)) {
-        analysis2_preflight_expected_tfrecords(mode = "real",
-            write_plan = write_plan, grid = real_grid, tfrecord_dir = tfrecord_dir,
-            ndmdatasets_pkg = ndmdatasets_pkg, outcome_metric = outcome_metric,
-            data_subset = spec$data_subset, real_bundle = bundle)
-    }
-    if (isTRUE(resave_tfrecords)) {
-        ndm_pkg <- analysis2_require_ndm()
-        tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
-        written_base_ids <- integer()
-        for (plan_idx in seq_len(nrow(write_plan))) {
-            canonical_row <- write_plan$canonical_row[[plan_idx]]
-            row_values <- analysis2_normalize_row_values(analysis2_row_to_list(real_grid[canonical_row,
-                , drop = FALSE]))
-            model_type <- analysis2_model_type(spec, row_values$ModelType,
-                default = "DecoderOnly")
-            dataset_spec <- analysis2_real_dataset_spec(ndmdatasets_pkg = ndmdatasets_pkg,
-                row_values = row_values, outcome_metric = outcome_metric,
-                data_subset = spec$data_subset)
-            training_spec <- analysis2_real_training_spec(ndmdatasets_pkg,
-                row_values, model_type = model_type)
-            training_spec$n_samples_train <- as.integer(write_plan$artifact_n_samples_train[[plan_idx]])
-            analysis2_log(sprintf("Regenerating canonical real TFRecords for BaseID %s from row %s with nSamplesTrain %s",
-                row_values$BaseID, canonical_row, write_plan$artifact_n_samples_train[[plan_idx]]))
-            analysis2_write_real_tfrecords(ndmdatasets_pkg = ndmdatasets_pkg,
-                bundle = bundle, dataset_spec = dataset_spec,
-                training_spec = training_spec, output_dir = tfrecord_dir,
-                tensorflow = tensorflow)
-            written_base_ids <- c(written_base_ids, analysis2_as_int(row_values$BaseID))
-        }
-        return(invisible(list(written_base_ids = sort(unique(written_base_ids)),
-            tfrecord_dir = tfrecord_dir, write_plan = write_plan)))
-    }
+    validated_artifacts <- analysis2_preflight_expected_tfrecords(mode = "real",
+        write_plan = write_plan, grid = real_grid, tfrecord_dir = tfrecord_dir,
+        ndmdatasets_pkg = ndmdatasets_pkg, outcome_metric = outcome_metric,
+        data_subset = spec$data_subset, real_bundle = bundle)
     ndm_pkg <- analysis2_require_ndm()
     for (outer_iteration in outer_iterations) {
         analysis2_log(sprintf("Starting real outer iteration %s",
@@ -11210,7 +10880,7 @@
             runtime_env = runtime_env, train_file = tfrecord_paths$train_file,
             inference_file = tfrecord_paths$inference_file, schema_kind = "real",
             batch_size = get("nBatch", envir = runtime_env),
-            shuffle_train = TRUE, run_seed = run_seed)
+            shuffle_train = TRUE, run_seed = run_seed, verify_checksum = validated_artifacts[[as.character(analysis2_as_int(row_values$BaseID))]]$verify_checksum)
         analysis2_expose_runtime_env(runtime_env)
         model_spec <- analysis2_resolve_model_spec(model_tex_loc = row_values$model_tex_loc,
             model_spec_name = row_values$model_spec_name, model_type = model_type,
@@ -11251,7 +10921,6 @@
     analysis_name <- spec$analysis_name
     analysis_date <- Sys.Date()
     outer_iterations <- spec$outer
-    resave_tfrecords <- isTRUE(spec$resave_tfrecords)
     tfrecord_dir <- normalizePath(spec$tfrecord_dir, winslash = "/",
         mustWork = FALSE)
     grid_file <- normalizePath(spec$grid_file, winslash = "/",
@@ -11275,39 +10944,11 @@
     analysis2_prepare_output_roots(paths$project_root, sim_mode = TRUE)
     analysis2_log_nsgd_calibration("sim", nsgd_calibration)
     ndmdatasets_pkg <- analysis2_require_ndmdatasets()
-    validated_artifacts <- NULL
-    if (!isTRUE(resave_tfrecords)) {
-        validated_artifacts <- analysis2_preflight_expected_tfrecords(mode = "sim",
-            write_plan = write_plan, grid = sim_grid, tfrecord_dir = tfrecord_dir,
-            ndmdatasets_pkg = ndmdatasets_pkg)
-    }
+    validated_artifacts <- analysis2_preflight_expected_tfrecords(mode = "sim",
+        write_plan = write_plan, grid = sim_grid, tfrecord_dir = tfrecord_dir,
+        ndmdatasets_pkg = ndmdatasets_pkg)
     sim_covariates <- c(XPred_c_sqrt = "inc_case_per_capita_sqrt",
         XPred_h_sqrt = "inc_hosp_per_capita_sqrt", XPred_d_sqrt = "inc_death_per_capita_sqrt")
-    if (isTRUE(resave_tfrecords)) {
-        ndm_pkg <- analysis2_require_ndm()
-        tensorflow <- analysis2_import_tensorflow(ndm_pkg = ndm_pkg)
-        written_base_ids <- integer()
-        for (plan_idx in seq_len(nrow(write_plan))) {
-            canonical_row <- write_plan$canonical_row[[plan_idx]]
-            row_values <- analysis2_normalize_row_values(analysis2_row_to_list(sim_grid[canonical_row,
-                , drop = FALSE]))
-            model_type <- analysis2_model_type(spec, row_values$ModelType,
-                default = "DecoderOnly")
-            dataset_spec <- analysis2_sim_dataset_spec(ndmdatasets_pkg,
-                row_values)
-            training_spec <- analysis2_sim_training_spec(ndmdatasets_pkg,
-                row_values, model_type = model_type)
-            training_spec$n_samples_train <- as.integer(write_plan$artifact_n_samples_train[[plan_idx]])
-            analysis2_log(sprintf("Regenerating canonical sim TFRecords for BaseID %s from row %s with nSamplesTrain %s",
-                row_values$BaseID, canonical_row, write_plan$artifact_n_samples_train[[plan_idx]]))
-            analysis2_write_sim_tfrecords(ndmdatasets_pkg = ndmdatasets_pkg,
-                dataset_spec = dataset_spec, training_spec = training_spec,
-                output_dir = tfrecord_dir, tensorflow = tensorflow)
-            written_base_ids <- c(written_base_ids, analysis2_as_int(row_values$BaseID))
-        }
-        return(invisible(list(written_base_ids = sort(unique(written_base_ids)),
-            tfrecord_dir = tfrecord_dir, write_plan = write_plan)))
-    }
     ndm_pkg <- analysis2_require_ndm()
     for (outer_iteration in outer_iterations) {
         analysis2_log(sprintf("Starting sim outer iteration %s",
@@ -11381,7 +11022,7 @@
             runtime_env = runtime_env, train_file = tfrecord_paths$train_file,
             inference_file = tfrecord_paths$inference_file, schema_kind = "sim",
             batch_size = get("nBatch", envir = runtime_env),
-            shuffle_train = TRUE, run_seed = run_seed)
+            shuffle_train = TRUE, run_seed = run_seed, verify_checksum = validated_artifacts[[artifact_key]]$verify_checksum)
         analysis2_expose_runtime_env(runtime_env)
         model_spec <- analysis2_resolve_model_spec(model_tex_loc = row_values$model_tex_loc,
             model_spec_name = row_values$model_spec_name, model_type = model_type,
@@ -11646,19 +11287,15 @@
                 modelingStrategyNameKey <- paste(c("RealMode",
                   paste(names(RealEntry), RealEntry, sep = "_")),
                   collapse = "__")
-                TfRecordDir <- sprintf("./Data/RunTFRecords/RealTFRecords/%s",
-                  AnalysisName)
-                if (!dir.exists(TfRecordDir)) {
-                  dir.create(TfRecordDir, recursive = TRUE, showWarnings = FALSE)
-                }
-                need_canonical_tfrecords <- !all(file.exists(c(sprintf("%s/%s_%s.tfrecord",
+                TfRecordDir <- analysis2_multidisease_spec$tfrecord_dir
+                required_tfrecords <- c(sprintf("%s/%s_%s.tfrecord",
                   TfRecordDir, "train", RealEntry$BaseID), sprintf("%s/%s_%s.tfrecord",
-                  TfRecordDir, "inference", RealEntry$BaseID))))
-                if (!ReSaveTfRecords) {
-                  if (need_canonical_tfrecords) {
-                    warning(sprintf("Canonical TFRecords missing for BaseID %s; generating them on demand in DataGenerator_Real.R",
-                      RealEntry$BaseID))
-                  }
+                  TfRecordDir, "inference", RealEntry$BaseID))
+                missing_tfrecords <- required_tfrecords[!file.exists(required_tfrecords)]
+                if (length(missing_tfrecords) > 0L) {
+                  stop(sprintf("Canonical multidisease TFRecords are missing for BaseID %s: %s. Prepare multidisease inputs outside the training runner.",
+                    RealEntry$BaseID, paste(missing_tfrecords,
+                      collapse = ", ")), call. = FALSE)
                 }
                 ModelType <- analysis2_model_type(analysis2_multidisease_spec,
                   RealEntry$ModelType, default = "DecoderOnly")
@@ -11810,13 +11447,7 @@
                   mean(x, na.rm = TRUE)
                 })
                 print2("Defining data acquisition process...")
-                if (need_canonical_tfrecords) {
-                  ReSaveTfRecords <- TRUE
-                }
                 ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real.R")
-                if (need_canonical_tfrecords) {
-                  ReSaveTfRecords <- FALSE
-                }
                 if (!ReSaveTfRecords) {
                   if (any(!sapply(unique(RealGrid$BaseID), function(s_) {
                     file.exists(sprintf("%s/%s_%s.tfrecord",

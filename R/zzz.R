@@ -190,9 +190,8 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   Use `"32"` or `"64"`.
 #' @param force_to_gpu Logical scalar requiring a CUDA-capable JAX GPU when
 #'   `TRUE`.
-#' @param resave_tfrecords Logical scalar preserved for compatibility with
-#'   existing run workflows. Multidisease workflows reject `TRUE` because the
-#'   legacy TFRecord-regeneration path has been retired.
+#' @param resave_tfrecords Logical scalar preserved for compatibility. Public
+#'   training APIs require `FALSE`; prepare canonical inputs before training.
 #' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`.
 #' @param neuralode_local_latent_dim Optional local NeuralODE latent width. When
 #'   `NULL`, runtime code resolves this to `ModelDims`.
@@ -258,6 +257,7 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   if (!is.logical(force_to_gpu) || length(force_to_gpu) != 1L || is.na(force_to_gpu)) {
     stop("`force_to_gpu` must be one non-missing logical value.", call. = FALSE)
   }
+  .ndm_validate_resave_tfrecords("generic", resave_tfrecords)
   if (!is.null(gpu_mem_frac)) {
     gpu_mem_frac <- suppressWarnings(as.numeric(gpu_mem_frac))
     if (length(gpu_mem_frac) != 1L || !is.finite(gpu_mem_frac) ||

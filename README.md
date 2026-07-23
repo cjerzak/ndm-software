@@ -41,7 +41,7 @@ For full execution workflows rather than dry-run previews, also install the
 helper packages used by the runtime, training, and artifact paths:
 
 ```r
-install.packages(c("fastmatch", "progress", "rrapply", "zip", "zoo"))
+install.packages(c("fastmatch", "rrapply", "zip", "zoo"))
 ```
 
 If you need the Python/JAX backend for model execution, TFRecord parsing,
@@ -167,12 +167,19 @@ the lightweight preview grid above:
   `nSamplesTrain`, `nObsInference`, `floatType`, and either `model_spec_name`
   or `model_tex_loc`.
 
+Real and simulation training runners consume canonical TFRecords read-only.
+Build them first with `ndm_bootstrap_sim_tfrecords()` or
+`ndm_bootstrap_real_tfrecords()`, passing the stable producer metadata recorded
+by your CPU bootstrap. Publication requires that metadata; bootstrap dry runs
+may omit it. Prepare multidisease inputs outside the training runner. The
+training-only `resave_tfrecords` compatibility option must remain `FALSE`.
+
 For full execution rather than dry runs, the package also exposes
 `ndm_prepare_runtime()`, `ndm_prepare_data()`, `ndm_build_model()`,
 `ndm_train()`, `ndm_predict()`, and `ndm_fit()`. Those workflows need backend
 setup plus runtime globals and data inputs beyond the lightweight tutorial
 above. `ndm_prepare_runtime()` requires `fastmatch`; simulation data helpers
-also require `progress` and `zoo`; training and artifact restore paths use
+also require `zoo`; training and artifact restore paths use
 `rrapply`, checkpointed training uses `zip`, and multidisease training also
 uses `zoo`.
 

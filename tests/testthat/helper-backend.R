@@ -12,7 +12,7 @@ ndm_backend_test_conda_env <- function() {
 
 ndm_require_backend_test_stack <- function(context,
                                            modules = c("jax", "numpy", "optax", "equinox", "diffrax", "tensorflow"),
-                                           packages = c("reticulate", "fastmatch", "rrapply", "progress", "yaml", "zip", "zoo")) {
+                                           packages = c("reticulate", "fastmatch", "rrapply", "yaml", "zip", "zoo")) {
   strict <- ndm_backend_test_is_strict()
   if (!nzchar(Sys.getenv("JAX_PLATFORMS", unset = ""))) {
     Sys.setenv(JAX_PLATFORMS = "cpu")

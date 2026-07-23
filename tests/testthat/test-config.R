@@ -102,3 +102,14 @@ test_that("backend resource controls reject ambiguous values", {
   expect_error(ndm_create_config(gpu_mem_frac = Inf), "finite")
   expect_equal(ndm_create_config(gpu_mem_frac = 0.25)$gpu_mem_frac, 0.25)
 })
+
+test_that("generic configs reject inline TFRecord regeneration", {
+  expect_error(
+    ndm_create_config(resave_tfrecords = TRUE),
+    "ndm_bootstrap_real_tfrecords"
+  )
+  expect_error(
+    ndm_create_config(resave_tfrecords = 1L),
+    "ndm_bootstrap_real_tfrecords"
+  )
+})
