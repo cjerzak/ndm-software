@@ -1,0 +1,348 @@
+ndm_test_multidisease_bootstrap_grid <- function() {
+  origins <- c(2007L, 2009L, 2013L, 2014L, 2015L, 2017L, 2019L)
+  rows <- expand.grid(
+    BaseID = origins,
+    trainingSeed = c(101L, 202L, 303L),
+    model_arm = seq_len(13L),
+    KEEP.OUT.ATTRS = FALSE,
+    stringsAsFactors = FALSE
+  )
+  rows <- rows[order(match(rows$BaseID, origins)), , drop = FALSE]
+  rows$ContextLength <- 8L
+  rows$evaluationTime <- match(rows$BaseID, origins)
+  rows$evaluationOriginTimeID <- rows$BaseID - 2000L
+  rows$evaluationHorizon <- 4L
+  rows$inferenceSampling <- "complete_locations"
+  rows$dataSeed <- 20260709L
+  rows$initialTransform <- "none"
+  rows$initialNormType <- "all"
+  rows$paddingMethod <- "left"
+  rows$OSSType <- "OutOfTime"
+  rows$dataInputs <- "all"
+  rows$ModelType <- ifelse(rows$model_arm == 1L, "DecoderOnly", "NeuralODE")
+  rows$nSamplesTrain <- 20000L
+  rows$nObsInference <- 2L
+  rows$ResaveThisTFRecord <- 1L
+  rows
+}
+
+test_that("multidisease dry run plans the 273-fit battery by seven BaseIDs", {
+  project_root <- tempfile("ndm-multidisease-plan-")
+  dir.create(project_root)
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  grid <- ndm_test_multidisease_bootstrap_grid()
+
+  plan <- ndm_bootstrap_multidisease_tfrecords(
+    project_root = project_root,
+    grid = grid,
+    disease_names = "TB",
+    dry_run = TRUE
+  )
+
+  expect_equal(nrow(grid), 273L)
+  expect_equal(plan$BaseID, c(2007L, 2009L, 2013L, 2014L, 2015L, 2017L, 2019L))
+  expect_equal(plan$canonical_row, seq.int(1L, 235L, by = 39L))
+  expect_true(all(plan$artifact_n_samples_train == 20000L))
+  expect_true(all(plan$status == "planned"))
+  expect_false(dir.exists(file.path(project_root, "Data", "RunTFRecords")))
+
+  grid$dataSeed[[2L]] <- 7L
+  expect_error(
+    ndm_bootstrap_multidisease_tfrecords(
+      project_root = project_root,
+      grid = grid,
+      disease_names = "TB",
+      dry_run = TRUE
+    ),
+    "dataset-defining field.*dataSeed"
+  )
+})
+
+test_that("multidisease row mapping separates tensor and scoring horizons", {
+  bundle <- list(
+    resolved_diseases = "TB",
+    dataInputs_colnames_past = c("CountValue", "Covariate1"),
+    outcome_metric = "CountValue",
+    true_value_names = "CountValue",
+    truth_df_red = data.frame(
+      location_id = "AAA",
+      time_id = 0L,
+      CountValue = 1,
+      Covariate1 = 1
+    )
+  )
+  row <- ndm_test_multidisease_bootstrap_grid()[1L, , drop = FALSE]
+  captured <- NULL
+  dataset_call <- function(name, ...) {
+    expect_identical(name, "ndm_datasets_dataset_spec")
+    captured <<- list(...)
+    captured
+  }
+
+  spec <- ndm:::.ndm_multidisease_dataset_spec(
+    row_values = row,
+    bundle = bundle,
+    data_subset = "all",
+    lookahead = 12L,
+    min_anchoring_time = 4L,
+    dataset_call = dataset_call
+  )
+
+  expect_identical(spec$lookahead, 12L)
+  expect_identical(spec$evaluation_horizon, 4L)
+  expect_identical(spec$evaluation_sequence, 1L:4L)
+  expect_identical(spec$evaluation_origin_time_id, 7L)
+  expect_identical(spec$inference_sampling, "complete_locations")
+  expect_identical(spec$n_inference_samples, 2L)
+  expect_identical(spec$data_inputs, "Covariate1")
+  expect_identical(ndm:::.ndm_multidisease_data_seed(row), 20260709L)
+  expect_false("trainingSeed" %in% names(spec))
+
+  row$evaluationHorizon <- 3L
+  spec <- ndm:::.ndm_multidisease_dataset_spec(
+    row_values = row,
+    bundle = bundle,
+    dataset_call = dataset_call
+  )
+  expect_identical(spec$evaluation_horizon, 3L)
+  expect_identical(spec$evaluation_sequence, 1L:3L)
+
+  row$evaluationHorizon <- 0L
+  expect_error(
+    ndm:::.ndm_multidisease_dataset_spec(
+      row_values = row,
+      bundle = bundle,
+      dataset_call = dataset_call
+    ),
+    "evaluationHorizon.*positive"
+  )
+})
+
+test_that("multidisease bootstrap delegates serial publication with dataSeed", {
+  project_root <- tempfile("ndm-multidisease-write-")
+  dir.create(project_root)
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  grid <- ndm_test_multidisease_bootstrap_grid()[1:2, , drop = FALSE]
+  grid$nSamplesTrain <- c(10L, 20L)
+  publication <- NULL
+  publication_count <- 0L
+
+  local_mocked_bindings(
+    .ndm_prepare_multidisease_bundle = function(...) list(fake = TRUE),
+    .ndm_multidisease_artifact_contract = function(row_values, ...) {
+      list(
+        table_bundle = structure(list(), class = "fake_bundle"),
+        dataset_spec = list(
+          base_id = as.integer(row_values$BaseID[[1L]]),
+          n_inference_samples = 2L
+        ),
+        data_seed = as.integer(row_values$dataSeed[[1L]])
+      )
+    },
+    .ndm_resolve_tensorflow = function(...) "tensorflow",
+    .ndm_canonical_dataset_call = function(name, ...) {
+      args <- list(...)
+      if (identical(name, "ndm_datasets_training_spec")) {
+        return(args)
+      }
+      expect_identical(name, "ndm_real_bootstrap_tfrecords")
+      publication <<- args
+      publication_count <<- publication_count + 1L
+      list(status = c("written", "skipped_existing")[[publication_count]])
+    },
+    .package = "ndm"
+  )
+
+  result <- ndm_bootstrap_multidisease_tfrecords(
+    project_root = project_root,
+    grid = grid,
+    disease_names = "TB",
+    producer = list(contract = "test-v1")
+  )
+
+  expect_identical(result$canonical_row, 2L)
+  expect_identical(result$artifact_n_samples_train, 20L)
+  expect_identical(publication$training_spec$n_samples_train, 20L)
+  expect_identical(publication$seed, 20260709L)
+  expect_true(publication$verify_readable)
+  expect_false(publication$overwrite)
+  expect_identical(result$status, "written")
+
+  reused <- ndm_bootstrap_multidisease_tfrecords(
+    project_root = project_root,
+    grid = grid,
+    disease_names = "TB",
+    producer = list(contract = "test-v1")
+  )
+  expect_identical(reused$status, "skipped_existing")
+})
+
+test_that("multidisease training preflight binds the complete row contract", {
+  variable <- "NDM_TFRECORD_PRODUCER_CONTRACT"
+  old_value <- Sys.getenv(variable, unset = NA_character_)
+  on.exit({
+    if (is.na(old_value)) {
+      Sys.unsetenv(variable)
+    } else {
+      do.call(Sys.setenv, stats::setNames(list(old_value), variable))
+    }
+  }, add = TRUE)
+  Sys.setenv(NDM_TFRECORD_PRODUCER_CONTRACT = "test-v1")
+
+  runtime_env <- new.env(parent = emptyenv())
+  support <- data.frame(location_id = "AAA", eligible = TRUE)
+  contract <- list(
+    table_bundle = list(kind = "real"),
+    dataset_spec = list(base_id = 2007L),
+    source_sha256 = "source",
+    data_seed = 20260709L,
+    n_inference = 2L,
+    inference_support = support
+  )
+  seen <- NULL
+
+  local_mocked_bindings(
+    .ndm_multidisease_artifact_contract = function(...) contract,
+    .ndm_preflight_canonical_real_runtime = function(...) {
+      seen <<- list(...)
+      invisible(list())
+    },
+    .package = "ndm"
+  )
+
+  result <- ndm:::.ndm_preflight_multidisease_tfrecords(
+    runtime_env = runtime_env,
+    row_values = data.frame(
+      BaseID = 2007L,
+      nSamplesTrain = 20000L
+    ),
+    bundle = list(),
+    paths = list(train_file = "train", inference_file = "inference"),
+    verify_checksum = FALSE
+  )
+
+  expect_identical(result, contract)
+  expect_identical(seen$dataset_spec, contract$dataset_spec)
+  expect_identical(seen$base_id, 2007L)
+  expect_identical(seen$n_train, 20000L)
+  expect_identical(seen$n_inference, 2L)
+  expect_identical(seen$source_sha256, "source")
+  expect_identical(seen$expected_seed, 20260709L)
+  expect_identical(seen$expected_producer, list(contract = "test-v1"))
+  expect_identical(seen$expected_inference_support, support)
+  expect_false(seen$verify_checksum)
+  expect_identical(runtime_env$ndm_real_table_bundle, contract$table_bundle)
+  expect_false(runtime_env$ndm_canonical_verify_checksum)
+})
+
+test_that("multidisease expected producer has an explicit cross-process contract", {
+  variable <- "NDM_TFRECORD_PRODUCER_CONTRACT"
+  old_value <- Sys.getenv(variable, unset = NA_character_)
+  on.exit({
+    if (is.na(old_value)) {
+      Sys.unsetenv(variable)
+    } else {
+      do.call(Sys.setenv, stats::setNames(list(old_value), variable))
+    }
+  }, add = TRUE)
+
+  runtime_env <- new.env(parent = emptyenv())
+  Sys.setenv(NDM_TFRECORD_PRODUCER_CONTRACT = "tb-rolling-origin-v1")
+  expect_identical(
+    ndm:::.ndm_multidisease_expected_producer(runtime_env),
+    list(contract = "tb-rolling-origin-v1")
+  )
+
+  runtime_env$ndm_tfrecord_producer <- list(contract = "runtime-v1")
+  expect_identical(
+    ndm:::.ndm_multidisease_expected_producer(runtime_env),
+    list(contract = "runtime-v1")
+  )
+
+  rm("ndm_tfrecord_producer", envir = runtime_env)
+  Sys.unsetenv(variable)
+  expect_error(
+    ndm:::.ndm_multidisease_expected_producer(runtime_env),
+    "requires expected producer metadata"
+  )
+})
+
+test_that("canonical pair validation binds seed, producer, shapes, and support", {
+  support <- data.frame(
+    location_id = c("AAA", "BBB"),
+    location_id_numeric = 0:1,
+    eligible = c(TRUE, TRUE),
+    origin_time_id = c(7L, 7L),
+    evaluation_horizon = c(4L, 4L),
+    context_length = c(8L, 8L),
+    stringsAsFactors = FALSE
+  )
+  normalized_support <- lapply(support, identity)
+  manifest <- function(split) {
+    list(
+      split = split,
+      base_id = 2007L,
+      n_examples = if (identical(split, "train")) 20L else 2L,
+      dataset_spec = list(kind = "real", base_id = 2007L),
+      scaler_sha256 = "scaler",
+      producer_sha256 = "producer",
+      schema = list(example_shape_map = list(XPred = c(8L, 1L))),
+      metadata = list(
+        source_sha256 = "source",
+        inference_support = normalized_support,
+        inference_support_sha256 = "support"
+      )
+    )
+  }
+  manifests <- list(train = manifest("train"), inference = manifest("inference"))
+  seen <- list()
+  dataset_call <- function(name, ...) {
+    args <- list(...)
+    seen[[length(seen) + 1L]] <<- args
+    if (!identical(args$expected_seed, 20260709L)) {
+      stop("different seed metadata")
+    }
+    manifests[[args$expected_split]]
+  }
+  paths <- list(train_file = "train", inference_file = "inference")
+
+  pair <- ndm:::.ndm_validate_canonical_tfrecord_pair(
+    paths = paths,
+    schema_kind = "real",
+    dataset_spec = manifests$train$dataset_spec,
+    n_train = 20L,
+    n_inference = 2L,
+    source_sha256 = "source",
+    expected_seed = 20260709L,
+    expected_producer = list(contract = "test-v1"),
+    expected_inference_support = support,
+    dataset_call = dataset_call
+  )
+  expect_identical(pair$inference_support, normalized_support)
+  expect_identical(seen[[1L]]$expected_seed, 20260709L)
+  expect_identical(seen[[2L]]$expected_seed, 20260709L)
+  expect_identical(seen[[1L]]$expected_producer, list(contract = "test-v1"))
+
+  expect_error(
+    ndm:::.ndm_validate_canonical_tfrecord_pair(
+      paths = paths,
+      schema_kind = "real",
+      dataset_spec = manifests$train$dataset_spec,
+      expected_seed = 0L,
+      dataset_call = dataset_call
+    ),
+    "different seed"
+  )
+
+  manifests$inference$producer_sha256 <- "other"
+  expect_error(
+    ndm:::.ndm_validate_canonical_tfrecord_pair(
+      paths = paths,
+      schema_kind = "real",
+      dataset_spec = manifests$train$dataset_spec,
+      expected_seed = 20260709L,
+      dataset_call = dataset_call
+    ),
+    "different producers"
+  )
+})

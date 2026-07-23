@@ -61,8 +61,8 @@
 #' @param resave_tfrecords Logical scalar retained for compatibility. Training
 #'   workflows require `FALSE`. For real and simulation runs, build canonical
 #'   artifacts separately with [ndm_bootstrap_real_tfrecords()] or
-#'   [ndm_bootstrap_sim_tfrecords()]. Prepare multidisease inputs outside the
-#'   training runner.
+#'   [ndm_bootstrap_sim_tfrecords()]. For multidisease runs, use
+#'   [ndm_bootstrap_multidisease_tfrecords()].
 #' @param tfrecord_dir Optional TFRecord output directory.
 #' @param raw_data_dir Real-data input directory.
 #' @param outcome_metric Outcome metric name for real-data or multidisease runs.
@@ -422,10 +422,10 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     mode,
     real = "Use `ndm_bootstrap_real_tfrecords()` before training.",
     sim = "Use `ndm_bootstrap_sim_tfrecords()` before training.",
-    multidisease = "Prepare multidisease inputs outside the training runner.",
+    multidisease = "Use `ndm_bootstrap_multidisease_tfrecords()` before training.",
     paste(
       "Use `ndm_bootstrap_real_tfrecords()` or `ndm_bootstrap_sim_tfrecords()` before training.",
-      "Prepare multidisease inputs outside the training runner."
+      "Use `ndm_bootstrap_multidisease_tfrecords()` for multidisease inputs."
     )
   )
   stop(
@@ -790,6 +790,18 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
     driver_env$analysis2_small_run_n_obs_inference <- analysis2_small_run_n_obs_inference
     driver_env$analysis2_model_type <- analysis2_model_type
+    driver_env$analysis2_trusted_artifact_index <- get0(
+      "analysis2_trusted_artifact_index",
+      envir = env,
+      inherits = FALSE,
+      ifnotfound = function(...) NULL
+    )
+    driver_env$analysis2_trusted_index_covers_pair <- get0(
+      "analysis2_trusted_index_covers_pair",
+      envir = env,
+      inherits = FALSE,
+      ifnotfound = function(...) FALSE
+    )
     driver_env$analysis2_multidisease_spec <- spec
     driver_env$analysis2_multidisease_grid <- real_grid
     driver_env$analysis2_nsgd_calibration <- nsgd_calibration

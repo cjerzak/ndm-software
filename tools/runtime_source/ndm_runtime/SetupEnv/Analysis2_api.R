@@ -512,7 +512,7 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
       mode,
       real = "Use `ndm_bootstrap_real_tfrecords()` before training.",
       sim = "Use `ndm_bootstrap_sim_tfrecords()` before training.",
-      "Prepare multidisease inputs outside the training runner."
+      "Use `ndm_bootstrap_multidisease_tfrecords()` before training."
     )
     stop(
       "`resave_tfrecords = TRUE` is no longer supported by training workflows. ",

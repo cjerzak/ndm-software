@@ -423,7 +423,7 @@ test_that("training run configs reject inline TFRecord regeneration", {
   guidance <- c(
     real = "ndm_bootstrap_real_tfrecords",
     sim = "ndm_bootstrap_sim_tfrecords",
-    multidisease = "Prepare multidisease inputs outside the training runner"
+    multidisease = "ndm_bootstrap_multidisease_tfrecords"
   )
 
   for (mode in names(constructors)) {
@@ -483,7 +483,7 @@ test_that("package-native multidisease runner fails closed when canonical artifa
         dry_run = FALSE
       )
     ),
-    "Prepare multidisease inputs outside the training runner"
+    "ndm_bootstrap_multidisease_tfrecords"
   )
   expect_false(dir.exists(tfrecord_dir))
 })
@@ -500,14 +500,28 @@ test_that("multidisease compatibility driver cannot enable inline TFRecord writi
   )
   expect_match(
     driver_source,
-    "Prepare multidisease inputs outside the training runner",
+    "ndm_bootstrap_multidisease_tfrecords",
     fixed = TRUE
   )
-  expect_false(grepl(
-    "ReSaveTfRecords <- TRUE",
+  expect_match(
+    driver_source,
+    ".ndm_preflight_multidisease_tfrecords",
+    fixed = TRUE
+  )
+  preflight_position <- regexpr(
+    ".ndm_preflight_multidisease_tfrecords",
     driver_source,
     fixed = TRUE
-  ))
+  )[[1L]]
+  attach_source_position <- regexpr(
+    'ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real.R")',
+    driver_source,
+    fixed = TRUE
+  )[[1L]]
+  expect_gt(preflight_position, 0L)
+  expect_gt(attach_source_position, preflight_position)
+  expect_false(grepl("ndm_real_bootstrap_tfrecords", driver_source, fixed = TRUE))
+  expect_false(grepl("ReSaveTfRecords", driver_source, fixed = TRUE))
   expect_false(grepl(
     "generating them on demand",
     driver_source,

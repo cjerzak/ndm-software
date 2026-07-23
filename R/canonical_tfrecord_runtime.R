@@ -34,12 +34,27 @@
   as.integer(value)
 }
 
+.ndm_canonical_manifest_value <- function(x) {
+  if (is.list(x)) {
+    out <- lapply(x, .ndm_canonical_manifest_value)
+    names(out) <- names(x)
+    return(out)
+  }
+  if (is.factor(x)) {
+    return(as.character(x))
+  }
+  x
+}
+
 .ndm_validate_canonical_tfrecord_pair <- function(paths,
                                                    schema_kind = c("real", "sim"),
                                                    dataset_spec,
                                                    n_train = NULL,
                                                    n_inference = NULL,
                                                    source_sha256 = NULL,
+                                                   expected_seed = 0L,
+                                                   expected_producer = NULL,
+                                                   expected_inference_support = NULL,
                                                    verify_checksum = TRUE,
                                                    dataset_call = .ndm_canonical_dataset_call) {
   schema_kind <- match.arg(schema_kind)
@@ -57,12 +72,15 @@
     file = paths$train_file,
     schema = schema_kind,
     expected_split = "train",
-    expected_seed = 0L,
+    expected_seed = expected_seed,
     verify_checksum = isTRUE(verify_checksum),
     verify_readable = FALSE
   )
   if (!is.null(dataset_spec)) {
     train_args$expected_dataset_spec <- dataset_spec
+  }
+  if (!is.null(expected_producer)) {
+    train_args$expected_producer <- expected_producer
   }
   train_manifest <- do.call(
     dataset_call,
@@ -85,12 +103,15 @@
     schema = schema_kind,
     expected_dataset_spec = pair_dataset_spec,
     expected_split = "inference",
-    expected_seed = 0L,
+    expected_seed = expected_seed,
     verify_checksum = isTRUE(verify_checksum),
     verify_readable = FALSE
   )
   if (!is.null(n_inference)) {
     inference_args$expected_n_examples <- n_inference
+  }
+  if (!is.null(expected_producer)) {
+    inference_args$expected_producer <- expected_producer
   }
   inference_manifest <- do.call(
     dataset_call,
@@ -108,6 +129,15 @@
   if (!identical(train_manifest$scaler_sha256, inference_manifest$scaler_sha256)) {
     stop("Canonical train and inference TFRecords were built with different scalers.", call. = FALSE)
   }
+  if (!identical(
+    train_manifest$schema$example_shape_map,
+    inference_manifest$schema$example_shape_map
+  )) {
+    stop("Canonical train and inference TFRecords have different example shapes.", call. = FALSE)
+  }
+  if (!identical(train_manifest$producer_sha256, inference_manifest$producer_sha256)) {
+    stop("Canonical train and inference TFRecords were built by different producers.", call. = FALSE)
+  }
   train_source <- (train_manifest$metadata %||% list())$source_sha256 %||% NULL
   inference_source <- (inference_manifest$metadata %||% list())$source_sha256 %||% NULL
   if (!identical(train_source, inference_source)) {
@@ -119,12 +149,33 @@
       stop("Canonical real TFRecords were built from different source tables.", call. = FALSE)
     }
   }
+  train_metadata <- train_manifest$metadata %||% list()
+  inference_metadata <- inference_manifest$metadata %||% list()
+  train_support <- train_metadata$inference_support %||% NULL
+  inference_support <- inference_metadata$inference_support %||% NULL
+  if (!identical(train_support, inference_support)) {
+    stop("Canonical train and inference TFRecords have different inference support.", call. = FALSE)
+  }
+  if (!identical(
+    train_metadata$inference_support_sha256 %||% NULL,
+    inference_metadata$inference_support_sha256 %||% NULL
+  )) {
+    stop("Canonical train and inference TFRecords have different inference-support checksums.", call. = FALSE)
+  }
+  if (!is.null(expected_inference_support) &&
+      !identical(
+        train_support,
+        .ndm_canonical_manifest_value(expected_inference_support)
+      )) {
+    stop("Canonical real TFRecords have different inference support.", call. = FALSE)
+  }
 
   invisible(list(
     paths = paths,
     dataset_spec = pair_dataset_spec,
     train = train_manifest,
     inference = inference_manifest,
+    inference_support = train_support,
     verify_checksum = isTRUE(verify_checksum)
   ))
 }
@@ -549,18 +600,28 @@
   dataset_call(
     "ndm_datasets_dataset_spec",
     kind = "real",
-    disease = scalar_character("disease", "Covid"),
+    disease = scalar_character(c("disease", "DiseaseName"), "Covid"),
     context_length = scalar_integer(c("ContextLength", "maxTimesPast"), 8L),
     lookahead = scalar_integer(c("lookahead", "nTimesLookahead"), 12L),
     evaluation_time = scalar_integer("evaluationTime", 4L),
     evaluation_sequence = as.integer(value("evaluation_sequence", 1L:4L)),
+    evaluation_origin_time_id = scalar_integer(
+      c("evaluationOriginTimeID", "evaluation_origin_time_id")
+    ),
+    evaluation_horizon = scalar_integer(
+      c("evaluationHorizon", "evaluation_horizon")
+    ),
+    inference_sampling = scalar_character(
+      c("inferenceSampling", "inference_sampling"),
+      "random"
+    ),
     initial_transform = scalar_character(c("initialTransform", "initial_transform"), "none"),
     initial_norm_type = scalar_character(c("initialNormType", "initial_norm_type"), "at_t"),
     padding_method = scalar_character(c("paddingMethod", "padding_method"), "left"),
     split_type = scalar_character(c("OSSType", "split_type"), "OutOfTime"),
     data_subset = scalar_character("data_subset", "high_income"),
     data_inputs = value(c("dataInputs", "data_inputs"), "all"),
-    outcomes = value("outcomes", "ihme_true_value_per_capita"),
+    outcomes = value(c("outcomes", "true_value_names"), "ihme_true_value_per_capita"),
     per_capita_scaling_factor = scalar_number("per_capita_scaling_factor", 10000),
     roll_window = scalar_integer(c("roll_window", "rollCompute_window"), 26L),
     min_anchoring_time = scalar_integer("min_anchoring_time", 4L),
@@ -603,8 +664,11 @@
   invisible(dataset_spec)
 }
 
-.ndm_canonical_preflight_error <- function(error, schema_kind, base_id = NULL) {
-  bootstrap <- if (identical(schema_kind, "sim")) {
+.ndm_canonical_preflight_error <- function(error,
+                                           schema_kind,
+                                           base_id = NULL,
+                                           bootstrap = NULL) {
+  bootstrap <- bootstrap %||% if (identical(schema_kind, "sim")) {
     "ndm_bootstrap_sim_tfrecords()"
   } else {
     "ndm_bootstrap_real_tfrecords()"
@@ -685,8 +749,12 @@
     n_train = NULL,
     n_inference = NULL,
     source_sha256 = NULL,
+    expected_seed = 0L,
+    expected_producer = NULL,
+    expected_inference_support = NULL,
     verify_checksum = TRUE,
     skip_tfrecords = NULL,
+    bootstrap = NULL,
     dataset_call = .ndm_canonical_dataset_call) {
   if (!is.environment(runtime_env)) {
     stop("`runtime_env` must be an environment.", call. = FALSE)
@@ -742,6 +810,9 @@
       n_train = n_train,
       n_inference = n_inference,
       source_sha256 = source_sha256,
+      expected_seed = expected_seed,
+      expected_producer = expected_producer,
+      expected_inference_support = expected_inference_support,
       verify_checksum = verify_checksum,
       dataset_call = dataset_call
     )
@@ -754,7 +825,14 @@
       stop("Canonical real TFRecord manifests do not match the active BaseID.", call. = FALSE)
     }
     pair
-  }, error = function(e) .ndm_canonical_preflight_error(e, "real", base_id))
+  }, error = function(e) {
+    .ndm_canonical_preflight_error(
+      e,
+      "real",
+      base_id,
+      bootstrap = bootstrap
+    )
+  })
 
   assign("ndm_canonical_dataset_spec", validated_pair$dataset_spec, envir = runtime_env)
   assign("ndm_canonical_tfrecord_pair", validated_pair, envir = runtime_env)

@@ -137,8 +137,8 @@ standard deviations.}
 \item{resave_tfrecords}{Logical scalar retained for compatibility. Training
 workflows require \code{FALSE}. For real and simulation runs, build canonical
 artifacts separately with \code{ndm_bootstrap_real_tfrecords()} or
-\code{ndm_bootstrap_sim_tfrecords()}. Prepare multidisease inputs outside the
-training runner.}
+\code{ndm_bootstrap_sim_tfrecords()}. For multidisease runs, use
+\code{ndm_bootstrap_multidisease_tfrecords()}.}
 
 \item{tfrecord_dir}{Optional TFRecord output directory.}
 

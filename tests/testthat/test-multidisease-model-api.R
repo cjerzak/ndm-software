@@ -204,6 +204,7 @@ test_that("multidisease preparation validates requested inputs and high_income f
       disease_names = "hiv",
       data_format = "IHME",
       data_subset = "high_income",
+      SkipTfRecords = TRUE,
       nBatch = 2L,
       nCheckpoints = 0L,
       nEpochesMax = 1L,
@@ -263,6 +264,6 @@ test_that("multidisease preparation rejects retired TFRecord regeneration", {
 
   expect_error(
     ndm_prepare_data(env, generator = "multidisease"),
-    "Prepare multidisease inputs outside the training runner"
+    "ndm_bootstrap_multidisease_tfrecords"
   )
 })

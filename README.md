@@ -167,12 +167,14 @@ the lightweight preview grid above:
   `nSamplesTrain`, `nObsInference`, `floatType`, and either `model_spec_name`
   or `model_tex_loc`.
 
-Real and simulation training runners consume canonical TFRecords read-only.
-Build them first with `ndm_bootstrap_sim_tfrecords()` or
-`ndm_bootstrap_real_tfrecords()`, passing the stable producer metadata recorded
-by your CPU bootstrap. Publication requires that metadata; bootstrap dry runs
-may omit it. Prepare multidisease inputs outside the training runner. The
-training-only `resave_tfrecords` compatibility option must remain `FALSE`.
+All training runners consume canonical TFRecords read-only. Build them first
+with `ndm_bootstrap_sim_tfrecords()`, `ndm_bootstrap_real_tfrecords()`, or
+`ndm_bootstrap_multidisease_tfrecords()`, passing the stable producer metadata
+recorded by your CPU bootstrap. Publication requires that metadata; bootstrap
+dry runs may omit it. The training-only `resave_tfrecords` compatibility option
+must remain `FALSE`. Multidisease controllers must also set
+`NDM_TFRECORD_PRODUCER_CONTRACT` and publish with the matching
+`producer = list(contract = "<contract>")`.
 
 For full execution rather than dry runs, the package also exposes
 `ndm_prepare_runtime()`, `ndm_prepare_data()`, `ndm_build_model()`,

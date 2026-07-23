@@ -547,10 +547,6 @@
         Sys.setenv(XLA_PYTHON_CLIENT_MEM_FRACTION = sprintf("%s",
             GPU_MEM_FRAC))
     }
-    if (isTRUE(ReSaveTfRecords)) {
-        Sys.setenv(CUDA_VISIBLE_DEVICES = "")
-        Sys.setenv(XLA_PYTHON_CLIENT_PREALLOCATE = "false")
-    }
     backend_conda_env <- get0("conda_env", inherits = TRUE, ifnotfound = Sys.getenv("NDM_SOFTWARE_CONDA_ENV",
         unset = Sys.getenv("NDM_CONDA_ENV", unset = if (grepl(version$os,
             pattern = "darwin"))
@@ -1967,7 +1963,8 @@
                 schema_kind = "real", batch_size = ai(nBatch),
                 shuffle_train = TRUE, reshuffle_train = TRUE,
                 run_seed = get0("SEED_", inherits = TRUE, ifnotfound = NULL),
-                max_train_examples = ai(RealEntry$nSamplesTrain),
+                verify_checksum = isTRUE(get0("ndm_canonical_verify_checksum",
+                  inherits = TRUE, ifnotfound = TRUE)), max_train_examples = ai(RealEntry$nSamplesTrain),
                 max_inference_examples = get0("nObsInference",
                   inherits = TRUE, ifnotfound = NULL))
         }
@@ -9134,7 +9131,7 @@
     if (!identical(resave_tfrecords, FALSE)) {
         guidance <- switch(mode, real = "Use `ndm_bootstrap_real_tfrecords()` before training.",
             sim = "Use `ndm_bootstrap_sim_tfrecords()` before training.",
-            "Prepare multidisease inputs outside the training runner.")
+            "Use `ndm_bootstrap_multidisease_tfrecords()` before training.")
         stop("`resave_tfrecords = TRUE` is no longer supported by training workflows. ",
             guidance, call. = FALSE)
     }
@@ -10984,7 +10981,11 @@
         set.seed(theInitialSeed <- if (is.null(configured_run_seed))
             12L
         else configured_run_seed)
-        ReSaveTfRecords <- isTRUE(analysis2_multidisease_spec$resave_tfrecords)
+        if (isTRUE(analysis2_multidisease_spec$resave_tfrecords)) {
+            stop("Inline multidisease TFRecord regeneration is retired. ",
+                "Run ndm_bootstrap_multidisease_tfrecords() before training.",
+                call. = FALSE)
+        }
         force2GPU <- isTRUE(analysis2_multidisease_spec$force_to_gpu)
         nRealGridSeed <- 128L
         nExamplesPerCell <- 10L
@@ -11015,9 +11016,6 @@
         PreTrain <- ifelse(nSGD_pretrain == 0, yes = FALSE, no = TRUE)
         nTotalDiseases <- (nSynthDiseases <- 3L) + 1L
         nSGD_posttrain <- nSGD_model
-        if (ReSaveTfRecords) {
-            nSGD_pretrain <- nSGD_DefiningLRSeq <- nSGD_model <- 0L
-        }
         specificOptState <- TRUE
         SharedListNames <- c("TS")
         HolderFolder <- sprintf("./SavedResults/Real/Results_%s",
@@ -11027,8 +11025,22 @@
         }
         ndm_source_extracted("SetupEnv/SuperLModel_helperFxns.R")
         dataFormat <- analysis2_multidisease_spec$data_format
-        ndm_source_extracted("SetupData/MultiDiseaseRuns/SuperL_UniversalDataReader.R")
         data_subset <- analysis2_multidisease_spec$data_subset
+        multidisease_bundle <- (utils::getFromNamespace(".ndm_prepare_multidisease_bundle",
+            "ndm"))(project_root = analysis2_multidisease_spec$project_root,
+            data_format = dataFormat, disease_names = DiseaseNameVec,
+            outcome_metric = analysis2_multidisease_spec$outcome_metric,
+            data_subset = data_subset)
+        truth_df_red <- multidisease_bundle$truth_df_red
+        input_df_red <- multidisease_bundle$input_df_red
+        true_value_names <- multidisease_bundle$true_value_names
+        all_true_value_names <- multidisease_bundle$all_true_value_names
+        dataInputs_colnames_past <- multidisease_bundle$dataInputs_colnames_past
+        dataInputs_colnames_future <- multidisease_bundle$dataInputs_colnames_future
+        dataInputs_colnames <- c(dataInputs_colnames_past, dataInputs_colnames_future)
+        outcome_metric <- multidisease_bundle$outcome_metric
+        nOutcomes <- multidisease_bundle$nOutcomes
+        nPlaces <- multidisease_bundle$nPlaces
         dataInputs_pool_orig <- dataInputs_pool <- dataInputs_colnames_past
         if (any(!dataInputs_pool_orig %in% colnames(truth_df_red))) {
             stop(sprintf("Stopping: %s not in colnames(truth_df_red) in MasterReal.R",
@@ -11067,12 +11079,7 @@
                 fallback_n_samples_train = nSamples_max)
         }
         nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-        nSGD_DefiningLRSeq <- nSGD_model <- if (ReSaveTfRecords) {
-            0L
-        }
-        else {
-            as.integer(nsgd_calibration$resolved_n_sgd)
-        }
+        nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
         nSGD_posttrain <- nSGD_model
         nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max,
             nSGD_model, nCheckpointsDefault)
@@ -11084,19 +11091,14 @@
         summary(which(RealGrid$ResaveThisTFRecord == 1))
         length(which(RealGrid$ResaveThisTFRecord == 1))
         dim(RealGrid)
-        if (!ReSaveTfRecords) {
-            RealGrid <- RealGrid[order(RealGrid$BaseID), ]
-            if (RealGrid$BaseID[OUTER_ITERATION_SEQUENCE[1]]%%2 ==
-                1) {
-            }
-            if (RealGrid$BaseID[OUTER_ITERATION_SEQUENCE[1]]%%2 ==
-                0) {
-                RealGrid[RealGrid$BaseID%%2 == 0, ] <- RealGrid[RealGrid$BaseID%%2 ==
-                  0, ][order(apply(RealGrid[RealGrid$BaseID%%2 ==
-                  0, ], 1, function(zer) {
-                  rlang::hash(paste(zer, collapse = "_"))
-                })), ]
-            }
+        RealGrid <- RealGrid[order(RealGrid$BaseID), ]
+        if (RealGrid$BaseID[OUTER_ITERATION_SEQUENCE[1]]%%2 ==
+            0) {
+            RealGrid[RealGrid$BaseID%%2 == 0, ] <- RealGrid[RealGrid$BaseID%%2 ==
+                0, ][order(apply(RealGrid[RealGrid$BaseID%%2 ==
+                0, ], 1, function(zer) {
+                rlang::hash(paste(zer, collapse = "_"))
+            })), ]
         }
         for (OUTER_ITERATION in OUTER_ITERATION_SEQUENCE) {
             print2(sprintf("STARTING outer iteration sequence %s...",
@@ -11122,12 +11124,7 @@
                   nSamplesTrain > 0) {
                   nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
                   nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-                  nSGD_DefiningLRSeq <- nSGD_model <- if (ReSaveTfRecords) {
-                    0L
-                  }
-                  else {
-                    as.integer(nsgd_calibration$resolved_n_sgd)
-                  }
+                  nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
                   nSGD_posttrain <- nSGD_model
                   nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max,
                     nSGD_model, nCheckpointsDefault)
@@ -11144,7 +11141,7 @@
                   TfRecordDir, "inference", RealEntry$BaseID))
                 missing_tfrecords <- required_tfrecords[!file.exists(required_tfrecords)]
                 if (length(missing_tfrecords) > 0L) {
-                  stop(sprintf("Canonical multidisease TFRecords are missing for BaseID %s: %s. Prepare multidisease inputs outside the training runner.",
+                  stop(sprintf("Canonical multidisease TFRecords are missing for BaseID %s: %s. Run ndm_bootstrap_multidisease_tfrecords() before training.",
                     RealEntry$BaseID, paste(missing_tfrecords,
                       collapse = ", ")), call. = FALSE)
                 }
@@ -11298,15 +11295,23 @@
                   mean(x, na.rm = TRUE)
                 })
                 print2("Defining data acquisition process...")
+                canonical_paths <- (utils::getFromNamespace(".ndm_canonical_tfrecord_paths",
+                  "ndm"))(TfRecordDir, RealEntry$BaseID)
+                trusted_index <- analysis2_trusted_artifact_index(TfRecordDir)
+                ndm_canonical_verify_checksum <- !analysis2_trusted_index_covers_pair(trusted_index,
+                  canonical_paths)
+                (utils::getFromNamespace(".ndm_preflight_multidisease_tfrecords",
+                  "ndm"))(runtime_env = environment(), row_values = RealEntry,
+                  bundle = multidisease_bundle, data_subset = data_subset,
+                  lookahead = nTimesLookahead, min_anchoring_time = minAnchoringTimeID,
+                  paths = canonical_paths, verify_checksum = ndm_canonical_verify_checksum)
                 ndm_source_extracted("SetupData/SuperLModel_DataGenerator_Real.R")
-                if (!ReSaveTfRecords) {
-                  if (any(!sapply(unique(RealGrid$BaseID), function(s_) {
-                    file.exists(sprintf("%s/%s_%s.tfrecord",
-                      TfRecordDir, "train", s_))
-                  }))) {
-                    warning(sprintf("Some tf records missing... check data generation pipeline!\n           Make sure you're generating {%s} unique records",
-                      length(unique(RealGrid$BaseID))))
-                  }
+                if (any(!sapply(unique(RealGrid$BaseID), function(s_) {
+                  file.exists(sprintf("%s/%s_%s.tfrecord", TfRecordDir,
+                    "train", s_))
+                }))) {
+                  warning(sprintf("Some tf records missing... check data generation pipeline!\n           Make sure you're generating {%s} unique records",
+                    length(unique(RealGrid$BaseID))))
                 }
                 if (nSGD_model > 0) {
                   print2("Building core ML model...")

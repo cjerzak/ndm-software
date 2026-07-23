@@ -546,6 +546,11 @@
           shuffle_train = TRUE,
           reshuffle_train = TRUE,
           run_seed = get0("SEED_", inherits = TRUE, ifnotfound = NULL),
+          verify_checksum = isTRUE(get0(
+            "ndm_canonical_verify_checksum",
+            inherits = TRUE,
+            ifnotfound = TRUE
+          )),
           max_train_examples = ai(RealEntry$nSamplesTrain),
           max_inference_examples = get0("nObsInference", inherits = TRUE, ifnotfound = NULL)
         )

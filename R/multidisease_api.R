@@ -472,6 +472,633 @@
   )
 }
 
+.ndm_multidisease_subset_bundle <- function(bundle, data_subset = "all") {
+  location_id <- location_id_numeric <- location_name <- NULL
+  data_subset <- as.character(data_subset)
+  if (length(data_subset) != 1L || is.na(data_subset) || !nzchar(data_subset)) {
+    stop("`data_subset` must be one non-empty value.", call. = FALSE)
+  }
+  truth <- data.table::as.data.table(bundle$truth_df_red)
+  input <- data.table::as.data.table(bundle$input_df_red)
+  if (identical(data_subset, "all")) {
+    keep_place_ids <- unique(truth$location_id)
+  } else if (identical(data_subset, "high_income")) {
+    if (!"LOC2_region_name" %in% names(truth)) {
+      warning("high_income subset requested but LOC2_region_name not available; using all locations")
+      keep_place_ids <- unique(truth$location_id)
+    } else {
+      keep_place_ids <- unique(truth$location_id[
+        truth$LOC2_region_name %in% c(
+          "Western Europe",
+          "High-income North America",
+          "Central Europe",
+          "High-income Asia Pacific"
+        )
+      ])
+    }
+  } else {
+    stop("Unsupported multidisease `data_subset`: ", data_subset, call. = FALSE)
+  }
+
+  truth <- truth[location_id %in% keep_place_ids]
+  input <- input[location_id %in% keep_place_ids]
+  if ("location_name" %in% names(truth)) {
+    truth <- truth[!is.na(location_name)]
+  }
+  if ("location_name" %in% names(input)) {
+    input <- input[!is.na(location_name)]
+  }
+  if (nrow(truth) == 0L) {
+    stop("The multidisease subset does not contain any observations.", call. = FALSE)
+  }
+  location_levels <- sort(unique(as.character(truth$location_id)))
+  truth[, location_id_numeric := match(as.character(location_id), location_levels) - 1L]
+  input[, location_id_numeric := match(as.character(location_id), location_levels) - 1L]
+  if (!any(as.integer(truth$time_id) == 0L)) {
+    stop("time_id seems to be non-zero indexed!", call. = FALSE)
+  }
+
+  bundle$truth_df_red <- as.data.frame(truth, stringsAsFactors = FALSE)
+  bundle$input_df_red <- as.data.frame(input, stringsAsFactors = FALSE)
+  bundle$nPlaces <- length(location_levels)
+  bundle$data_subset <- data_subset
+  bundle
+}
+
+.ndm_prepare_multidisease_bundle <- function(project_root,
+                                             data_format,
+                                             disease_names,
+                                             outcome_metric,
+                                             data_subset,
+                                             desired_measure = NULL) {
+  bundle <- .ndm_load_multidisease_bundle(
+    project_root = project_root,
+    data_format = data_format,
+    disease_names = disease_names,
+    outcome_metric = outcome_metric,
+    desired_measure = desired_measure
+  )
+  .ndm_multidisease_subset_bundle(bundle, data_subset = data_subset)
+}
+
+.ndm_multidisease_resolve_inputs <- function(bundle, data_inputs = "all") {
+  data_inputs <- as.character(data_inputs)
+  if (length(data_inputs) == 0L || all(is.na(data_inputs)) ||
+      (length(data_inputs) == 1L &&
+       (!nzchar(data_inputs) || identical(data_inputs, "all")))) {
+    selected <- setdiff(bundle$dataInputs_colnames_past, bundle$outcome_metric)
+    if (length(selected) == 0L) {
+      selected <- bundle$dataInputs_colnames_past
+    }
+  } else if (length(data_inputs) == 1L) {
+    selected <- unique(strsplit(data_inputs, split = "__", fixed = TRUE)[[1L]])
+  } else {
+    selected <- unique(data_inputs)
+  }
+  selected <- selected[nzchar(selected)]
+  missing_inputs <- selected[!selected %in% names(bundle$truth_df_red)]
+  if (length(missing_inputs) > 0L) {
+    stop(
+      "Requested multidisease `dataInputs` are not present in the loaded data: ",
+      paste(missing_inputs, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  selected
+}
+
+.ndm_multidisease_table_bundle <- function(bundle,
+                                           data_inputs = "all",
+                                           dataset_call = .ndm_canonical_dataset_call) {
+  selected_inputs <- .ndm_multidisease_resolve_inputs(bundle, data_inputs)
+  table_bundle <- dataset_call(
+    "ndm_real_table_bundle",
+    truth_df = bundle$truth_df_red,
+    data_inputs = selected_inputs,
+    outcomes = bundle$true_value_names,
+    disease = paste(bundle$resolved_diseases, collapse = "__"),
+    outcome_metric = bundle$outcome_metric,
+    per_capita_scaling_factor = 1,
+    roll_window = 1L
+  )
+  list(
+    bundle = bundle,
+    table_bundle = table_bundle,
+    data_inputs = selected_inputs,
+    source_sha256 = dataset_call("ndm_real_source_sha256", table_bundle)
+  )
+}
+
+.ndm_multidisease_row_value <- function(row_values,
+                                        names,
+                                        default = NULL) {
+  if (is.data.frame(row_values)) {
+    if (nrow(row_values) != 1L) {
+      stop("A multidisease grid row must contain exactly one row.", call. = FALSE)
+    }
+    row_values <- as.list(row_values[1L, , drop = FALSE])
+  }
+  for (name in names) {
+    value <- row_values[[name]] %||% NULL
+    if (.ndm_runtime_value_is_present(value)) {
+      return(value[[1L]])
+    }
+  }
+  default
+}
+
+.ndm_multidisease_row_integer <- function(row_values,
+                                          names,
+                                          default = NULL,
+                                          required = FALSE) {
+  value <- .ndm_multidisease_row_value(row_values, names, default = default)
+  if (is.null(value) && !isTRUE(required)) {
+    return(NULL)
+  }
+  numeric_value <- suppressWarnings(as.numeric(as.character(value)))
+  if (length(numeric_value) != 1L || !is.finite(numeric_value) ||
+      numeric_value != floor(numeric_value)) {
+    stop(
+      "Multidisease grid field `", names[[1L]], "` must be one integer.",
+      call. = FALSE
+    )
+  }
+  as.integer(numeric_value)
+}
+
+.ndm_multidisease_dataset_spec <- function(row_values,
+                                           bundle,
+                                           data_subset = "all",
+                                           lookahead = 12L,
+                                           min_anchoring_time = 4L,
+                                           dataset_call = .ndm_canonical_dataset_call) {
+  selected_inputs <- .ndm_multidisease_resolve_inputs(
+    bundle,
+    .ndm_multidisease_row_value(row_values, "dataInputs", "all")
+  )
+  evaluation_horizon <- .ndm_multidisease_row_integer(
+    row_values,
+    "evaluationHorizon",
+    4L
+  )
+  if (evaluation_horizon < 1L) {
+    stop("Multidisease `evaluationHorizon` must be positive.", call. = FALSE)
+  }
+  dataset_call(
+    "ndm_datasets_dataset_spec",
+    kind = "real",
+    disease = paste(bundle$resolved_diseases, collapse = "__"),
+    context_length = .ndm_multidisease_row_integer(
+      row_values,
+      "ContextLength",
+      required = TRUE
+    ),
+    lookahead = as.integer(lookahead),
+    evaluation_time = .ndm_multidisease_row_integer(
+      row_values,
+      "evaluationTime",
+      4L
+    ),
+    evaluation_sequence = seq_len(evaluation_horizon),
+    evaluation_origin_time_id = .ndm_multidisease_row_integer(
+      row_values,
+      "evaluationOriginTimeID"
+    ),
+    evaluation_horizon = evaluation_horizon,
+    inference_sampling = as.character(.ndm_multidisease_row_value(
+      row_values,
+      "inferenceSampling",
+      "random"
+    )),
+    initial_transform = as.character(.ndm_multidisease_row_value(
+      row_values,
+      "initialTransform",
+      "none"
+    )),
+    initial_norm_type = as.character(.ndm_multidisease_row_value(
+      row_values,
+      "initialNormType",
+      "all"
+    )),
+    padding_method = as.character(.ndm_multidisease_row_value(
+      row_values,
+      "paddingMethod",
+      "left"
+    )),
+    split_type = as.character(.ndm_multidisease_row_value(
+      row_values,
+      "OSSType",
+      "OutOfTime"
+    )),
+    data_subset = as.character(data_subset),
+    data_inputs = selected_inputs,
+    outcomes = bundle$true_value_names,
+    per_capita_scaling_factor = 1,
+    roll_window = 1L,
+    min_anchoring_time = as.integer(min_anchoring_time),
+    train_location_fraction = 0.8,
+    n_inference_samples = .ndm_multidisease_row_integer(
+      row_values,
+      "nObsInference",
+      required = TRUE
+    ),
+    base_id = .ndm_multidisease_row_integer(
+      row_values,
+      "BaseID",
+      required = TRUE
+    ),
+    outcome_metric = bundle$outcome_metric
+  )
+}
+
+.ndm_multidisease_data_seed <- function(row_values) {
+  seed <- .ndm_multidisease_row_integer(row_values, "dataSeed", 0L)
+  if (seed < 0L) {
+    stop("Multidisease `dataSeed` must be non-negative.", call. = FALSE)
+  }
+  seed
+}
+
+.ndm_multidisease_artifact_contract <- function(row_values,
+                                                bundle,
+                                                data_subset = "all",
+                                                lookahead = 12L,
+                                                min_anchoring_time = 4L,
+                                                dataset_call = .ndm_canonical_dataset_call) {
+  table_contract <- .ndm_multidisease_table_bundle(
+    bundle,
+    data_inputs = .ndm_multidisease_row_value(row_values, "dataInputs", "all"),
+    dataset_call = dataset_call
+  )
+  dataset_spec <- .ndm_multidisease_dataset_spec(
+    row_values = row_values,
+    bundle = bundle,
+    data_subset = data_subset,
+    lookahead = lookahead,
+    min_anchoring_time = min_anchoring_time,
+    dataset_call = dataset_call
+  )
+  prepared <- dataset_call(
+    "ndm_real_prepare_tables",
+    table_bundle = table_contract$table_bundle,
+    dataset_spec = dataset_spec
+  )
+  c(
+    table_contract,
+    list(
+      dataset_spec = dataset_spec,
+      data_seed = .ndm_multidisease_data_seed(row_values),
+      n_inference = as.integer(dataset_spec$n_inference_samples),
+      inference_support = prepared$inference_support %||% NULL
+    )
+  )
+}
+
+.ndm_multidisease_expected_producer <- function(runtime_env) {
+  producer <- .ndm_runtime_get0(
+    runtime_env,
+    "ndm_tfrecord_producer",
+    ifnotfound = NULL
+  )
+  if (!is.null(producer)) {
+    return(producer)
+  }
+
+  contract <- trimws(Sys.getenv(
+    "NDM_TFRECORD_PRODUCER_CONTRACT",
+    unset = ""
+  ))
+  if (!nzchar(contract)) {
+    stop(
+      "Canonical multidisease training requires expected producer metadata. ",
+      "Set `ndm_tfrecord_producer` or ",
+      "`NDM_TFRECORD_PRODUCER_CONTRACT` to match the bootstrap producer.",
+      call. = FALSE
+    )
+  }
+  list(contract = contract)
+}
+
+.ndm_preflight_multidisease_tfrecords <- function(
+    runtime_env,
+    row_values,
+    bundle,
+    data_subset = "all",
+    lookahead = 12L,
+    min_anchoring_time = 4L,
+    paths = NULL,
+    verify_checksum = TRUE) {
+  contract <- .ndm_multidisease_artifact_contract(
+    row_values = row_values,
+    bundle = bundle,
+    data_subset = data_subset,
+    lookahead = lookahead,
+    min_anchoring_time = min_anchoring_time
+  )
+  ndm_set_runtime_globals(
+    runtime_env,
+    list(
+      ndm_real_table_bundle = contract$table_bundle,
+      ndm_real_source_sha256 = contract$source_sha256,
+      ndm_inference_support = contract$inference_support,
+      ndm_canonical_verify_checksum = isTRUE(verify_checksum)
+    )
+  )
+  .ndm_preflight_canonical_real_runtime(
+    runtime_env = runtime_env,
+    paths = paths,
+    dataset_spec = contract$dataset_spec,
+    base_id = .ndm_multidisease_row_integer(
+      row_values,
+      "BaseID",
+      required = TRUE
+    ),
+    n_train = .ndm_multidisease_row_integer(
+      row_values,
+      "nSamplesTrain",
+      required = TRUE
+    ),
+    n_inference = contract$n_inference,
+    source_sha256 = contract$source_sha256,
+    expected_seed = contract$data_seed,
+    expected_producer = .ndm_multidisease_expected_producer(runtime_env),
+    expected_inference_support = contract$inference_support,
+    verify_checksum = isTRUE(verify_checksum),
+    bootstrap = "ndm_bootstrap_multidisease_tfrecords()"
+  )
+  invisible(contract)
+}
+
+.ndm_multidisease_plan <- function(grid,
+                                   base_ids = NULL,
+                                   tfrecord_dir) {
+  if (!is.data.frame(grid)) {
+    stop("`grid` must be a data.frame.", call. = FALSE)
+  }
+  required <- c(
+    "BaseID", "ContextLength", "evaluationTime", "initialTransform",
+    "initialNormType", "paddingMethod", "OSSType", "dataInputs",
+    "nSamplesTrain", "nObsInference"
+  )
+  missing <- setdiff(required, names(grid))
+  if (length(missing) > 0L) {
+    stop(
+      "Multidisease grid is missing required field(s): ",
+      paste(missing, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  grid_base_ids <- suppressWarnings(as.integer(grid$BaseID))
+  if (length(grid_base_ids) != nrow(grid) || anyNA(grid_base_ids)) {
+    stop("Every multidisease grid row must contain an integer `BaseID`.", call. = FALSE)
+  }
+  ordered_base_ids <- unique(grid_base_ids)
+  if (!is.null(base_ids)) {
+    requested <- unique(suppressWarnings(as.integer(base_ids)))
+    if (length(requested) == 0L || anyNA(requested)) {
+      stop("`base_ids` must contain at least one integer BaseID.", call. = FALSE)
+    }
+    missing_ids <- setdiff(requested, ordered_base_ids)
+    if (length(missing_ids) > 0L) {
+      stop(
+        "Requested BaseID(s) are missing from the grid: ",
+        paste(missing_ids, collapse = ", "),
+        ".",
+        call. = FALSE
+      )
+    }
+    ordered_base_ids <- requested
+  }
+  defining_fields <- intersect(
+    c(
+      "ContextLength", "evaluationTime", "evaluationOriginTimeID",
+      "evaluationHorizon", "inferenceSampling", "dataSeed",
+      "initialTransform", "initialNormType", "paddingMethod", "OSSType",
+      "dataInputs", "nObsInference", "DiseaseName"
+    ),
+    names(grid)
+  )
+  rows <- lapply(ordered_base_ids, function(base_id) {
+    row_indices <- which(grid_base_ids == base_id)
+    group <- grid[row_indices, , drop = FALSE]
+    inconsistent <- defining_fields[vapply(
+      group[defining_fields],
+      function(value) length(unique(as.character(value))) != 1L,
+      logical(1L)
+    )]
+    if (length(inconsistent) > 0L) {
+      stop(
+        "Rows sharing BaseID ", base_id,
+        " disagree on dataset-defining field(s): ",
+        paste(inconsistent, collapse = ", "),
+        ".",
+        call. = FALSE
+      )
+    }
+    capacity <- suppressWarnings(as.numeric(group$nSamplesTrain))
+    if (any(!is.finite(capacity)) || any(capacity < 1) ||
+        any(capacity != floor(capacity))) {
+      stop(
+        "Rows sharing BaseID ", base_id,
+        " contain invalid `nSamplesTrain` values.",
+        call. = FALSE
+      )
+    }
+    max_capacity <- max(capacity)
+    canonical_row <- min(row_indices[capacity == max_capacity])
+    paths <- .ndm_canonical_tfrecord_paths(tfrecord_dir, base_id)
+    data.frame(
+      BaseID = as.integer(base_id),
+      selected_rows = paste(row_indices, collapse = ","),
+      canonical_row = as.integer(canonical_row),
+      artifact_n_samples_train = as.integer(max_capacity),
+      train_file = paths$train_file,
+      inference_file = paths$inference_file,
+      stringsAsFactors = FALSE
+    )
+  })
+  if (length(rows) == 0L) {
+    return(data.frame(
+      BaseID = integer(),
+      selected_rows = character(),
+      canonical_row = integer(),
+      artifact_n_samples_train = integer(),
+      train_file = character(),
+      inference_file = character(),
+      stringsAsFactors = FALSE
+    ))
+  }
+  do.call(rbind, rows)
+}
+
+#' Bootstrap canonical multidisease TFRecords by BaseID
+#'
+#' Builds one serial, canonical real-schema TFRecord pair per multidisease
+#' `BaseID`. The bootstrap and training paths share the same raw-data loader,
+#' table adapter, dataset specification, source fingerprint, data seed, and
+#' complete-location support contract.
+#'
+#' @param project_root Project root containing multidisease data and grids.
+#' @param analysis_name Analysis label used for default paths.
+#' @param grid Optional in-memory multidisease grid.
+#' @param grid_file Optional multidisease grid CSV path.
+#' @param base_ids Optional BaseIDs to build, in requested order.
+#' @param tfrecord_dir Canonical TFRecord output directory.
+#' @param disease_names Non-empty disease names passed to the multidisease
+#'   loader.
+#' @param data_format Multidisease source format: `"IHME"`, `"WHO"`, or
+#'   `"Tycho"`.
+#' @param outcome_metric Outcome column name.
+#' @param data_subset Multidisease location subset.
+#' @param lookahead Tensor lookahead. This remains distinct from a grid row's
+#'   shorter `evaluationHorizon`.
+#' @param min_anchoring_time Minimum training anchor time.
+#' @param producer Non-empty named producer metadata. Required to publish.
+#'   For environment-bound training, use `list(contract = "<contract>")`.
+#' @param overwrite Whether to replace an existing complete pair.
+#' @param dry_run Whether to return the plan without loading data or writing.
+#'
+#' @returns A data frame with one row per BaseID. `status` is `"planned"` for
+#'   dry runs, `"written"` after publication, or `"skipped_existing"` only
+#'   after an existing pair passes full contract and readability validation.
+#' @export
+ndm_bootstrap_multidisease_tfrecords <- function(
+    project_root = getwd(),
+    analysis_name = "RealLatest",
+    grid = NULL,
+    grid_file = file.path(
+      "Data", "RunGrids", "RealGrids",
+      sprintf("RealGrid_%s.csv", analysis_name)
+    ),
+    base_ids = NULL,
+    tfrecord_dir = file.path(
+      "Data", "RunTFRecords", "RealTFRecords", analysis_name
+    ),
+    disease_names,
+    data_format = "IHME",
+    outcome_metric = "CountValue",
+    data_subset = "all",
+    lookahead = 12L,
+    min_anchoring_time = 4L,
+    producer = NULL,
+    overwrite = FALSE,
+    dry_run = FALSE) {
+  project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
+  if (missing(disease_names)) {
+    stop("`disease_names` must be supplied.", call. = FALSE)
+  }
+  disease_names <- unique(as.character(disease_names))
+  disease_names <- disease_names[nzchar(trimws(disease_names))]
+  if (length(disease_names) == 0L) {
+    stop("`disease_names` must contain at least one non-empty value.", call. = FALSE)
+  }
+  lookahead <- .ndm_canonical_optional_count(lookahead, "lookahead")
+  min_anchoring_time <- .ndm_canonical_optional_count(
+    min_anchoring_time,
+    "min_anchoring_time"
+  )
+  if (is.null(lookahead) || lookahead < 1L ||
+      is.null(min_anchoring_time) || min_anchoring_time < 0L) {
+    stop("Lookahead must be positive and minimum anchoring time non-negative.", call. = FALSE)
+  }
+  if (!isTRUE(dry_run) && is.null(producer)) {
+    stop("`producer` is required when publishing canonical TFRecords.", call. = FALSE)
+  }
+  if (!is.null(grid) && !is.data.frame(grid)) {
+    stop("`grid` must be a data.frame when supplied.", call. = FALSE)
+  }
+  if (!is.null(grid)) {
+    grid_file <- NULL
+  } else {
+    grid_file <- .ndm_normalize_path(
+      .ndm_path_join_if_relative(project_root, grid_file),
+      must_work = TRUE
+    )
+    grid <- as.data.frame(
+      data.table::fread(grid_file),
+      stringsAsFactors = FALSE
+    )
+  }
+  tfrecord_dir <- .ndm_normalize_path(
+    .ndm_path_join_if_relative(project_root, tfrecord_dir),
+    must_work = FALSE
+  )
+  plan <- .ndm_multidisease_plan(
+    grid = grid,
+    base_ids = base_ids,
+    tfrecord_dir = tfrecord_dir
+  )
+  if (nrow(plan) == 0L) {
+    plan$status <- character()
+    return(plan)
+  }
+  if (isTRUE(dry_run)) {
+    plan$status <- vapply(seq_len(nrow(plan)), function(i) {
+      files <- c(
+        plan$train_file[[i]],
+        plan$inference_file[[i]],
+        .ndm_canonical_manifest_path(plan$train_file[[i]]),
+        .ndm_canonical_manifest_path(plan$inference_file[[i]])
+      )
+      present <- file.exists(files)
+      if (!isTRUE(overwrite) && any(present) && !all(present)) {
+        stop(
+          "Found incomplete TFRecord artifacts for BaseID ",
+          plan$BaseID[[i]], ". Set `overwrite = TRUE` to replace them.",
+          call. = FALSE
+        )
+      }
+      "planned"
+    }, character(1L))
+    return(plan)
+  }
+
+  dir.create(tfrecord_dir, recursive = TRUE, showWarnings = FALSE)
+  bundle <- .ndm_prepare_multidisease_bundle(
+    project_root = project_root,
+    data_format = data_format,
+    disease_names = disease_names,
+    outcome_metric = outcome_metric,
+    data_subset = data_subset
+  )
+  tensorflow <- NULL
+  statuses <- character(nrow(plan))
+  for (i in seq_len(nrow(plan))) {
+    row_values <- grid[plan$canonical_row[[i]], , drop = FALSE]
+    contract <- .ndm_multidisease_artifact_contract(
+      row_values = row_values,
+      bundle = bundle,
+      data_subset = data_subset,
+      lookahead = lookahead,
+      min_anchoring_time = min_anchoring_time
+    )
+    training_spec <- .ndm_canonical_dataset_call(
+      "ndm_datasets_training_spec",
+      n_samples_train = plan$artifact_n_samples_train[[i]]
+    )
+    if (is.null(tensorflow)) {
+      tensorflow <- .ndm_resolve_tensorflow()
+    }
+    result <- .ndm_canonical_dataset_call(
+      "ndm_real_bootstrap_tfrecords",
+      table_bundle = contract$table_bundle,
+      dataset_spec = contract$dataset_spec,
+      output_dir = tfrecord_dir,
+      training_spec = training_spec,
+      producer = producer,
+      batch_size = 64L,
+      seed = contract$data_seed,
+      overwrite = isTRUE(overwrite),
+      verify_readable = TRUE,
+      tensorflow = tensorflow,
+      quiet = TRUE
+    )
+    statuses[[i]] <- as.character(result$status %||% "written")
+  }
+  plan$status <- statuses
+  plan
+}
+
 .ndm_multidisease_required_globals_missing <- function(env) {
   required <- .ndm_multidisease_required_runtime_globals()
   required[!vapply(required, exists, logical(1), envir = env, inherits = FALSE)]
@@ -482,7 +1109,7 @@
       isTRUE(.ndm_runtime_get0(runtime_env, "ReSaveTfRecords", ifnotfound = FALSE))) {
     stop(
       "`resave_tfrecords = TRUE` is no longer supported for multidisease workflows. ",
-      "Prepare multidisease inputs outside the training runner.",
+      "Use `ndm_bootstrap_multidisease_tfrecords()` before training.",
       call. = FALSE
     )
   }
@@ -552,25 +1179,17 @@
   }
   decoder_in_neural_ode <- isTRUE(.ndm_runtime_get0(runtime_env, "DecoderInNeuralODE", ifnotfound = FALSE))
 
-  data_inputs <- .ndm_runtime_get0(runtime_env, "dataInputs", ifnotfound = NULL)
-  if (is.null(data_inputs) || !nzchar(as.character(data_inputs)) || identical(as.character(data_inputs), "all")) {
-    selected_inputs <- setdiff(bundle$dataInputs_colnames_past, bundle$outcome_metric)
-    if (length(selected_inputs) == 0L) {
-      selected_inputs <- bundle$dataInputs_colnames_past
-    }
-  } else {
-    selected_inputs <- unique(strsplit(as.character(data_inputs), split = "__", fixed = TRUE)[[1L]])
-  }
-  missing_inputs <- selected_inputs[!selected_inputs %in% names(bundle$truth_df_red)]
-  if (length(missing_inputs) > 0L) {
-    stop(
-      "Requested multidisease `dataInputs` are not present in the loaded data: ",
-      paste(missing_inputs, collapse = ", "),
-      call. = FALSE
-    )
-  }
+  selected_inputs <- .ndm_multidisease_resolve_inputs(
+    bundle,
+    .ndm_runtime_get0(runtime_env, "dataInputs", ifnotfound = "all")
+  )
 
   base_id <- as.integer(.ndm_runtime_get0(runtime_env, "BaseID", ifnotfound = 1L))
+  n_obs_inference <- as.integer(.ndm_runtime_get0(
+    runtime_env,
+    "nObsInference",
+    ifnotfound = 32L
+  ))
   real_entry <- data.frame(
     ContextLength = max_times_past,
     evaluationMethod = as.character(.ndm_runtime_get0(runtime_env, "evaluationMethod", ifnotfound = "prospective")),
@@ -579,6 +1198,21 @@
     paddingMethod = as.character(.ndm_runtime_get0(runtime_env, "paddingMethod")),
     floatType = as.character(.ndm_runtime_get0(runtime_env, "floatType", ifnotfound = runtime_env$float_type %||% "32")),
     evaluationTime = as.integer(.ndm_runtime_get0(runtime_env, "evaluationTime")),
+    evaluationOriginTimeID = as.integer(.ndm_runtime_get0(
+      runtime_env,
+      "evaluationOriginTimeID",
+      ifnotfound = NA_integer_
+    )),
+    evaluationHorizon = as.integer(.ndm_runtime_get0(
+      runtime_env,
+      "evaluationHorizon",
+      ifnotfound = NA_integer_
+    )),
+    inferenceSampling = as.character(.ndm_runtime_get0(
+      runtime_env,
+      "inferenceSampling",
+      ifnotfound = "random"
+    )),
     dataInputs = paste(selected_inputs, collapse = "__"),
     OSSType = as.character(.ndm_runtime_get0(runtime_env, "OSSType")),
     simplexType = as.integer(.ndm_runtime_get0(runtime_env, "simplexType", ifnotfound = 1L)),
@@ -588,7 +1222,9 @@
     ModelDepth = as.integer(.ndm_runtime_get0(runtime_env, "ModelDepth", ifnotfound = NA_integer_)),
     ModelDims = as.integer(.ndm_runtime_get0(runtime_env, "ModelDims", ifnotfound = NA_integer_)),
     nSamplesTrain = n_samples_train,
-    ResaveThisTFRecord = as.integer(.ndm_runtime_get0(runtime_env, "ResaveThisTFRecord", ifnotfound = 1L)),
+    nObsInference = n_obs_inference,
+    dataSeed = as.integer(.ndm_runtime_get0(runtime_env, "dataSeed", ifnotfound = 0L)),
+    ResaveThisTFRecord = 0L,
     stringsAsFactors = FALSE
   )
 
@@ -607,6 +1243,7 @@
       UseShortOutcomes = TRUE,
       nTimesLookahead = n_times_lookahead,
       nTimesLookValidationInference = n_times_lookahead,
+      lookahead = n_times_lookahead,
       OverDoDataFrac = 0.90,
       DecoderInNeuralODE = decoder_in_neural_ode,
       endAppend = FALSE,
@@ -633,6 +1270,7 @@
       nTimesTotal = max_times_past + n_times_lookahead,
       VI_TotalTimesInLikelihood = n_times_lookahead,
       minAnchoringTimeID = as.integer(.ndm_runtime_get0(runtime_env, "minAnchoringTimeID", ifnotfound = 4L)),
+      min_anchoring_time = as.integer(.ndm_runtime_get0(runtime_env, "minAnchoringTimeID", ifnotfound = 4L)),
       MIN_NA_ACCEPT_FRAC = 4 / max_times_past,
       NTimeSteps_SIM = n_time_steps_sim,
       MaxSteps = as.integer(.ndm_runtime_get0(runtime_env, "MaxSteps", ifnotfound = 10^6)),
@@ -655,6 +1293,15 @@
       all_true_value_names = bundle$all_true_value_names,
       true_value_names = bundle$true_value_names,
       outcome_metric = bundle$outcome_metric,
+      disease = paste(bundle$resolved_diseases, collapse = "__"),
+      outcomes = bundle$true_value_names,
+      per_capita_scaling_factor = 1,
+      roll_window = 1L,
+      nObsInference = n_obs_inference,
+      dataSeed = as.integer(real_entry$dataSeed),
+      evaluationOriginTimeID = real_entry$evaluationOriginTimeID,
+      evaluationHorizon = real_entry$evaluationHorizon,
+      inferenceSampling = real_entry$inferenceSampling,
       dataInputs_pool_orig = bundle$dataInputs_colnames_past,
       dataInputs_pool = selected_inputs,
       dataInputs_colnames = selected_inputs,
@@ -707,50 +1354,22 @@
   outcome_metric <- as.character(.ndm_runtime_get0(runtime_env, "outcome_metric", ifnotfound = "CountValue"))
   desired_measure <- .ndm_runtime_get0(runtime_env, "desired_measure", ifnotfound = NULL)
 
-  bundle <- .ndm_load_multidisease_bundle(
+  bundle <- .ndm_prepare_multidisease_bundle(
     project_root = project_root,
     data_format = data_format,
     disease_names = disease_names,
     outcome_metric = outcome_metric,
+    data_subset = data_subset,
     desired_measure = desired_measure
   )
 
   truth_df_red <- data.table::as.data.table(bundle$truth_df_red)
-  if (identical(data_subset, "all")) {
-    keep_place_ids <- unique(truth_df_red$location_id)
-  } else if (identical(data_subset, "high_income")) {
-    if (!"LOC2_region_name" %in% names(truth_df_red)) {
-      warning("high_income subset requested but LOC2_region_name not available; using all locations")
-      keep_place_ids <- unique(truth_df_red$location_id)
-    } else {
-      keep_place_ids <- unique(truth_df_red$location_id[
-        truth_df_red$LOC2_region_name %in% c(
-          "Western Europe",
-          "High-income North America",
-          "Central Europe",
-          "High-income Asia Pacific"
-        )
-      ])
-    }
-  } else {
-    stop("Unsupported multidisease `data_subset`: ", data_subset, call. = FALSE)
-  }
-
-  truth_df_red <- truth_df_red[truth_df_red$location_id %in% keep_place_ids]
   if ("POP_population" %in% names(truth_df_red)) {
     truth_df_red$Pop <- truth_df_red$POP_population
   } else {
     truth_df_red$Pop <- NA_real_
     warning("POP_population column not available; Pop set to NA")
   }
-  truth_df_red <- truth_df_red[!is.na(truth_df_red$location_name)]
-  truth_df_red$location_id_numeric <- as.integer(
-    factor(truth_df_red$location_id, levels = sort(unique(truth_df_red$location_id)))
-  ) - 1L
-  if (!any(truth_df_red$time_id == 0L)) {
-    stop("time_id seems to be non-zero indexed!", call. = FALSE)
-  }
-
   evaluation_seq <- as.integer(.ndm_runtime_get0(runtime_env, "evaluation_seq", ifnotfound = c(1L, 2L, 3L, 4L)))
   evaluation_time <- as.integer(.ndm_runtime_get0(runtime_env, "evaluationTime"))
   evaluation_origin_time_id <- .ndm_runtime_get0(
@@ -779,6 +1398,35 @@
     )
   )
   .ndm_multidisease_set_default_globals(runtime_env, bundle = bundle)
+  skip_tfrecords <- isTRUE(.ndm_runtime_get0(
+    runtime_env,
+    "SkipTfRecords",
+    ifnotfound = FALSE
+  ))
+  if (!skip_tfrecords) {
+    real_entry <- .ndm_runtime_get0(runtime_env, "RealEntry")
+    .ndm_preflight_multidisease_tfrecords(
+      runtime_env = runtime_env,
+      row_values = real_entry,
+      bundle = bundle,
+      data_subset = data_subset,
+      lookahead = .ndm_runtime_get0(
+        runtime_env,
+        "nTimesLookahead",
+        ifnotfound = 12L
+      ),
+      min_anchoring_time = .ndm_runtime_get0(
+        runtime_env,
+        "minAnchoringTimeID",
+        ifnotfound = 4L
+      ),
+      verify_checksum = isTRUE(.ndm_runtime_get0(
+        runtime_env,
+        "ndm_canonical_verify_checksum",
+        ifnotfound = TRUE
+      ))
+    )
+  }
   ndm_source_runtime_data(
     env = runtime_env,
     generator = "real"

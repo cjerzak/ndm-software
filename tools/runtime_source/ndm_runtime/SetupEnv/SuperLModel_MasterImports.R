@@ -4,10 +4,6 @@
   if (!is.null(GPU_MEM_FRAC)) {
     Sys.setenv(XLA_PYTHON_CLIENT_MEM_FRACTION = sprintf("%s", GPU_MEM_FRAC))
   }
-  if (isTRUE(ReSaveTfRecords)) {
-    Sys.setenv(CUDA_VISIBLE_DEVICES = "")
-    Sys.setenv(XLA_PYTHON_CLIENT_PREALLOCATE = "false")
-  }
 
   backend_conda_env <- get0(
     "conda_env",
