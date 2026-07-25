@@ -89,10 +89,9 @@ reduce this to one effective draw downstream.}
 observation scales.}
 
 \item{initial_observation_scale}{Finite positive initial observation-scale
-value on the outcome scale. The default is \code{1}, matching the unit-scale
+value on the outcome scale. The default is `1`, matching the unit-scale
 initialization used before this control became configurable. It must be
-greater than
-\code{observation_scale_floor}.}
+greater than `observation_scale_floor`.}
 
 \item{neuralode_variational}{Logical scalar. When `FALSE`, NeuralODE
 training uses deterministic posterior means instead of stochastic
