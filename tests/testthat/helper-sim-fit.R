@@ -22,6 +22,61 @@ ndm_test_sim_fit_scaling_batches <- function(scaling_outer_loops,
   as.integer(max(1, ceiling(scaling_examples / 16L)))
 }
 
+ndm_test_sim_max_time_index <- function(dataset_spec) {
+  required_fields <- c(
+    "n_time_steps",
+    "context_length",
+    "lookahead",
+    "forward_shift_c"
+  )
+  missing_fields <- setdiff(required_fields, names(dataset_spec))
+  if (length(missing_fields) > 0L) {
+    stop(
+      "Simulation dataset spec is missing time-index field(s): ",
+      paste(missing_fields, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  values <- suppressWarnings(as.numeric(unlist(
+    dataset_spec[required_fields],
+    use.names = FALSE
+  )))
+  if (length(values) != length(required_fields) ||
+      any(!is.finite(values)) ||
+      any(values < 0) ||
+      any(values != floor(values))) {
+    stop(
+      "Simulation dataset time-index fields must be non-negative integers.",
+      call. = FALSE
+    )
+  }
+  max_time_index <- values[[1L]] - sum(values[2L:4L])
+  if (max_time_index < 0) {
+    stop(
+      "Simulation dataset spec leaves no valid initial time index.",
+      call. = FALSE
+    )
+  }
+  as.integer(max_time_index)
+}
+
+ndm_test_clear_tensorflow_global_seed <- function(runtime_env) {
+  if (is.null(runtime_env$tf) ||
+      is.null(runtime_env$tf$random) ||
+      is.null(runtime_env$tf$random$set_seed)) {
+    stop(
+      "Simulation fixtures require TensorFlow random-seed control.",
+      call. = FALSE
+    )
+  }
+  # Dataset.shuffle() already receives the fixture's explicit operation seed.
+  # Clear TensorFlow's process-global seed so an earlier Analysis2 run cannot
+  # silently combine a second seed into this test's batch order.
+  runtime_env$tf$random$set_seed(NULL)
+  invisible(runtime_env)
+}
+
 ndm_test_sim_fit_grid <- function(sim_entry,
                                   n_samples_train,
                                   n_times_lookahead,
@@ -367,6 +422,9 @@ ndm_test_fit_sim_case <- function(model_type,
     api$analysis2_row_to_list(artifact_grid[1L, , drop = FALSE])
   )
   dataset_spec <- api$analysis2_sim_dataset_spec("ndmdatasets", row_values)
+  if (is.null(runtime_defaults$MaxTimeIndex)) {
+    runtime_defaults$MaxTimeIndex <- ndm_test_sim_max_time_index(dataset_spec)
+  }
   canonical <- ndm_test_sim_fit_canonical_artifacts(
     api = api,
     grid = artifact_grid,
@@ -392,6 +450,7 @@ ndm_test_fit_sim_case <- function(model_type,
     runtime_env = ndm_new_runtime_env(parent = globalenv()),
     runtime_globals = runtime_defaults
   )
+  ndm_test_clear_tensorflow_global_seed(runtime_env)
 
   n_times_total <- n_times_past + n_times_lookahead
   n_time_steps_sim <- (n_times_past + n_times_lookahead) * 2L
@@ -673,11 +732,6 @@ ndm_test_week10_relative_accuracy <- function(metrics, eps = 1e-3, target_week =
   )
 }
 
-ndm_test_clip_at <- function(x, qval = 0.975) {
-  limits <- stats::quantile(x, probs = c(1 - qval, qval), na.rm = TRUE)
-  pmin(pmax(x, limits[[1L]]), limits[[2L]])
-}
-
 ndm_test_sim_evaluation_batch <- function(details) {
   runtime_env <- details$runtime_env
   if (!exists("TFDataset_inference", envir = runtime_env, inherits = FALSE) ||
@@ -745,8 +799,13 @@ ndm_test_week_relative_accuracy_on_batch <- function(details,
   baseline <- history[, baseline_index]
   squared_pred_error <- (pred_mean[, target_week] - truth[, target_week])^2
   squared_baseline_error <- (baseline - truth[, target_week])^2
-  rss_pred <- mean(ndm_test_clip_at(squared_pred_error))
-  rss_baseline <- mean(ndm_test_clip_at(squared_baseline_error))
+  paired <- is.finite(squared_pred_error) &
+    is.finite(squared_baseline_error)
+  if (!any(paired)) {
+    stop("Paired simulation evaluation produced no finite error pairs.")
+  }
+  rss_pred <- mean(squared_pred_error[paired])
+  rss_baseline <- mean(squared_baseline_error[paired])
 
   list(
     rss_pred = rss_pred,

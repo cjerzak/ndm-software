@@ -1,4 +1,64 @@
 # **** BEGIN SuperLModel_DataGenerator_Real.R script ****
+.ndm_real_normalize_column <- function(col_vals,
+                                       in_sample_indices,
+                                       time_id,
+                                       initial_transform,
+                                       initial_norm_type) {
+  if (length(in_sample_indices) == 0L) {
+    stop("Real-data normalization requires at least one training observation.")
+  }
+
+  if (identical(initial_transform, "yeoJohnson")) {
+    transform_fit <- bestNormalize::yeojohnson(
+      col_vals[in_sample_indices],
+      standardize = FALSE
+    )
+    col_vals <- as.numeric(stats::predict(transform_fit, newdata = col_vals))
+  }
+
+  if (identical(initial_norm_type, "at_t")) {
+    demeaner <- tapply(
+      col_vals[in_sample_indices],
+      time_id[in_sample_indices],
+      function(x) mean(x, na.rm = TRUE)
+    )
+    descaler <- tapply(
+      col_vals[in_sample_indices],
+      time_id[in_sample_indices],
+      function(x) stats::sd(x, na.rm = TRUE)
+    )
+    demeaner <- demeaner[!is.na(demeaner)]
+    descaler <- descaler[!is.na(descaler)]
+    descaler <- as.data.frame(cbind(
+      descaler,
+      "time_id" = as.numeric(as.character(names(descaler)))
+    ))
+    demeaner <- as.data.frame(cbind(
+      demeaner,
+      "time_id" = as.numeric(as.character(names(demeaner)))
+    ))
+    demeaner <- stats::predict(
+      stats::smooth.spline(x = demeaner$time_id, y = demeaner$demeaner),
+      x = max(demeaner$time_id)
+    )$y
+    descaler <- stats::predict(
+      stats::smooth.spline(x = descaler$time_id, y = descaler$descaler),
+      x = max(descaler$time_id)
+    )$y
+  } else if (identical(initial_norm_type, "all")) {
+    demeaner <- mean(col_vals[in_sample_indices], na.rm = TRUE)
+    descaler <- stats::sd(col_vals[in_sample_indices], na.rm = TRUE)
+  } else {
+    stop("Unknown real-data initialNormType: ", initial_norm_type)
+  }
+
+  if (!is.finite(descaler) || descaler <= 0) {
+    stop("Real-data normalization scale must be finite and positive.")
+  }
+
+  (col_vals - demeaner) / (0.001 + descaler)
+}
+
 {
   print2("Setup data infrastructure in DataGenerator_Real")
   {
@@ -19,43 +79,17 @@
           sapply(1:length(dataInputs_colnames_TO_NORMALIZE),function(col_to_norm){
       col_vals <- f2n(unlist(truth_df_red[,dataInputs_colnames_TO_NORMALIZE[col_to_norm]]))
       
-      # yeojohnson for normality 
-      if(initialTransform == "yeoJohnson"){
+      if (initialTransform == "yeoJohnson") {
         print2("---yeojohnson for normality---")
-        col_vals <- predict(bestNormalize::yeojohnson(col_vals))
       }
-      
-      # if demeaning based on time t
-      if(initialNormType == "at_t"){
-        demeaner <- tapply(col_vals[in_sample_red_tmp_indices], 
-                           truth_df_red$time_id[in_sample_red_tmp_indices], 
-                           function(x){mean(x,na.rm=T)})
-        descaler <- tapply(col_vals[in_sample_red_tmp_indices], 
-                           truth_df_red$time_id[in_sample_red_tmp_indices], 
-                           function(x){sd(x,na.rm=T)})
-        demeaner <- demeaner[!is.na(demeaner)]
-        descaler <- descaler[!is.na(descaler)]
-        #plot(demeaner); plot(descaler)
-        descaler <- as.data.frame(cbind(descaler,"time_id"=f2n(names(descaler))))
-        demeaner <- as.data.frame(cbind(demeaner,"time_id"=f2n(names(demeaner))))
-        demeaner <- predict(smooth.spline(x=demeaner$time_id,
-                                          y=demeaner$demeaner), 
-                            x = max(f2n(demeaner$time_id)))$y
-        descaler <- predict(smooth.spline(x=descaler$time_id,
-                                          y=descaler$descaler), 
-                            x = max(f2n(descaler$time_id)))$y
-      }
-      
-      # if demeaning based on entire context uniformly 
-      if(initialNormType == "all"){ 
-        demeaner <- mean(col_vals[in_sample_red_tmp_indices],na.rm=T)
-        descaler <- sd(col_vals[in_sample_red_tmp_indices],na.rm=T)
-      }
-  
-      # mean / var norm
-      col_vals_normed <- (col_vals - demeaner) / (0.001+descaler)
-      
-      return( col_vals_normed )   
+
+      .ndm_real_normalize_column(
+        col_vals = col_vals,
+        in_sample_indices = in_sample_red_tmp_indices,
+        time_id = truth_df_red$time_id,
+        initial_transform = initialTransform,
+        initial_norm_type = initialNormType
+      )
     })
   
     # setup train / test

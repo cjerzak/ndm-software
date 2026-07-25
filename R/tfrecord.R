@@ -51,6 +51,9 @@ ndm_tfrecord_dtype_map <- function(kind = c("real", "sim")) {
   mask_fields <- grep("mask$", field_names, value = TRUE)
   dtype_map[mask_fields] <- "bool"
   dtype_map[c("location_id_numeric", "time_id_numeric")] <- "int32"
+  if (identical(kind, "sim")) {
+    dtype_map[["initial_shift"]] <- "int32"
+  }
   dtype_map
 }
 
@@ -79,6 +82,9 @@ ndm_tfrecord_dtype_map <- function(kind = c("real", "sim")) {
 .ndm_normalize_dtype_map <- function(field_names, dtype_map) {
   if (is.null(dtype_map)) {
     dtype_map <- stats::setNames(rep("float32", length(field_names)), field_names)
+    canonical_map <- ndm_tfrecord_dtype_map("sim")
+    canonical_fields <- intersect(field_names, names(canonical_map))
+    dtype_map[canonical_fields] <- canonical_map[canonical_fields]
   }
 
   if (is.null(names(dtype_map)) || !all(field_names %in% names(dtype_map))) {
@@ -112,6 +118,15 @@ ndm_tfrecord_dtype_map <- function(kind = c("real", "sim")) {
       "or point reticulate at a Python environment where the `tensorflow` module is installed."
     ),
     call. = FALSE
+  )
+}
+
+.ndm_tfrecord_iter_next <- function(iterator) {
+  completed <- new.env(parent = emptyenv())
+  batch <- reticulate::iter_next(iterator, completed = completed)
+  list(
+    completed = identical(batch, completed),
+    batch = if (identical(batch, completed)) NULL else batch
   )
 }
 
@@ -256,14 +271,11 @@ ndm_collect_tfrecord_batches <- function(file,
   batch_idx <- 0L
 
   repeat {
-    batch <- tryCatch(
-      reticulate::iter_next(iterator),
-      error = function(e) NULL
-    )
-
-    if (is.null(batch)) {
+    next_batch <- .ndm_tfrecord_iter_next(iterator)
+    if (isTRUE(next_batch$completed)) {
       break
     }
+    batch <- next_batch$batch
 
     batch_idx <- batch_idx + 1L
     batches[[batch_idx]] <- batch

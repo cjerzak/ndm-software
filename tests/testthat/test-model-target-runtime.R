@@ -1,12 +1,4 @@
 ndm_test_build_ml_loss_function <- function() {
-  source_path <- testthat::test_path(
-    "..", "..", "tools", "runtime_source", "ndm_runtime",
-    "ModelDefiners", "SuperLModel_BuildML.R"
-  )
-  if (!file.exists(source_path)) {
-    testthat::skip("runtime source tree is not available in this installed-package context")
-  }
-
   find_assignment <- function(expr, target) {
     if (!is.call(expr)) {
       return(NULL)
@@ -29,7 +21,9 @@ ndm_test_build_ml_loss_function <- function() {
     NULL
   }
 
-  expressions <- parse(file = source_path, keep.source = FALSE)
+  expressions <- ndm_test_runtime_source_expressions(
+    "ModelDefiners/SuperLModel_BuildML.R"
+  )
   for (expr in expressions) {
     found <- find_assignment(expr, "getLoss_train")
     if (!is.null(found)) {
@@ -42,15 +36,8 @@ ndm_test_build_ml_loss_function <- function() {
 test_that("runtime loss selects model outcome channels at its boundary", {
   loss_function <- ndm_test_build_ml_loss_function()
   loss_source <- paste(deparse(loss_function, width.cutoff = 500L), collapse = "\n")
-  runtime_source <- paste(
-    readLines(
-      testthat::test_path(
-        "..", "..", "tools", "runtime_source", "ndm_runtime",
-        "ModelDefiners", "SuperLModel_BuildML.R"
-      ),
-      warn = FALSE
-    ),
-    collapse = "\n"
+  runtime_source <- ndm_test_runtime_source_text(
+    "ModelDefiners/SuperLModel_BuildML.R"
   )
 
   selector_position <- regexpr(
@@ -87,15 +74,15 @@ test_that("runtime likelihood and NeuralODE MSE share selected targets", {
   expect_match(loss_source, "loss_y <- model_targets$y", fixed = TRUE)
   expect_match(loss_source, "loss_y_mask <- model_targets$y_mask", fixed = TRUE)
   expect_match(loss_source, "y = loss_y", fixed = TRUE)
-  expect_match(loss_source, "mask = loss_y_mask", fixed = TRUE)
+  expect_match(loss_source, "mask = solver_safe_loss_mask", fixed = TRUE)
   expect_match(
     loss_source,
-    "observation_mask <- loss_y_mask$astype(GetPred_output$y_mu$dtype)",
+    "observation_mask <- solver_safe_loss_mask$astype(GetPred_output$y_mu$dtype)",
     fixed = TRUE
   )
   expect_match(
     loss_source,
-    "jnp$square(GetPred_output$y_mu - loss_y) * observation_mask",
+    "jnp$square(solver_safe_y_mu - loss_y) * observation_mask",
     fixed = TRUE
   )
   expect_false(grepl("(^|\\n)[[:space:]]*y <- model_targets\\$y", loss_source))

@@ -316,8 +316,8 @@ Why do we need something like this? Because $\E[f(X)] \ne \E[X]$, and the way we
 \item $e_{l0} \sim \Dist{Normal}(0, 0.1)$ % initial exposed frac (multiply by N to get total number) 
 \item $i_{l0}\sim \Dist{Normal}(0, 0.1)$ % initial infected frac (multiply by N to get total number) 
 \item $r_{l0} \sim \Dist{Normal}(0, 0.1)$  %initial recovered frac (multiply by N to get total number) 
-\item $\Evolve{s_l} = -\beta_{l} \cdot i_l \cdot s_l$
-\item $\Evolve{e_l} = \beta_{l} \cdot  i_l \cdot  s_l - \sigma \cdot  e_l$
+\item $\Evolve{s_l} = -\beta_{l} \cdot i_l \cdot s_l \cdot \frac{1}{N}$
+\item $\Evolve{e_l} = \beta_{l} \cdot  i_l \cdot  s_l \cdot \frac{1}{N} - \sigma \cdot  e_l$
 \item $\Evolve{i_l} = \sigma \cdot e_l - \gamma \cdot  i_l$
 \item $\Evolve{r_l} = \gamma \cdot  i_l$
 \item $\Observe = \Sigmoid( \delta ) \cdot i_l$ % deaths
@@ -445,7 +445,6 @@ Why do we need something like this? Because $\E[f(X)] \ne \E[X]$, and the way we
 %%% mode: latex
 %%% TeX-master: t
 %%% End:
-
 
 
 

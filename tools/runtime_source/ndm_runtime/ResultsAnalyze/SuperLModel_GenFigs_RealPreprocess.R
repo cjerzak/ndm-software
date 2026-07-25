@@ -134,11 +134,19 @@
     } 
     res_mat_zer <- res_mat[zer,]
     DT_skill_zer <- DT_skill[zer,]
-    RSS_baseline <- apply(DT_skill_zer[,paste("RSSBaselineTime",1:nMax_FutureTruth, sep = "")],
-                          2, function(zr){ return(mean(clipAt(f2n(zr)),na.rm=T)) } )
-    RSS_pred  <- apply(DT_skill_zer[,paste("RSSPredTime",1:nMax_FutureTruth, sep = "")], 2, 
-                       function(zr){ return(mean(clipAt(f2n(zr)),na.rm=T)) } )
-    skill_vec <- 1 - (0.001+RSS_pred^0.5) / (0.001+RSS_baseline^0.5)
+    skill_metrics <- vapply(seq_len(nMax_FutureTruth), function(horizon) {
+      ndm_paired_squared_error_skill(
+        squared_prediction_error = f2n(
+          DT_skill_zer[[paste0("RSSPredTime", horizon)]]
+        ),
+        squared_baseline_error = f2n(
+          DT_skill_zer[[paste0("RSSBaselineTime", horizon)]]
+        )
+      )
+    }, numeric(3L))
+    skill_vec <- skill_metrics["skill",]
+    RSS_pred <- skill_metrics["rss_pred",]
+    RSS_baseline <- skill_metrics["rss_baseline",]
     
     # rename 
     names(skill_vec) <- paste("SkillTime",1:length(skill_vec), sep = "")
@@ -199,11 +207,25 @@
         c("location_id", "time_anchor_id"))
     )
     
-    ## --- 3.  Compute the group‑level means (RSS) ----------------------------
-    RSS_agg <- DT_skill[ ,
-                         lapply(.SD, function(z) mean(clipAt(f2n(z)), na.rm = TRUE)),
-                         by   = master_conditioning_id,
-                         .SDcols = c(rss_base_cols, rss_pred_cols) ]
+    ## --- 3.  Compute paired group-level mean squared errors -----------------
+    RSS_agg <- DT_skill[ , {
+      paired_metrics <- vapply(seq_along(rss_base_cols), function(horizon) {
+        ndm_paired_squared_error_skill(
+          squared_prediction_error = f2n(.SD[[rss_pred_cols[[horizon]]]]),
+          squared_baseline_error = f2n(.SD[[rss_base_cols[[horizon]]]])
+        )
+      }, numeric(3L))
+      aggregate_values <- c(
+        paired_metrics["rss_baseline",],
+        paired_metrics["rss_pred",]
+      )
+      stats::setNames(
+        as.list(aggregate_values),
+        c(rss_base_cols, rss_pred_cols)
+      )
+    },
+    by = master_conditioning_id,
+    .SDcols = c(rss_base_cols, rss_pred_cols) ]
     
     ## --- 4.  Derive the SkillTime* columns ----------------------------------
     H <- length(grep("^Truth_l", names(DT)))          # number of forecast times
@@ -299,4 +321,3 @@
   
   print2("Done with RealPreprocessing.R")
 }
-

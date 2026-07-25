@@ -77,8 +77,9 @@ doGrid <- TRUE
 SimMode <- FALSE
 nBatch <- as.integer(32L)
 nSGD_pretrain <- 0L
-nCheckpointsDefault <- 10L
+nCheckpointsDefault <- analysis2_as_int(analysis2_multidisease_spec$n_checkpoints)
 nCheckpoints <- nCheckpointsDefault
+PriorSDMultiplier <- as.numeric(analysis2_multidisease_spec$prior_sd_multiplier)
 nEpochesMax <- 9L
 nSamples_max <- 20000L
 nSGD_DefiningLRSeq <- nSGD_model <- as.integer(round(nEpochesMax * (nSamples_max / nBatch)))
@@ -162,14 +163,11 @@ if (exists("analysis2_multidisease_grid", inherits = TRUE)) {
 }
 nsgd_calibration <- get0("analysis2_nsgd_calibration", inherits = TRUE, ifnotfound = NULL)
 if (is.null(nsgd_calibration)) {
-  nsgd_resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", "ndm")
-  nsgd_calibration <- nsgd_resolver(
+  nsgd_calibration <- analysis2_resolve_nsgd_calibration(
     mode = "multidisease",
-    project_root = analysis2_multidisease_spec$project_root,
-    analysis_name = AnalysisName,
+    spec = analysis2_multidisease_spec,
     n_epoches_max = nEpochesMax,
     grid = RealGrid,
-    grid_file = analysis2_multidisease_spec$grid_file,
     fallback_n_samples_train = nSamples_max
   )
 }
@@ -217,15 +215,22 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   if(exists("nSamplesTrain") && !is.na(nSamplesTrain) && nSamplesTrain > 0){
     nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
     nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-    nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
-    nSGD_posttrain <- nSGD_model
-    nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max, nSGD_model, nCheckpointsDefault)
     nObsInference <- analysis2_small_run_n_obs_inference(
       n_samples_train = nSamplesTrain,
       n_batch = nBatch,
       configured = get0("nObsInference", inherits = FALSE, ifnotfound = NULL)
     )
   }
+  # Grid rows are converted to legacy globals above. Reapply structured controls
+  # afterward so a same-named grid column cannot override CLI/manifest values.
+  list2env(
+    analysis2_multidisease_structured_control_globals(
+      spec = analysis2_multidisease_spec,
+      n_samples_train = nSamples_max,
+      n_sgd = nsgd_calibration$resolved_n_sgd
+    ),
+    envir = environment()
+  )
   modelingStrategyNameKey <- paste(c("RealMode", paste(names(RealEntry), 
                                                        RealEntry, sep = "_")), collapse = "__")
   
@@ -252,13 +257,25 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   # print( sprintf("Forcing float: %s", floatType <- "32" ))
   # print( sprintf("Forcing padding method: %s", paddingMethod <- "right" ))
   ModelType <- analysis2_model_type(analysis2_multidisease_spec, RealEntry$ModelType, default = "DecoderOnly")
-  neuralode_variational <- identical(ModelType, "NeuralODE")
+  EnableKVCaching <- analysis2_multidisease_spec$enable_kv_cache
+  InferenceMCDraws <- analysis2_multidisease_spec$inference_mc_draws
+  ObservationScaleFloor <- analysis2_multidisease_spec$observation_scale_floor
+  InitialObservationScale <- analysis2_multidisease_spec$initial_observation_scale
+  neuralode_variational <- isTRUE(analysis2_multidisease_spec$neuralode_variational) &&
+    identical(ModelType, "NeuralODE")
   neuralode_kl_weight <- analysis2_multidisease_spec$neuralode_kl_weight
   neuralode_mean_loss_weight <- analysis2_multidisease_spec$neuralode_mean_loss_weight
   print(sprintf("Using model type: %s", ModelType))
   
   # setup master ODE solution parameters
   ndm_source_extracted("SetupEnv/SuperLModel_MasterImports.R")
+  solver_settings <- analysis2_solver_profile(
+    environment(),
+    analysis2_multidisease_spec$solver_profile
+  )
+  SolverProfile <- solver_settings$name
+  SolverRtol <- solver_settings$rtol
+  SolverAtol <- solver_settings$atol
   if (exists("tf", inherits = FALSE) && !is.null(tf$random$set_seed)) {
     tf$random$set_seed(as.integer(SEED_))
   }
@@ -294,14 +311,11 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
      VI_SaveAt_ODE_sim <- diffrax$SaveAt(ts = jnp$array(  0L:(NTimeSteps_SIM-1L) ))
      VI_SaveAt_ODE_optim <- diffrax$SaveAt(ts = jnp$array(  0L:(VI_TotalTimesInLikelihood-1L) ))
      #VI_diff_eq_solver_optim <- VI_diff_eq_solver_dgp <- diffrax$Dopri8() # If you need accurate solutions at high tolerances then try diffrax.Dopri8.
-     VI_diff_eq_solver_optim <- VI_diff_eq_solver_dgp <- diffrax$Tsit5() # good general solver
+     VI_diff_eq_solver_dgp <- diffrax$Tsit5() # good general solver
+     VI_diff_eq_solver_optim <- solver_settings$solver
      dt0_init_dgp <- 1e-3; stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-6 , atol = 1e-7) # required tolerance seems to be at least 1e-5
-     if(!DecoderInNeuralODE){ 
-        dt0_init_optim <- 1e-3; stepsize_controller_optim = diffrax$PIDController(rtol = 1e-5, atol = 1e-7) # required tolerance seems to be at least 1e-5
-     }
-     if(DecoderInNeuralODE){ 
-       dt0_init_optim <- 1e-3; stepsize_controller_optim = diffrax$ConstantStepSize() # required tolerance seems to be at least 1e-5
-     }
+     dt0_init_optim <- solver_settings$dt0
+     stepsize_controller_optim <- solver_settings$controller
      #dt0_init_optim <- 10^(-1); stepsize_controller_optim <- diffrax$ConstantStepSize()
      #dt0_init_dgp <- dt0_init_optim <- 10^(-1); stepsize_controller_dgp <- stepsize_controller_optim <- diffrax$ConstantStepSize()
      diffraxInterpolator <- diffrax$LinearInterpolation

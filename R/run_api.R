@@ -41,6 +41,19 @@
 #'   retained for backward compatibility.
 #' @param force_to_gpu Logical scalar indicating whether a GPU is required.
 #' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`.
+#' @param enable_kv_cache Logical scalar controlling DecoderOnly KV caching.
+#'   The corrected default is `FALSE`.
+#' @param inference_mc_draws Positive integer number of posterior draws
+#'   requested for inference. Deterministic NeuralODE and DecoderOnly paths use
+#'   one effective draw downstream.
+#' @param observation_scale_floor Finite positive lower bound added to learned
+#'   observation scales.
+#' @param initial_observation_scale Finite positive initial observation-scale
+#'   value on the outcome scale. The default is `1`, matching the unit-scale
+#'   initialization used before this control became configurable. It must be
+#'   greater than `observation_scale_floor`.
+#' @param neuralode_variational Logical scalar controlling variational
+#'   NeuralODE training and inference. It has no effect on DecoderOnly models.
 #' @param neuralode_kl_weight Finite non-negative multiplier for the NeuralODE
 #'   KL contribution. A value of zero disables KL evaluation without disabling
 #'   variational sampling.
@@ -104,6 +117,11 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        run_seed = NULL,
                                        force_to_gpu = TRUE,
                                        gpu_mem_frac = NULL,
+                                       enable_kv_cache = FALSE,
+                                       inference_mc_draws = 5L,
+                                       observation_scale_floor = 1e-5,
+                                       initial_observation_scale = 1.0,
+                                       neuralode_variational = TRUE,
                                        neuralode_kl_weight = 1.0,
                                        neuralode_mean_loss_weight = 0.0,
                                        n_checkpoints = 1L,
@@ -131,6 +149,11 @@ ndm_create_real_run_config <- function(project_root = getwd(),
     run_seed = run_seed,
     force_to_gpu = force_to_gpu,
     gpu_mem_frac = gpu_mem_frac,
+    enable_kv_cache = enable_kv_cache,
+    inference_mc_draws = inference_mc_draws,
+    observation_scale_floor = observation_scale_floor,
+    initial_observation_scale = initial_observation_scale,
+    neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
     neuralode_mean_loss_weight = neuralode_mean_loss_weight,
     n_checkpoints = n_checkpoints,
@@ -158,6 +181,11 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       run_seed = NULL,
                                       force_to_gpu = TRUE,
                                       gpu_mem_frac = NULL,
+                                      enable_kv_cache = FALSE,
+                                      inference_mc_draws = 5L,
+                                      observation_scale_floor = 1e-5,
+                                      initial_observation_scale = 1.0,
+                                      neuralode_variational = TRUE,
                                       neuralode_kl_weight = 1.0,
                                       neuralode_mean_loss_weight = 0.0,
                                       n_checkpoints = 1L,
@@ -182,6 +210,11 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
     run_seed = run_seed,
     force_to_gpu = force_to_gpu,
     gpu_mem_frac = gpu_mem_frac,
+    enable_kv_cache = enable_kv_cache,
+    inference_mc_draws = inference_mc_draws,
+    observation_scale_floor = observation_scale_floor,
+    initial_observation_scale = initial_observation_scale,
+    neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
     neuralode_mean_loss_weight = neuralode_mean_loss_weight,
     n_checkpoints = n_checkpoints,
@@ -206,6 +239,11 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                run_seed = NULL,
                                                force_to_gpu = TRUE,
                                                gpu_mem_frac = NULL,
+                                               enable_kv_cache = FALSE,
+                                               inference_mc_draws = 5L,
+                                               observation_scale_floor = 1e-5,
+                                               initial_observation_scale = 1.0,
+                                               neuralode_variational = TRUE,
                                                neuralode_kl_weight = 1.0,
                                                neuralode_mean_loss_weight = 0.0,
                                                n_checkpoints = 1L,
@@ -234,6 +272,11 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     run_seed = run_seed,
     force_to_gpu = force_to_gpu,
     gpu_mem_frac = gpu_mem_frac,
+    enable_kv_cache = enable_kv_cache,
+    inference_mc_draws = inference_mc_draws,
+    observation_scale_floor = observation_scale_floor,
+    initial_observation_scale = initial_observation_scale,
+    neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
     neuralode_mean_loss_weight = neuralode_mean_loss_weight,
     n_checkpoints = n_checkpoints,
@@ -439,6 +482,13 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
   get(name, envir = env, inherits = FALSE)
 }
 
+.ndm_validate_run_flag <- function(value, name) {
+  if (!is.logical(value) || length(value) != 1L || is.na(value)) {
+    stop("`", name, "` must be one non-missing logical value.", call. = FALSE)
+  }
+  value
+}
+
 .ndm_make_run_config <- function(mode,
                                  project_root,
                                  analysis_name,
@@ -448,6 +498,11 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
                                  run_seed = NULL,
                                  force_to_gpu = TRUE,
                                  gpu_mem_frac = NULL,
+                                 enable_kv_cache = FALSE,
+                                 inference_mc_draws = 5L,
+                                 observation_scale_floor = 1e-5,
+                                 initial_observation_scale = 1.0,
+                                 neuralode_variational = TRUE,
                                  neuralode_kl_weight = 1.0,
                                  neuralode_mean_loss_weight = 0.0,
                                  n_checkpoints = 1L,
@@ -486,15 +541,46 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     }
     run_seed <- as.integer(run_seed_numeric)
   }
-  if (!is.logical(force_to_gpu) || length(force_to_gpu) != 1L || is.na(force_to_gpu)) {
-    stop("`force_to_gpu` must be one non-missing logical value.", call. = FALSE)
-  }
+  force_to_gpu <- .ndm_validate_run_flag(force_to_gpu, "force_to_gpu")
+  enable_kv_cache <- .ndm_validate_run_flag(enable_kv_cache, "enable_kv_cache")
+  neuralode_variational <- .ndm_validate_run_flag(
+    neuralode_variational,
+    "neuralode_variational"
+  )
+  respect_grid_model_type <- .ndm_validate_run_flag(
+    respect_grid_model_type,
+    "respect_grid_model_type"
+  )
+  dry_run <- .ndm_validate_run_flag(dry_run, "dry_run")
   if (!is.null(gpu_mem_frac)) {
     gpu_mem_frac <- suppressWarnings(as.numeric(gpu_mem_frac))
     if (length(gpu_mem_frac) != 1L || !is.finite(gpu_mem_frac) ||
         gpu_mem_frac <= 0 || gpu_mem_frac > 1) {
       stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", call. = FALSE)
     }
+  }
+  inference_mc_draws <- suppressWarnings(as.numeric(inference_mc_draws))
+  if (length(inference_mc_draws) != 1L || !is.finite(inference_mc_draws) ||
+      inference_mc_draws < 1 || inference_mc_draws > .Machine$integer.max ||
+      inference_mc_draws != floor(inference_mc_draws)) {
+    stop("`inference_mc_draws` must be one positive integer.", call. = FALSE)
+  }
+  inference_mc_draws <- as.integer(inference_mc_draws)
+  observation_scale_floor <- suppressWarnings(as.numeric(observation_scale_floor))
+  if (length(observation_scale_floor) != 1L ||
+      !is.finite(observation_scale_floor) || observation_scale_floor <= 0) {
+    stop("`observation_scale_floor` must be one finite positive value.", call. = FALSE)
+  }
+  initial_observation_scale <- suppressWarnings(as.numeric(initial_observation_scale))
+  if (length(initial_observation_scale) != 1L ||
+      !is.finite(initial_observation_scale) || initial_observation_scale <= 0) {
+    stop("`initial_observation_scale` must be one finite positive value.", call. = FALSE)
+  }
+  if (initial_observation_scale <= observation_scale_floor) {
+    stop(
+      "`initial_observation_scale` must be greater than `observation_scale_floor`.",
+      call. = FALSE
+    )
   }
   neuralode_kl_weight <- suppressWarnings(as.numeric(neuralode_kl_weight))
   if (length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) ||
@@ -553,6 +639,11 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       run_seed = run_seed,
       force_to_gpu = force_to_gpu,
       gpu_mem_frac = gpu_mem_frac,
+      enable_kv_cache = enable_kv_cache,
+      inference_mc_draws = inference_mc_draws,
+      observation_scale_floor = observation_scale_floor,
+      initial_observation_scale = initial_observation_scale,
+      neuralode_variational = neuralode_variational,
       neuralode_kl_weight = neuralode_kl_weight,
       neuralode_mean_loss_weight = neuralode_mean_loss_weight,
       n_checkpoints = n_checkpoints,
@@ -560,7 +651,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       prior_sd_multiplier = prior_sd_multiplier,
       solver_profile = solver_profile,
       model_type = model_type,
-      respect_grid_model_type = isTRUE(respect_grid_model_type),
+      respect_grid_model_type = respect_grid_model_type,
       resave_tfrecords = isTRUE(resave_tfrecords),
       tfrecord_dir = tfrecord_dir,
       raw_data_dir = raw_data_dir,
@@ -568,7 +659,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       data_subset = data_subset,
       disease_names = disease_names,
       data_format = data_format,
-      dry_run = isTRUE(dry_run)
+      dry_run = dry_run
     ),
     class_name
   )
@@ -587,6 +678,18 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
 .ndm_run_config_to_args <- function(config) {
   stopifnot(inherits(config, "list"))
 
+  .ndm_validate_resave_tfrecords(config$mode, config$resave_tfrecords)
+  config$resave_tfrecords <- FALSE
+  for (field in c(
+    "force_to_gpu",
+    "enable_kv_cache",
+    "neuralode_variational",
+    "respect_grid_model_type",
+    "dry_run"
+  )) {
+    config[[field]] <- .ndm_validate_run_flag(config[[field]], field)
+  }
+
   grid_file <- config$grid_file
   if (!is.null(config$grid)) {
     grid_file <- tempfile(sprintf("ndm-%s-grid-", config$mode), fileext = ".csv")
@@ -597,16 +700,21 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     sprintf("--project_root=%s", config$project_root),
     sprintf("--analysis_name=%s", config$analysis_name),
     sprintf("--outer=%s", paste(config$outer, collapse = ",")),
-    sprintf("--force_to_gpu=%s", toupper(as.character(isTRUE(config$force_to_gpu)))),
+    sprintf("--force_to_gpu=%s", toupper(as.character(config$force_to_gpu))),
+    sprintf("--enable_kv_cache=%s", toupper(as.character(config$enable_kv_cache))),
+    sprintf("--inference_mc_draws=%s", as.integer(config$inference_mc_draws)),
+    sprintf("--observation_scale_floor=%s", format(config$observation_scale_floor, scientific = TRUE, trim = TRUE)),
+    sprintf("--initial_observation_scale=%s", format(config$initial_observation_scale, scientific = FALSE, trim = TRUE)),
+    sprintf("--neuralode_variational=%s", toupper(as.character(config$neuralode_variational))),
     sprintf("--neuralode_kl_weight=%s", format(config$neuralode_kl_weight, scientific = FALSE, trim = TRUE)),
     sprintf("--neuralode_mean_loss_weight=%s", format(config$neuralode_mean_loss_weight, scientific = FALSE, trim = TRUE)),
     sprintf("--n_checkpoints=%s", as.integer(config$n_checkpoints)),
     sprintf("--prior_sd_multiplier=%s", format(config$prior_sd_multiplier, scientific = FALSE, trim = TRUE)),
     sprintf("--solver_profile=%s", config$solver_profile),
-    sprintf("--respect_grid_model_type=%s", toupper(as.character(isTRUE(config$respect_grid_model_type)))),
-    sprintf("--resave_tfrecords=%s", toupper(as.character(isTRUE(config$resave_tfrecords)))),
+    sprintf("--respect_grid_model_type=%s", toupper(as.character(config$respect_grid_model_type))),
+    sprintf("--resave_tfrecords=%s", toupper(as.character(config$resave_tfrecords))),
     "--run_figures=FALSE",
-    sprintf("--dry_run=%s", toupper(as.character(isTRUE(config$dry_run))))
+    sprintf("--dry_run=%s", toupper(as.character(config$dry_run)))
   )
 
   if (!is.null(config$run_seed)) {
@@ -736,7 +844,16 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     analysis2_dir_create <- .ndm_run_env_get(env, "analysis2_dir_create")
     analysis2_as_int <- .ndm_run_env_get(env, "analysis2_as_int")
     analysis2_small_run_n_checkpoints <- .ndm_run_env_get(env, "analysis2_small_run_n_checkpoints")
+    analysis2_multidisease_structured_control_globals <- get0(
+      "analysis2_multidisease_structured_control_globals",
+      envir = env,
+      inherits = FALSE,
+      ifnotfound = NULL
+    )
     analysis2_small_run_n_obs_inference <- .ndm_run_env_get(env, "analysis2_small_run_n_obs_inference")
+    analysis2_resolve_nsgd_calibration <- .ndm_run_env_get(env, "analysis2_resolve_nsgd_calibration")
+    analysis2_log_nsgd_calibration <- .ndm_run_env_get(env, "analysis2_log_nsgd_calibration")
+    analysis2_solver_profile <- .ndm_run_env_get(env, "analysis2_solver_profile")
     analysis2_model_type <- .ndm_run_env_get(env, "analysis2_model_type")
 
     old_error <- getOption("error")
@@ -753,24 +870,11 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     paths <- spec$paths
     grid_file <- normalizePath(spec$grid_file, winslash = "/", mustWork = TRUE)
     real_grid_raw <- as.data.frame(data.table::fread(grid_file), stringsAsFactors = FALSE)
-    nsgd_resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration", "ndm")
-    nsgd_formatter <- utils::getFromNamespace(".ndm_nsgd_calibration_message", "ndm")
-    nsgd_calibration <- tryCatch(
-      nsgd_resolver(
-        mode = "multidisease",
-        project_root = spec$project_root,
-        analysis_name = spec$analysis_name,
-        n_epoches_max = 9L,
-        grid = real_grid_raw,
-        grid_file = grid_file
-      ),
-      error = function(e) {
-        missing_anchor_msg <- "Unable to resolve an nSGD calibration anchor because no candidate grid with `nSamplesTrain` was found"
-        if (isTRUE(spec$dry_run) && grepl(missing_anchor_msg, conditionMessage(e), fixed = TRUE)) {
-          return(NULL)
-        }
-        stop(e)
-      }
+    nsgd_calibration <- analysis2_resolve_nsgd_calibration(
+      mode = "multidisease",
+      spec = spec,
+      grid = real_grid_raw,
+      n_epoches_max = 9L
     )
     real_grid <- analysis2_order_grid(real_grid_raw, spec$outer)
     analysis2_validate_outer_iterations(real_grid, spec$outer, grid_file)
@@ -781,14 +885,20 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
 
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
-    analysis2_log(nsgd_formatter("multidisease", nsgd_calibration))
+    analysis2_log_nsgd_calibration("multidisease", nsgd_calibration)
     holder_folder <- file.path(paths$project_root, "SavedResults", "Real", sprintf("Results_%s", spec$analysis_name))
     analysis2_dir_create(holder_folder)
 
     driver_env <- new.env(parent = globalenv())
     driver_env$analysis2_as_int <- analysis2_as_int
     driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
+    if (!is.null(analysis2_multidisease_structured_control_globals)) {
+      driver_env$analysis2_multidisease_structured_control_globals <-
+        analysis2_multidisease_structured_control_globals
+    }
     driver_env$analysis2_small_run_n_obs_inference <- analysis2_small_run_n_obs_inference
+    driver_env$analysis2_resolve_nsgd_calibration <- analysis2_resolve_nsgd_calibration
+    driver_env$analysis2_solver_profile <- analysis2_solver_profile
     driver_env$analysis2_model_type <- analysis2_model_type
     driver_env$analysis2_trusted_artifact_index <- get0(
       "analysis2_trusted_artifact_index",

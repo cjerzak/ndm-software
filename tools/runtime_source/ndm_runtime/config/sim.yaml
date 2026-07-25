@@ -9,6 +9,11 @@ respect_grid_model_type: true
 run_seed: null
 force_to_gpu: true
 gpu_mem_frac: null
+enable_kv_cache: false
+inference_mc_draws: 5
+observation_scale_floor: 1.0e-5
+initial_observation_scale: 1.0
+neuralode_variational: true
 neuralode_kl_weight: 1.0
 neuralode_mean_loss_weight: 0.0
 resave_tfrecords: false

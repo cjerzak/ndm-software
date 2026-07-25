@@ -5,7 +5,7 @@
                                       scale,
                                       mask,
                                       df = 4,
-                                      scale_floor = 1e-3) {
+                                      scale_floor = 1e-5) {
   df <- jnp$array(as.numeric(df), dtype = location$dtype)
   scale <- jnp$maximum(
     jnp$abs(scale),

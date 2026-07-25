@@ -16,6 +16,49 @@
     zr[zr < quantile(zr, probs = 1 - qval, na.rm = na.rm)] <- quantile(zr,
         probs = 1 - qval, na.rm = na.rm)
     return(zr)
+}, ndm_paired_squared_error_skill <- function(squared_prediction_error,
+    squared_baseline_error, eps = 0.001) {
+    squared_prediction_error <- as.numeric(squared_prediction_error)
+    squared_baseline_error <- as.numeric(squared_baseline_error)
+    input_lengths <- c(length(squared_prediction_error), length(squared_baseline_error))
+    if (length(unique(input_lengths)) != 1L) {
+        stop("squared prediction and baseline errors must have equal lengths.",
+            call. = FALSE)
+    }
+    if (length(eps) != 1L || !is.finite(eps) || eps < 0) {
+        stop("eps must be one finite non-negative value.", call. = FALSE)
+    }
+    finite_errors <- c(squared_prediction_error[is.finite(squared_prediction_error)],
+        squared_baseline_error[is.finite(squared_baseline_error)])
+    if (any(finite_errors < 0)) {
+        stop("squared errors must be non-negative.", call. = FALSE)
+    }
+    paired <- is.finite(squared_prediction_error) & is.finite(squared_baseline_error)
+    if (!any(paired)) {
+        return(c(skill = NA_real_, rss_pred = NA_real_, rss_baseline = NA_real_))
+    }
+    rss_pred <- mean(squared_prediction_error[paired])
+    rss_baseline <- mean(squared_baseline_error[paired])
+    skill <- 1 - (eps + sqrt(rss_pred))/(eps + sqrt(rss_baseline))
+    c(skill = skill, rss_pred = rss_pred, rss_baseline = rss_baseline)
+}, ndm_paired_rmse_skill <- function(prediction, baseline, truth,
+    eps = 0.001) {
+    prediction <- as.numeric(prediction)
+    baseline <- as.numeric(baseline)
+    truth <- as.numeric(truth)
+    input_lengths <- c(length(prediction), length(baseline),
+        length(truth))
+    if (length(unique(input_lengths)) != 1L) {
+        stop("prediction, baseline, and truth must have equal lengths.",
+            call. = FALSE)
+    }
+    ndm_paired_squared_error_skill(squared_prediction_error = (prediction -
+        truth)^2, squared_baseline_error = (baseline - truth)^2,
+        eps = eps)
+}, ndm_skill_to_unconstrained <- function(skill, offset = 0.001) {
+    -log((1 + offset) - skill)
+}, ndm_skill_from_unconstrained <- function(value, offset = 0.001) {
+    (1 + offset) - exp(-value)
 }, f2n <- function(.) {
     as.numeric(as.character(.))
 }, print2 <- function(text) {
@@ -341,17 +384,6 @@
         dev.off()
     }, se <- function(zer) {
         sqrt(1/length(zer) * var(zer))
-    }, clippedMean <- function(zer, pct = 0.05, directional = "lower",
-        na.rm = T) {
-        if (directional %in% c("lower", "both")) {
-            zer[zer < quantile(zer, pct/2, na.rm = na.rm)] <- quantile(zer,
-                pct/2, na.rm = na.rm)
-        }
-        if (directional %in% c("upper", "both")) {
-            zer[zer > quantile(zer, 1 - pct/2, na.rm = na.rm)] <- quantile(zer,
-                1 - pct/2, na.rm = na.rm)
-        }
-        return(mean(zer))
     }, robust_cut <- function(x, n_bins = 2L) {
         uniq_vals <- sort(unique(x[!is.na(x)]))
         if (length(uniq_vals) <= n_bins) {
@@ -1099,8 +1131,8 @@
             init_true <- init_true - jax$nn$logsumexp(jnp$array(init_true))
             init_true <- jnp$exp(init_true + log(GLOBAL_ODE_NPOP))
             init_true <- np$array(init_true)
-            forward_shift_h <- 4
-            forward_shift_c <- forward_shift_h + 3
+            forward_shift_h <- 0L
+            forward_shift_c <- 0L
             MIN_SHIFT <- 0L
             MAX_SHIFT <- nTimes - (nTimesPast + nTimesLook +
                 forward_shift_c)
@@ -1438,7 +1470,7 @@
                     sigma_true = c2a(SimEntry$sigma), xi_true = c2a(SimEntry$xi),
                     init_true = init_true, XPred_pure = XPred_pure,
                     YTrue_pure = YTrue_d_pure, YTrue_out_pure = YTrue_d_out_pure,
-                    PolicyDat_all = PolicyDat_all, initial_shift = initial_shift$astype(XPred$dtype))
+                    PolicyDat_all = PolicyDat_all, initial_shift = initial_shift$astype(jnp$int32))
                 }
             }
             return(ret_list)
@@ -1527,7 +1559,43 @@
     }
 })
 
-.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real <- expression({
+.ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real <- expression(.ndm_real_normalize_column <- function(col_vals, in_sample_indices,
+    time_id, initial_transform, initial_norm_type) {
+    if (length(in_sample_indices) == 0L) {
+        stop("Real-data normalization requires at least one training observation.")
+    }
+    if (identical(initial_transform, "yeoJohnson")) {
+        transform_fit <- bestNormalize::yeojohnson(col_vals[in_sample_indices],
+            standardize = FALSE)
+        col_vals <- as.numeric(stats::predict(transform_fit,
+            newdata = col_vals))
+    }
+    if (identical(initial_norm_type, "at_t")) {
+        demeaner <- tapply(col_vals[in_sample_indices], time_id[in_sample_indices],
+            function(x) mean(x, na.rm = TRUE))
+        descaler <- tapply(col_vals[in_sample_indices], time_id[in_sample_indices],
+            function(x) stats::sd(x, na.rm = TRUE))
+        demeaner <- demeaner[!is.na(demeaner)]
+        descaler <- descaler[!is.na(descaler)]
+        descaler <- as.data.frame(cbind(descaler, time_id = as.numeric(as.character(names(descaler)))))
+        demeaner <- as.data.frame(cbind(demeaner, time_id = as.numeric(as.character(names(demeaner)))))
+        demeaner <- stats::predict(stats::smooth.spline(x = demeaner$time_id,
+            y = demeaner$demeaner), x = max(demeaner$time_id))$y
+        descaler <- stats::predict(stats::smooth.spline(x = descaler$time_id,
+            y = descaler$descaler), x = max(descaler$time_id))$y
+    }
+    else if (identical(initial_norm_type, "all")) {
+        demeaner <- mean(col_vals[in_sample_indices], na.rm = TRUE)
+        descaler <- stats::sd(col_vals[in_sample_indices], na.rm = TRUE)
+    }
+    else {
+        stop("Unknown real-data initialNormType: ", initial_norm_type)
+    }
+    if (!is.finite(descaler) || descaler <= 0) {
+        stop("Real-data normalization scale must be finite and positive.")
+    }
+    (col_vals - demeaner)/(0.001 + descaler)
+}, {
     print2("Setup data infrastructure in DataGenerator_Real")
     {
         context_variables <- NULL
@@ -1542,37 +1610,11 @@
                 col_vals <- f2n(unlist(truth_df_red[, dataInputs_colnames_TO_NORMALIZE[col_to_norm]]))
                 if (initialTransform == "yeoJohnson") {
                   print2("---yeojohnson for normality---")
-                  col_vals <- predict(bestNormalize::yeojohnson(col_vals))
                 }
-                if (initialNormType == "at_t") {
-                  demeaner <- tapply(col_vals[in_sample_red_tmp_indices],
-                    truth_df_red$time_id[in_sample_red_tmp_indices],
-                    function(x) {
-                      mean(x, na.rm = T)
-                    })
-                  descaler <- tapply(col_vals[in_sample_red_tmp_indices],
-                    truth_df_red$time_id[in_sample_red_tmp_indices],
-                    function(x) {
-                      sd(x, na.rm = T)
-                    })
-                  demeaner <- demeaner[!is.na(demeaner)]
-                  descaler <- descaler[!is.na(descaler)]
-                  descaler <- as.data.frame(cbind(descaler, time_id = f2n(names(descaler))))
-                  demeaner <- as.data.frame(cbind(demeaner, time_id = f2n(names(demeaner))))
-                  demeaner <- predict(smooth.spline(x = demeaner$time_id,
-                    y = demeaner$demeaner), x = max(f2n(demeaner$time_id)))$y
-                  descaler <- predict(smooth.spline(x = descaler$time_id,
-                    y = descaler$descaler), x = max(f2n(descaler$time_id)))$y
-                }
-                if (initialNormType == "all") {
-                  demeaner <- mean(col_vals[in_sample_red_tmp_indices],
-                    na.rm = T)
-                  descaler <- sd(col_vals[in_sample_red_tmp_indices],
-                    na.rm = T)
-                }
-                col_vals_normed <- (col_vals - demeaner)/(0.001 +
-                  descaler)
-                return(col_vals_normed)
+                .ndm_real_normalize_column(col_vals = col_vals,
+                  in_sample_indices = in_sample_red_tmp_indices,
+                  time_id = truth_df_red$time_id, initial_transform = initialTransform,
+                  initial_norm_type = initialNormType)
             })
         input_df_red_full <- input_df_red_tmp
         print2(sprintf("Splitting data according to OSSType='%s'",
@@ -2058,7 +2100,7 @@
             date_start = as.Date(paste0(year, "-01-01")), theweek_id = as.integer(difftime(date_start,
                 min(date_start, na.rm = TRUE), units = "weeks")),
             time_id = (year - min(my_data$Year)), targetTime_id = time_id,
-            CountFraction = CasesPerPop/1000) %>% mutate(location_id_numeric = as.integer(factor(location_id,
+            CountFraction = CasesPerPop/1e+05) %>% mutate(location_id_numeric = as.integer(factor(location_id,
         levels = sort(unique(location_id)))) - 1L) %>% arrange(location_id,
         time_id)
     truth_df_red <- who_df %>% select(location_id, location_id_numeric,
@@ -2095,51 +2137,90 @@
     table(my_data$year)
     table(my_data$metric_name)
     table(my_data$cause_name)
-    my_data <- my_data[which(my_data$sex_name == "Both" & my_data$metric_name ==
-        "Rate" & my_data$cause_name == "HIV/AIDS and sexually transmitted infections" &
-        my_data$age_name == "All ages"), ]
+    my_data <- my_data[which(my_data$sex_name == "Both" & my_data$age_name ==
+        "All ages"), ]
+    requested_diseases <- if (exists("DiseaseNameVec", inherits = TRUE)) {
+        get("DiseaseNameVec", inherits = TRUE)
+    }
+    else if (exists("disease_names", inherits = TRUE)) {
+        get("disease_names", inherits = TRUE)
+    }
+    else {
+        "HIV/AIDS and sexually transmitted infections"
+    }
+    resolved_diseases <- (utils::getFromNamespace(".ndm_multidisease_resolve_diseases",
+        "ndm"))(disease_names = requested_diseases, data_format = "IHME",
+        available = unique(my_data$cause_name))
+    my_data <- my_data[my_data$cause_name %in% resolved_diseases,
+        ]
     library(dplyr)
     library(lubridate)
     library(tidyr)
-    if (exists("desired_measure")) {
-        my_data <- dplyr::filter(my_data, measure_name == desired_measure)
+    measures_by_disease <- lapply(resolved_diseases, function(disease) unique(my_data$measure_name[my_data$cause_name ==
+        disease]))
+    common_measures <- Reduce(intersect, measures_by_disease)
+    if (exists("desired_measure") && !is.null(desired_measure) &&
+        length(desired_measure) == 1L && nzchar(desired_measure)) {
+        if (!desired_measure %in% common_measures) {
+            stop("The requested IHME measure is not available for every requested disease.",
+                call. = FALSE)
+        }
+        chosen_measure <- desired_measure
     }
     else {
-        preferred_measures <- c("Prevalence")
-        chosen_measure <- intersect(preferred_measures, unique(my_data$measure_name))
-        if (length(chosen_measure) == 0)
-            chosen_measure <- unique(my_data$measure_name)[1]
-        my_data <- dplyr::filter(my_data, measure_name == chosen_measure[1])
+        if (length(common_measures) == 0L) {
+            stop("Requested IHME diseases do not share a common measure.",
+                call. = FALSE)
+        }
+        chosen_measure <- if ("Prevalence" %in% common_measures) {
+            "Prevalence"
+        }
+        else {
+            common_measures[[1L]]
+        }
     }
-    ihme_df <- my_data %>% mutate(year = as.integer(year), date_start = as.Date(paste0(year,
-        "-01-01")), CountFraction_tmp = dplyr::case_when(metric_name ==
-        "Rate" ~ as.numeric(val)/1e+05, metric_name == "Percent" ~
-        dplyr::if_else(as.numeric(val) > 1, as.numeric(val)/100,
-            as.numeric(val)), TRUE ~ NA_real_), metric_rank = dplyr::case_when(metric_name ==
-        "Rate" ~ 1L, metric_name == "Percent" ~ 2L, TRUE ~ 99L)) %>%
-        filter(!is.na(CountFraction_tmp)) %>% arrange(location_id,
-        year, metric_rank) %>% group_by(location_id, location_name,
-        year) %>% slice(1L) %>% ungroup() %>% mutate(CountFraction = CountFraction_tmp,
-        time_id = year - min(year, na.rm = TRUE), targetTime_id = time_id,
-        location_id = as.character(location_id), location_id_numeric = as.integer(factor(location_id,
+    my_data <- dplyr::filter(my_data, measure_name == chosen_measure)
+    ihme_long <- my_data %>% mutate(year = as.integer(year),
+        date_start = as.Date(paste0(year, "-01-01")), CountFraction_tmp = dplyr::case_when(metric_name ==
+            "Rate" ~ as.numeric(val)/1e+05, metric_name == "Percent" ~
+            dplyr::if_else(as.numeric(val) > 1, as.numeric(val)/100,
+                as.numeric(val)), TRUE ~ NA_real_), metric_rank = dplyr::case_when(metric_name ==
+            "Rate" ~ 1L, metric_name == "Percent" ~ 2L, TRUE ~
+            99L)) %>% filter(!is.na(CountFraction_tmp)) %>% arrange(location_id,
+        cause_name, year, metric_rank) %>% group_by(location_id,
+        location_name, cause_name, year) %>% slice(1L) %>% ungroup()
+    missing_diseases <- setdiff(resolved_diseases, unique(ihme_long$cause_name))
+    if (length(missing_diseases) > 0L) {
+        stop("No usable IHME observations remain for: ", paste(missing_diseases,
+            collapse = ", "), call. = FALSE)
+    }
+    outcome_metric_base <- get0("outcome_metric", inherits = TRUE,
+        ifnotfound = "CountValue")
+    outcome_names <- (utils::getFromNamespace(".ndm_multidisease_outcome_names",
+        "ndm"))(resolved_diseases, outcome_metric = outcome_metric_base)
+    outcome_disease_map <- data.frame(disease = resolved_diseases,
+        outcome = outcome_names, stringsAsFactors = FALSE)
+    ihme_long <- ihme_long %>% mutate(outcome_name = outcome_disease_map$outcome[match(cause_name,
+        outcome_disease_map$disease)])
+    ihme_df <- ihme_long %>% select(location_id, location_name,
+        year, outcome_name, CountFraction_tmp) %>% tidyr::pivot_wider(names_from = outcome_name,
+        values_from = CountFraction_tmp) %>% mutate(time_id = year -
+        min(year, na.rm = TRUE), targetTime_id = time_id, location_id = as.character(location_id),
+        location_id_numeric = as.integer(factor(location_id,
             levels = sort(unique(location_id)))) - 1L) %>% arrange(location_id,
         time_id)
     truth_df_red <- ihme_df %>% select(location_id, location_id_numeric,
-        location_name, time_id, targetTime_id, CountFraction) %>%
-        rename(CountValue = CountFraction) %>% group_by(location_id,
-        location_id_numeric, location_name, time_id, targetTime_id) %>%
-        summarise(CountValue = sum(CountValue, na.rm = TRUE),
-            .groups = "drop")
-    truth_df_red <- truth_df_red[!is.na(truth_df_red$CountValue),
-        ]
-    input_df_red <- truth_df_red
-    truth_df_red$Covariate1 <- truth_df_red$CountValue
-    true_value_names <- "CountValue"
+        location_name, time_id, targetTime_id, dplyr::all_of(outcome_names))
+    truth_df_red <- truth_df_red[rowSums(!is.na(truth_df_red[,
+        outcome_names, drop = FALSE])) > 0L, ]
+    true_value_names <- outcome_names
     all_true_value_names <- true_value_names
+    outcome_metric <- true_value_names[[1L]]
+    truth_df_red$Covariate1 <- truth_df_red[[outcome_metric]]
+    input_df_red <- truth_df_red
     dataInputs_colnames_future <- NULL
-    dataInputs_colnames_past <- c("CountValue", "Covariate1")
+    dataInputs_colnames_past <- c(true_value_names, "Covariate1")
     dataInputs_colnames <- c(dataInputs_colnames_past, dataInputs_colnames_future)
-    outcome_metric <- "CountValue"
     nOutcomes <- length(true_value_names)
     nPlaces <- length(unique(truth_df_red$location_id))
 }, if (FALSE) {
@@ -2164,6 +2245,47 @@
         get0(name, envir = ndm_runtime_lookup_env, inherits = FALSE,
             ifnotfound = ifnotfound)
     }
+    ndm_runtime_run_seed <- suppressWarnings(as.numeric(ndm_runtime_get0("SEED_",
+        ifnotfound = 0L)))
+    if (length(ndm_runtime_run_seed) != 1L || !is.finite(ndm_runtime_run_seed) ||
+        ndm_runtime_run_seed < 0 || ndm_runtime_run_seed > .Machine$integer.max ||
+        ndm_runtime_run_seed != floor(ndm_runtime_run_seed)) {
+        stop("SEED_ must be one non-negative integer.", call. = FALSE)
+    }
+    ndm_runtime_run_seed <- as.integer(ndm_runtime_run_seed)
+    ndm_runtime_seed_key <- function(domain_tag) {
+        domain_tag <- suppressWarnings(as.numeric(domain_tag))
+        if (length(domain_tag) != 1L || !is.finite(domain_tag) ||
+            domain_tag < 0 || domain_tag > .Machine$integer.max ||
+            domain_tag != floor(domain_tag)) {
+            stop("Seed domain tags must be non-negative integers.",
+                call. = FALSE)
+        }
+        jax$random$fold_in(JaxKey(as.integer(ndm_runtime_run_seed)),
+            as.integer(domain_tag))
+    }
+    InitialObservationScale <- suppressWarnings(as.numeric(ndm_runtime_get0("InitialObservationScale",
+        ifnotfound = 1)))
+    ObservationScaleFloor <- suppressWarnings(as.numeric(ndm_runtime_get0("ObservationScaleFloor",
+        ifnotfound = 1e-05)))
+    if (length(InitialObservationScale) != 1L || !is.finite(InitialObservationScale) ||
+        InitialObservationScale <= 0) {
+        stop("InitialObservationScale must be one finite positive number.",
+            call. = FALSE)
+    }
+    if (length(ObservationScaleFloor) != 1L || !is.finite(ObservationScaleFloor) ||
+        ObservationScaleFloor <= 0) {
+        stop("ObservationScaleFloor must be one finite positive number.",
+            call. = FALSE)
+    }
+    if (InitialObservationScale <= ObservationScaleFloor) {
+        stop("InitialObservationScale must be greater than ObservationScaleFloor.",
+            call. = FALSE)
+    }
+    InitialObservationScaleLearned <- InitialObservationScale -
+        ObservationScaleFloor
+    InitialObservationScaleUnconstrained <- InitialObservationScaleLearned +
+        log(-expm1(-InitialObservationScaleLearned))
     doGeoInfo <- FALSE
     AppendPlaceEmbeds <- isTRUE(ndm_runtime_get0("AppendPlaceEmbeds",
         ifnotfound = TRUE))
@@ -2321,25 +2443,25 @@
             InitialTransformType <- "CNN"
             if (InitialTransformType == "Linear") {
                 InitProcessList$InitialEncodingTransform <- eq$nn$Linear(in_features = TSInputSize,
-                  out_features = ModelDims, key = jax$random$PRNGKey(ai(SEED_ *
-                    658L)), use_bias = F)
+                  out_features = ModelDims, key = ndm_runtime_seed_key(658L),
+                  use_bias = F)
             }
             if (InitialTransformType == "CNN" & FALSE) {
                 InitProcessList$InitialEncodingTransform <- list(Conv1d_short = eq$nn$Conv1d(in_channels = TSInputSize,
                   out_channels = ModelDims, padding = "SAME",
                   padding_mode = "REPLICATE", kernel_size = 1L,
-                  key = jax$random$PRNGKey(ai(SEED_ * 658L)),
-                  use_bias = F), Conv1d_mid = eq$nn$Conv1d(in_channels = TSInputSize,
-                  out_channels = ModelDims, padding = "SAME",
-                  padding_mode = "REPLICATE", kernel_size = 3L,
-                  key = jax$random$PRNGKey(ai(SEED_ * 615228L)),
-                  use_bias = F), Conv1d_long = eq$nn$Conv1d(in_channels = TSInputSize,
-                  out_channels = ModelDims, padding = "SAME",
-                  padding_mode = "REPLICATE", kernel_size = 7L,
-                  key = jax$random$PRNGKey(ai(SEED_ * 6158L)),
-                  use_bias = F), EncodingCombine = eq$nn$Linear(in_features = ModelDims *
-                  3L, out_features = ModelDims, key = jax$random$PRNGKey(ai(SEED_ *
-                  411L)), use_bias = F))
+                  key = ndm_runtime_seed_key(658L), use_bias = F),
+                  Conv1d_mid = eq$nn$Conv1d(in_channels = TSInputSize,
+                    out_channels = ModelDims, padding = "SAME",
+                    padding_mode = "REPLICATE", kernel_size = 3L,
+                    key = ndm_runtime_seed_key(615228L), use_bias = F),
+                  Conv1d_long = eq$nn$Conv1d(in_channels = TSInputSize,
+                    out_channels = ModelDims, padding = "SAME",
+                    padding_mode = "REPLICATE", kernel_size = 7L,
+                    key = ndm_runtime_seed_key(6158L), use_bias = F),
+                  EncodingCombine = eq$nn$Linear(in_features = ModelDims *
+                    3L, out_features = ModelDims, key = ndm_runtime_seed_key(411L),
+                    use_bias = F))
             }
             if (InitialTransformType == "CNN" & TRUE) {
                 print2("Setting up InitialTransformType == 'CNN' branch...")
@@ -2371,9 +2493,9 @@
                   }
                   return(out)
                 }
-                key_short <- jax$random$PRNGKey(ai(SEED_ * 6581L))
-                key_mid <- jax$random$PRNGKey(ai(SEED_ * 6152228L))
-                key_long <- jax$random$PRNGKey(ai(SEED_ * 61584L))
+                key_short <- ndm_runtime_seed_key(6581L)
+                key_mid <- ndm_runtime_seed_key(6152228L)
+                key_long <- ndm_runtime_seed_key(61584L)
                 init_orthogonal_kernel <- function(key, kernel_size,
                   in_channels, out_channels) {
                   kernels <- list()
@@ -2401,8 +2523,8 @@
                 InitProcessList$InitialEncodingTransform <- list(Conv1d_short = list(kernel = kernel_short),
                   Conv1d_mid = list(kernel = kernel_mid), Conv1d_long = list(kernel = kernel_long),
                   EncodingCombine = eq$nn$Linear(in_features = ModelDims *
-                    3L, out_features = ModelDims, key = jax$random$PRNGKey(ai(SEED_ *
-                    411L)), use_bias = F))
+                    3L, out_features = ModelDims, key = ndm_runtime_seed_key(411L),
+                    use_bias = F))
             }
             {
                 print2("Setting up place embeddings...")
@@ -2448,11 +2570,9 @@
                   return(pos_vector)
                 })))
             InitProcessList$TimeEmbeds_Proj <- eq$nn$Linear(in_features = ModelDims,
-                out_features = ModelDims, use_bias = FALSE, key = jax$random$PRNGKey(ai(SEED_ *
-                  123123)))
+                out_features = ModelDims, use_bias = FALSE, key = ndm_runtime_seed_key(123123L))
             InitProcessList$PlaceEmbeds_Proj <- eq$nn$Linear(in_features = ModelDims,
-                out_features = ModelDims, use_bias = FALSE, key = jax$random$PRNGKey(ai(SEED_ *
-                  23411)))
+                out_features = ModelDims, use_bias = FALSE, key = ndm_runtime_seed_key(23411L))
             print("Setting up some initial neural variational parameters...")
             nDimOutput_neuralODE <- 999L
             {
@@ -2515,7 +2635,7 @@
         }
         print("Setting up rest of TSList...")
         TSList <- {
-            key <- jax$random$PRNGKey(ai(123L * SEED_))
+            key <- ndm_runtime_seed_key(123L)
             if ("transformer" %in% BackboneType) {
                 print("Initializing transformer objects")
                 TransformerList <- replicate(list(list()), n = ((ModelDepth)))
@@ -2529,34 +2649,32 @@
                 print("Done sourcing SuperLModel_BackboneMamba.R in initialize path")
             }
             RNNList <- oryx$Normal(loc = 1, scale = 0.001)$sample(list(),
-                seed = key + 40L)
+                seed = ndm_runtime_seed_key(123040L))
             print("Defining TSList object...")
             TSList <- c(TSBackbone = list(TransformerList), InitialCLS = oryx$Normal(loc = 0,
                 scale = InitTransform_CLS(ModelDims))$sample(list(1L,
-                ModelDims), seed = key * 234L)$astype(jaxFloatType),
+                ModelDims), seed = ndm_runtime_seed_key(123234L))$astype(jaxFloatType),
                 FinalNormScaler = jnp$array(oryx$Normal(loc = 1,
                   scale = 1e-04)$sample(list(1L, ModelDims),
-                  seed = key * 2334L)), OutputProcess = list(list(Proj1 = eq$nn$Linear(in_features = ModelDims,
+                  seed = ndm_runtime_seed_key(1232334L))), OutputProcess = list(list(Proj1 = eq$nn$Linear(in_features = ModelDims,
                   out_features = nDimOutput_dense, use_bias = ifelse(ModelType ==
-                    "DecoderOnly", yes = TRUE, no = FALSE), key = key *
-                    34000L), ManualBias = oryx$Normal(loc = c(NeuralVariationalInitEncLocalMean,
-                  rep(0, times = max(c(0, nDimOutput_dense -
-                    length(NeuralVariationalInitEncLocalMean))))),
-                  scale = 1e-06)$sample(list(1L), seed = key *
-                  234L * SEED_)$astype(jaxFloatType)$flatten(),
+                    "DecoderOnly", yes = TRUE, no = FALSE), key = ndm_runtime_seed_key(12334000L)),
+                  ManualBias = oryx$Normal(loc = c(NeuralVariationalInitEncLocalMean,
+                    rep(0, times = max(c(0, nDimOutput_dense -
+                      length(NeuralVariationalInitEncLocalMean))))),
+                    scale = 1e-06)$sample(list(1L), seed = ndm_runtime_seed_key(12323401L))$astype(jaxFloatType)$flatten(),
                   Proj2 = eq$nn$Linear(in_features = ModelDims,
-                    out_features = ModelDims, use_bias = F, key = key *
-                      340L * SEED_))))
+                    out_features = ModelDims, use_bias = F, key = ndm_runtime_seed_key(123340L)))))
         }
         print("Past setting up rest of TSList...")
     }
     print2("Setting up scale list...")
     ScaleList <- list(ScaleBayes = {
-        list(VarInit = InvSoftPlus(jnp$array(rep(1, times = nOutcomes))),
-            DecoderObservationScale = InvSoftPlus(jnp$array(rep(1,
-                times = nOutcomes))), DirichletScale1 = InvSoftPlus(jnp$array(c(1,
-                1, 1, 1))), DirichletScale2 = InvSoftPlus(jnp$array(rep(1,
-                times = 4))), LmatLocalDiagScaler = InvSoftPlusLargeInputApprox(LMat_DiagScale <- 100),
+        list(VarInit = jnp$array(rep(InitialObservationScaleUnconstrained,
+            times = nOutcomes))$astype(jaxFloatType), DecoderObservationScale = jnp$array(rep(InitialObservationScaleUnconstrained,
+            times = nOutcomes))$astype(jaxFloatType), DirichletScale1 = InvSoftPlus(jnp$array(c(1,
+            1, 1, 1))), DirichletScale2 = InvSoftPlus(jnp$array(rep(1,
+            times = 4))), LmatLocalDiagScaler = InvSoftPlusLargeInputApprox(LMat_DiagScale <- 100),
             LmatGlobalScaler = InvSoftPlus(1/LMat_DiagScale *
                 1e-04), globalLmatDiagScaler = InvSoftPlusLargeInputApprox(LMat_DiagScale_g <- 100),
             globalLmatGlobalScaler = InvSoftPlus(1/LMat_DiagScale_g *
@@ -3038,6 +3156,40 @@
                 local_neural_prior_mask_matched]) * suppressWarnings(as.numeric(ndm_runtime_get0("PriorSDMultiplier",
                 ifnotfound = 1)))))
         }
+        ndm_runtime_tree_all_finite <- function(tree) {
+            jax$tree_util$tree_reduce(function(accumulator, leaf) {
+                jnp$logical_and(accumulator, jnp$all(jnp$isfinite(leaf)))
+            }, tree, initializer = jnp$array(TRUE))
+        }
+        ndm_runtime_empty_solver_diagnostics <- function() {
+            list(success = jnp$array(TRUE), failure_stage_code = jnp$array(0L,
+                dtype = jnp$int32), prediction_finite = jnp$array(TRUE),
+                global_attempted = jnp$array(FALSE), global_result_success = jnp$array(TRUE),
+                global_state_finite = jnp$array(TRUE), global_result_code = jnp$array(0L,
+                  dtype = jnp$int32), global_num_steps = jnp$array(0L,
+                  dtype = jnp$int32), global_num_accepted_steps = jnp$array(0L,
+                  dtype = jnp$int32), global_num_rejected_steps = jnp$array(0L,
+                  dtype = jnp$int32), global_max_steps = jnp$array(0L,
+                  dtype = jnp$int32), local_attempted = jnp$array(FALSE),
+                local_result_success = jnp$array(TRUE), local_state_finite = jnp$array(TRUE),
+                local_result_code = jnp$array(0L, dtype = jnp$int32),
+                local_num_steps = jnp$array(0L, dtype = jnp$int32),
+                local_num_accepted_steps = jnp$array(0L, dtype = jnp$int32),
+                local_num_rejected_steps = jnp$array(0L, dtype = jnp$int32),
+                local_max_steps = jnp$array(0L, dtype = jnp$int32))
+        }
+        ndm_runtime_solution_diagnostics <- function(solution) {
+            result_success <- solution$result == diffrax$RESULTS$successful
+            state_finite <- ndm_runtime_tree_all_finite(solution$ys)
+            list(success = jnp$logical_and(result_success, state_finite),
+                result_success = result_success, state_finite = state_finite,
+                result_code = jnp$asarray(solution$result$`_value`,
+                  dtype = jnp$int32), num_steps = jnp$asarray(solution$stats[["num_steps"]],
+                  dtype = jnp$int32), num_accepted_steps = jnp$asarray(solution$stats[["num_accepted_steps"]],
+                  dtype = jnp$int32), num_rejected_steps = jnp$asarray(solution$stats[["num_rejected_steps"]],
+                  dtype = jnp$int32), max_steps = jnp$asarray(solution$stats[["max_steps"]],
+                  dtype = jnp$int32))
+        }
         GetPred <- function(ModelList, x, state, inference, PriorList,
             PolicyList, GetPredSaveAtInfo, seed) {
             context <- x[[2]][[1]]
@@ -3047,6 +3199,7 @@
             return_v <- {
                 state <- jnp$array(1)
                 KL_LOCAL <- KL_GLOBAL <- KL_PLACE <- jnp$array(0)
+                solver_diagnostics <- ndm_runtime_empty_solver_diagnostics()
                 x <- ProcessEncoderInput(InitProcessList = ModelList$InitProcessList,
                   TSList = ModelList$TSList, xt = x, time = time_indices,
                   place = loc_indices, BNList = ModelList$BNList,
@@ -3063,7 +3216,6 @@
                       jnp$zeros(list(GEN_CAP, x[[1]]$shape[[2]]))),
                       0L), jnp$concatenate(list(x[[2]], jnp$zeros(list(GEN_CAP,
                       1L))), 0L))
-                    prefix_len <- jnp$sum(xt_running[[2]])$astype(jnp$int32)
                     if (!EnableKVCaching) {
                       decoder_step <- function(xt_running, t_) {
                         xt_new <- Encoder2Output(TSList = ModelList$TSList,
@@ -3088,7 +3240,7 @@
                         init = xt_running, xs = NULL, length = K_static)
                       decoder_scan_out <- scan_out[[2]]
                       y_mean <- jax$nn$softplus(decoder_scan_out$logits)
-                      y_sigma <- jnp$ones_like(y_mean) * (0.001 +
+                      y_sigma <- jnp$ones_like(y_mean) * (ObservationScaleFloor +
                         SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale))
                       TemporalLatents <- list(decoder_head_input = decoder_scan_out$decoder_head_input)
                       ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
@@ -3097,14 +3249,13 @@
                     }
                     if (EnableKVCaching) {
                       prefill_ret <- transformer_prefill_kv(xt = xt_running[[1]],
-                        x_mask = xt_running[[2]], TransformerList = ModelList$TSList$TSBackbone,
-                        prefix_len = prefix_len)
+                        x_mask = xt_running[[2]], TransformerList = ModelList$TSList$TSBackbone)
                       kv_cache <- prefill_ret$cache
                       xt_last_raw <- prefill_ret$xt_last
                       xt_last <- DecoderBackboneToOutput(TSList = ModelList$TSList,
                         hidden_state = xt_last_raw)
                       y_first <- ModelList$TSList$TSBackbone$DecoderProj(xt_last)
-                      insert_pos <- prefix_len
+                      insert_pos <- prefill_ret$next_pos
                       xt_running[[1]] <- jax$lax$dynamic_update_slice(xt_running[[1]],
                         jnp$expand_dims(xt_last, 0L), jnp$array(c(insert_pos,
                           0L), dtype = jnp$int32))
@@ -3154,7 +3305,7 @@
                       decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last,
                         0L), masked_head_tail), 0L)
                       y_mean <- jax$nn$softplus(y_all)
-                      y_sigma <- jnp$ones_like(y_mean) * (0.001 +
+                      y_sigma <- jnp$ones_like(y_mean) * (ObservationScaleFloor +
                         SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale))
                       TemporalLatents <- list(decoder_head_input = decoder_head_input_all)
                       ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
@@ -3202,7 +3353,7 @@
                         stop = GetPredSaveAtInfo[[1]] + 1))
                     xt_running_final <- scan_out[[1]]
                     y_mean <- jax$nn$softplus(scan_out[[2]])
-                    y_sigma <- jnp$ones_like(y_mean) * (0.001 +
+                    y_sigma <- jnp$ones_like(y_mean) * (ObservationScaleFloor +
                       SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale))
                     ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
                     diff_eq_sol <- NULL
@@ -3376,16 +3527,36 @@
                   if (testWithoutSampling_requested) {
                     warning("Testing with no sampling!")
                   }
+                  scoped_sampling_keys <- length(seed$shape) ==
+                    2L
+                  local_sampling_seed <- global_sampling_seed <- seed
+                  if (scoped_sampling_keys) {
+                    if (as.integer(seed$shape[[1]]) != 2L ||
+                      as.integer(seed$shape[[2]]) != 2L) {
+                      stop("Scoped inference seeds must have shape [2, 2].",
+                        call. = FALSE)
+                    }
+                    local_sampling_seed <- jnp$take(seed, jnp$array(0L),
+                      axis = 0L)
+                    global_sampling_seed <- jnp$take(seed, jnp$array(1L),
+                      axis = 0L)
+                  }
+                  sampling_subkey <- function(root_key, domain_tag) {
+                    if (scoped_sampling_keys) {
+                      return(jax$random$fold_in(root_key, ai(domain_tag)))
+                    }
+                    jnp$add(root_key, jnp$array(ai(domain_tag)))
+                  }
                   if (!testWithoutSampling) {
-                    local_x_base_params_samp <- localParamD$sample(seed = jnp$add(seed,
-                      jnp$array(25L)))
+                    local_x_base_params_samp <- localParamD$sample(seed = sampling_subkey(local_sampling_seed,
+                      25L))
                   }
                   if (testWithoutSampling) {
                     local_x_base_params_samp <- localParamD$parameters$loc
                   }
                   if (!testWithoutSampling) {
-                    local_x_neural_params_samp <- localParamD_neural$sample(seed = jnp$add(seed,
-                      jnp$array(2435L)))
+                    local_x_neural_params_samp <- localParamD_neural$sample(seed = sampling_subkey(local_sampling_seed,
+                      2435L))
                   }
                   if (testWithoutSampling) {
                     local_x_neural_params_samp <- localParamD_neural$parameters$loc
@@ -3399,8 +3570,8 @@
                   if (length(ArgNoDeps) > 0 && nGlobalParams >
                     0L) {
                     if (!testWithoutSampling) {
-                      global_x_params_samp <- globalParamD$sample(seed = jnp$add(seed,
-                        jnp$array(77245L)))
+                      global_x_params_samp <- globalParamD$sample(seed = sampling_subkey(global_sampling_seed,
+                        77245L))
                     }
                     if (testWithoutSampling) {
                       global_x_params_samp <- globalParamD$parameters$loc
@@ -3408,8 +3579,8 @@
                   }
                   if (nFixedLocal > 0) {
                     if (!testWithoutSampling) {
-                      fixedlocal_x_params_samp <- fixedLocalParamD$sample(seed = jnp$add(seed,
-                        jnp$array(295L)))
+                      fixedlocal_x_params_samp <- fixedLocalParamD$sample(seed = sampling_subkey(local_sampling_seed,
+                        295L))
                     }
                     if (testWithoutSampling) {
                       fixedlocal_x_params_samp <- fixedLocalParamD$parameters$loc
@@ -3430,7 +3601,17 @@
                       }, y0 = {
                         ndm_runtime_replicate_tree(list(Neural2 = ModelList$GlobalNeural$NeuralInitialConditions))
                       }, max_steps = MaxSteps, t0 = 0, t1 = f2n(NTimeGlobalNeuralMax),
-                      dt0 = (dt0_init_optim), stepsize_controller = stepsize_controller_optim)
+                      dt0 = (dt0_init_optim), stepsize_controller = stepsize_controller_optim,
+                      throw = FALSE)
+                    global_solver_diagnostics <- ndm_runtime_solution_diagnostics(dynamicglobal_x_params_samp)
+                    solver_diagnostics$global_attempted <- jnp$array(TRUE)
+                    solver_diagnostics$global_result_success <- global_solver_diagnostics$result_success
+                    solver_diagnostics$global_state_finite <- global_solver_diagnostics$state_finite
+                    solver_diagnostics$global_result_code <- global_solver_diagnostics$result_code
+                    solver_diagnostics$global_num_steps <- global_solver_diagnostics$num_steps
+                    solver_diagnostics$global_num_accepted_steps <- global_solver_diagnostics$num_accepted_steps
+                    solver_diagnostics$global_num_rejected_steps <- global_solver_diagnostics$num_rejected_steps
+                    solver_diagnostics$global_max_steps <- global_solver_diagnostics$max_steps
                     dynamicglobal_x0_samp <- jnp$take(dynamicglobal_x_params_samp$ys$Neural2,
                       time_indices, axis = 0L)
                   }
@@ -3439,8 +3620,8 @@
                     globalze = global_x_params_samp, dynamicglobalze = dynamicglobal_x0_samp,
                     dirichletparams = list((ModelList$ScaleList$ScaleBayes$DirichletScale1),
                       (ModelList$ScaleList$ScaleBayes$DirichletScale2)),
-                    context_ = context, tze = time_indices, seed = jnp$add(seed,
-                      jnp$array(4223131L)))
+                    context_ = context, tze = time_indices, seed = sampling_subkey(local_sampling_seed,
+                      4223131L))
                   names(ODEParamsSampList_args$Neural1_samp)[length(names(ODEParamsSampList_args$Neural1_samp))] <- "Neural1_0"
                   ODEParamsSampList_args$Neural1_samp <- ODEParamsSampList_args$Neural1_samp[!unlist(lapply(ODEParamsSampList_args$Neural1_samp,
                     is.null))]
@@ -3530,7 +3711,17 @@
                         }), collapse = ","), ")", collapse = ""))))
                     }, max_steps = (MaxSteps), t0 = (jnp$array(0)),
                     t1 = GetPredSaveAtInfo[[1]], saveat = GetPredSaveAtInfo[[2]],
-                    dt0 = dt0_init_optim, stepsize_controller = stepsize_controller_optim)
+                    dt0 = dt0_init_optim, stepsize_controller = stepsize_controller_optim,
+                    throw = FALSE)
+                  local_solver_diagnostics <- ndm_runtime_solution_diagnostics(diff_eq_sol)
+                  solver_diagnostics$local_attempted <- jnp$array(TRUE)
+                  solver_diagnostics$local_result_success <- local_solver_diagnostics$result_success
+                  solver_diagnostics$local_state_finite <- local_solver_diagnostics$state_finite
+                  solver_diagnostics$local_result_code <- local_solver_diagnostics$result_code
+                  solver_diagnostics$local_num_steps <- local_solver_diagnostics$num_steps
+                  solver_diagnostics$local_num_accepted_steps <- local_solver_diagnostics$num_accepted_steps
+                  solver_diagnostics$local_num_rejected_steps <- local_solver_diagnostics$num_rejected_steps
+                  solver_diagnostics$local_max_steps <- local_solver_diagnostics$max_steps
                   if (length(ODEParamsSampList_args$p_l_samp$shape) ==
                     0) {
                     ODEParamsSampList_args$p_l_samp <- jnp$array(1) *
@@ -3539,7 +3730,7 @@
                   y_mean <- eval(parse(text = paste("jnp$concatenate(list(",
                     paste(paste("jnp$expand_dims(", observed_vec_final,
                       ", 1L)"), collapse = ","), "),1L)", collapse = "")))
-                  y_sigma <- 0.001 + SoftPlus(jnp$take(diff_eq_sol$ys$Neural1,
+                  y_sigma <- ObservationScaleFloor + SoftPlus(jnp$take(diff_eq_sol$ys$Neural1,
                     jnp$array((diff_eq_sol$ys$Neural1$aval$shape[[2]] -
                       nOutcomes):(diff_eq_sol$ys$Neural1$aval$shape[[2]] -
                       1L)), axis = 1L))
@@ -3547,11 +3738,29 @@
                     y_sigma <- jnp$expand_dims(y_sigma, 1L)
                   }
                 }
+                solver_diagnostics$prediction_finite <- jnp$logical_and(jnp$all(jnp$isfinite(y_mean)),
+                  jnp$all(jnp$isfinite(y_sigma)))
+                solver_diagnostics$success <- jnp$logical_and(jnp$logical_and(jnp$logical_or(jnp$logical_not(solver_diagnostics$global_attempted),
+                  jnp$logical_and(solver_diagnostics$global_result_success,
+                    solver_diagnostics$global_state_finite)),
+                  jnp$logical_or(jnp$logical_not(solver_diagnostics$local_attempted),
+                    jnp$logical_and(solver_diagnostics$local_result_success,
+                      solver_diagnostics$local_state_finite))),
+                  solver_diagnostics$prediction_finite)
+                solver_diagnostics$failure_stage_code <- jnp$where(jnp$logical_and(solver_diagnostics$global_attempted,
+                  jnp$logical_not(jnp$logical_and(solver_diagnostics$global_result_success,
+                    solver_diagnostics$global_state_finite))),
+                  jnp$array(1L, dtype = jnp$int32), jnp$where(jnp$logical_and(solver_diagnostics$local_attempted,
+                    jnp$logical_not(jnp$logical_and(solver_diagnostics$local_result_success,
+                      solver_diagnostics$local_state_finite))),
+                    jnp$array(2L, dtype = jnp$int32), jnp$where(jnp$logical_not(solver_diagnostics$prediction_finite),
+                      jnp$array(3L, dtype = jnp$int32), jnp$array(0L,
+                        dtype = jnp$int32))))
                 return_v <- list(list(y_mu = y_mean, y_sigma = y_sigma,
                   KL_TERM = KL_LOCAL + KL_GLOBAL + KL_PLACE,
                   KL_LOCAL = KL_LOCAL, KL_GLOBAL = KL_GLOBAL,
                   KL_PLACE = KL_PLACE, TemporalLatents = TemporalLatents,
-                  ODEParamsSampList = c(ODEParamsSampList_args,
+                  solver_diagnostics = solver_diagnostics, ODEParamsSampList = c(ODEParamsSampList_args,
                     ODEParamsSampList_y0, center_param = y_mean,
                     scale_param = y_sigma, diff_eq_sol_ts = diff_eq_sol$ts,
                     diff_eq_sol_ys = diff_eq_sol$ys)), state)
@@ -3630,11 +3839,28 @@
                   seed)
                 state <- GetPred_output[[2]]
                 GetPred_output <- GetPred_output[[1]]
+                solver_diagnostics <- GetPred_output$solver_diagnostics
+                solver_example_success <- solver_diagnostics$success
+                solver_success_mask <- jnp$broadcast_to(jnp$reshape(solver_example_success,
+                  list(solver_example_success$shape[[1]], 1L,
+                    1L)), loss_y_mask$shape)
+                solver_safe_loss_mask <- jnp$logical_and(loss_y_mask,
+                  solver_success_mask)
+                solver_safe_y_mu <- jnp$nan_to_num(GetPred_output$y_mu,
+                  nan = 0, posinf = 0, neginf = 0)
+                solver_safe_y_sigma <- jnp$nan_to_num(GetPred_output$y_sigma,
+                  nan = ObservationScaleFloor, posinf = ObservationScaleFloor,
+                  neginf = ObservationScaleFloor)
+                solver_safe_y_mu <- jnp$where(solver_success_mask,
+                  solver_safe_y_mu, jnp$zeros_like(solver_safe_y_mu))
+                solver_safe_y_sigma <- jnp$where(solver_success_mask,
+                  solver_safe_y_sigma, jnp$ones_like(solver_safe_y_sigma) *
+                    ObservationScaleFloor)
                 {
                   student_t_loss <- ndm_student_t_masked_nll(jax = jax,
-                    jnp = jnp, y = loss_y, location = GetPred_output$y_mu,
-                    scale = GetPred_output$y_sigma, mask = loss_y_mask,
-                    df = 4, scale_floor = 0.001)
+                    jnp = jnp, y = loss_y, location = solver_safe_y_mu,
+                    scale = solver_safe_y_sigma, mask = solver_safe_loss_mask,
+                    df = 4, scale_floor = ObservationScaleFloor)
                   likelihood_loss <- student_t_loss$loss
                   local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
                   persistent_kl_values <- GetPred_output$KL_GLOBAL +
@@ -3651,8 +3877,8 @@
                   weighted_kl <- jnp$array(as.numeric(neuralode_kl_weight),
                     dtype = GetPred_output$y_mu$dtype) * (local_kl +
                     persistent_kl)
-                  observation_mask <- loss_y_mask$astype(GetPred_output$y_mu$dtype)
-                  mean_squared_error <- jnp$sum(jnp$square(GetPred_output$y_mu -
+                  observation_mask <- solver_safe_loss_mask$astype(GetPred_output$y_mu$dtype)
+                  mean_squared_error <- jnp$sum(jnp$square(solver_safe_y_mu -
                     loss_y) * observation_mask)/jnp$maximum(jnp$sum(observation_mask),
                     jnp$array(1, dtype = GetPred_output$y_mu$dtype))
                   weighted_mean_loss <- jnp$array(ifelse(ModelType ==
@@ -3662,7 +3888,8 @@
                   minThis <- likelihood_loss + weighted_kl +
                     weighted_mean_loss
                 }
-                return(list(minThis, state))
+                return(list(minThis, list(model_state = state,
+                  solver_diagnostics = solver_diagnostics)))
             }
             GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(list(as.integer(VI_TotalTimesInLikelihood),
                 VI_SaveAt_ODE_optim))
@@ -3678,7 +3905,8 @@
                 prior_grad_checks <- gradLoss_jax_prior_sampling(ModelList,
                   jax_batchx, jax_batchy, jnp$array(1), state,
                   PriorList, PolicyList, GetPredSaveAtInfo_default,
-                  jax$random$split(JaxKey(ai(6L * SEED_)), nBatch))
+                  jax$random$split(ndm_runtime_seed_key(6L),
+                    nBatch))
                 plot(np$asanyarray(prior_grad_checks[[2]][[1]]),
                   cex = 0)
                 text(np$asanyarray(prior_grad_checks[[2]][[1]]),
@@ -3701,7 +3929,11 @@
 })
 
 .ndm_stage_expr_ModelDefiners_SuperLModel_BackboneTransformer <- expression(print("Done with SuperLModel_BackboneTransformer.R"),
-    if (backbonePath == "initialize") {
+    ndm_transformer_initialization_keys <- function(key) {
+        split_keys <- jax$random$split(key, 5L)
+        list(W_q = split_keys[0L], W_k = split_keys[1L], W_v = split_keys[2L],
+            W_o = split_keys[3L], next_layer = split_keys[4L])
+    }, if (backbonePath == "initialize") {
         backbone_runtime_lookup_env <- environment()
         backbone_runtime_get0 <- function(name, ifnotfound = NULL) {
             get0(name, envir = backbone_runtime_lookup_env, inherits = FALSE,
@@ -3710,7 +3942,7 @@
         TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(),
             function(d) d$device_kind))), error = function(e) FALSE)
         EnableKVCaching <- backbone_runtime_get0("EnableKVCaching",
-            ifnotfound = (ModelType == "DecoderOnly"))
+            ifnotfound = FALSE)
         EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType ==
             "DecoderOnly")
         UseFullAttentionResiduals <- isTRUE(backbone_runtime_get0("UseFullAttentionResiduals",
@@ -4002,14 +4234,15 @@
                     list(k = jnp$zeros(list(max_len, num_kv_heads,
                       head_dim), dtype = dtype), v = jnp$zeros(list(max_len,
                       num_kv_heads, head_dim), dtype = dtype),
-                      len = jnp$array(0L, dtype = jnp$int32))
+                      valid = jnp$greater(jnp$zeros(list(max_len),
+                        dtype = jnp$int32), jnp$array(0L, dtype = jnp$int32)))
                   }
                   out <- replicate(num_layers, make_one(), simplify = FALSE)
                   names(out) <- paste0("d", as.character(1:num_layers))
                   out
                 }
                 transformer_prefill_kv <- function(xt, x_mask,
-                  TransformerList, prefix_len) {
+                  TransformerList) {
                   T_full <- xt$shape[[1]]
                   D <- xt$shape[[2]]
                   dtype <- xt$dtype
@@ -4018,18 +4251,22 @@
                   cache <- kv_cache_allocate(max_len = T_full,
                     num_layers = ModelDepth, num_kv_heads = num_kv_heads,
                     head_dim = head_dim, dtype = dtype)
-                  pm <- make_prefix_index_mask(prefix_len, T_full)
-                  x_mask_pref <- mask_prefix_rows(x_mask, pm$mask)
-                  xt <- mask_prefix_rows(xt, pm$mask)
-                  keys_mask_bool <- jnp$greater(jnp$squeeze(x_mask_pref,
+                  cache_valid <- jnp$greater(jnp$squeeze(x_mask,
                     1L), 0)
-                  mask_keys_prefill <- jnp$expand_dims(keys_mask_bool,
+                  last_valid <- jnp$max(jnp$where(cache_valid,
+                    pos_ids, jnp$array(-1L, dtype = jnp$int32)))
+                  safe_last_valid <- jnp$maximum(last_valid,
+                    jnp$array(0L, dtype = jnp$int32))
+                  next_pos <- jnp$add(last_valid, jnp$array(1L,
+                    dtype = jnp$int32))
+                  xt <- mask_prefix_rows(xt, cache_valid)
+                  mask_keys_prefill <- jnp$expand_dims(cache_valid,
                     0L)
                   mask_keys_prefill <- jnp$expand_dims(mask_keys_prefill,
                     0L)
                   mask_keys_prefill <- jnp$broadcast_to(mask_keys_prefill,
                     list(num_heads, T_full, T_full))
-                  q_mask_T11 <- jnp$expand_dims(jnp$expand_dims(pm$mask,
+                  q_mask_T11 <- jnp$expand_dims(jnp$expand_dims(cache_valid,
                     1L), 2L)
                   is_causal_flag <- (ModelType == "DecoderOnly")
                   if (!isTRUE(UseFullAttentionResiduals)) {
@@ -4055,7 +4292,7 @@
                         kh_kv, jnp$array(c(0L, 0L, 0L), dtype = jnp$int32))
                       cache[[l_]]$v <- jax$lax$dynamic_update_slice(cache[[l_]]$v,
                         vh_kv, jnp$array(c(0L, 0L, 0L), dtype = jnp$int32))
-                      cache[[l_]]$len <- pm$len
+                      cache[[l_]]$valid <- cache_valid
                       kh <- repeat_kv_heads(kh_kv, kv_group_size)
                       vh <- repeat_kv_heads(vh_kv, kv_group_size)
                       attn_out <- dot_product_attention_unified(qh,
@@ -4074,15 +4311,12 @@
                       xt <- ffmap(L$FFN$OutProj1, xt)
                       xt <- (xtminu1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
                         (xt * jax$nn$softplus(L$ResidCon2$WtResidPath))
-                      xt <- mask_prefix_rows(xt, pm$mask)
+                      xt <- mask_prefix_rows(xt, cache_valid)
                     }
-                    last_nonmasked_i <- jnp$maximum(pm$len -
-                      jnp$array(1L, dtype = jnp$int32), jnp$array(0L,
-                      dtype = jnp$int32))
-                    xt_last <- jnp$take(xt, last_nonmasked_i,
+                    xt_last <- jnp$take(xt, safe_last_valid,
                       axis = 0L)
                     return(list(xt_last = xt_last, cache = cache,
-                      prefix_len = pm$len))
+                      last_valid = last_valid, next_pos = next_pos))
                   }
                   initial_append <- attnres_append(attnres_init_buffer(T_full,
                     D, dtype), jnp$array(0L, dtype = jnp$int32),
@@ -4121,7 +4355,7 @@
                           kh_kv, jnp$array(c(0L, 0L, 0L), dtype = jnp$int32))
                         cache_in[[branch_idx]]$v <- jax$lax$dynamic_update_slice(cache_in[[branch_idx]]$v,
                           vh_kv, jnp$array(c(0L, 0L, 0L), dtype = jnp$int32))
-                        cache_in[[branch_idx]]$len <- pm$len
+                        cache_in[[branch_idx]]$valid <- cache_valid
                         kh <- repeat_kv_heads(kh_kv, kv_group_size)
                         vh <- repeat_kv_heads(vh_kv, kv_group_size)
                         attn_out <- dot_product_attention_unified(qh,
@@ -4133,7 +4367,7 @@
                           list(T_full, num_heads * head_dim)),
                           L$Multihead$W_o)
                         attn_proj <- mask_prefix_rows(attn_proj,
-                          pm$mask)
+                          cache_valid)
                         attn_append <- attnres_append(source_buffer,
                           source_count, attn_proj)
                         mlp_source <- full_attnres_reduce_buffer(attn_append$buffer,
@@ -4143,7 +4377,7 @@
                         xt_out <- jax$nn$swish(ffmap(L$FFN$WideProj1,
                           xt_out)) * ffmap(L$FFN$WideProj2, xt_out)
                         xt_out <- ffmap(L$FFN$OutProj1, xt_out)
-                        xt_out <- mask_prefix_rows(xt_out, pm$mask)
+                        xt_out <- mask_prefix_rows(xt_out, cache_valid)
                         ffn_append <- attnres_append(attn_append$buffer,
                           attn_append$count, xt_out)
                         list(xt_out, ffn_append$buffer, ffn_append$count,
@@ -4161,12 +4395,10 @@
                   final_carry <- scan_result[[1]]
                   xt_final <- final_carry[[1]]
                   cache_final <- final_carry[[4]]
-                  last_nonmasked_i <- jnp$maximum(pm$len - jnp$array(1L,
-                    dtype = jnp$int32), jnp$array(0L, dtype = jnp$int32))
-                  xt_last <- jnp$take(xt_final, last_nonmasked_i,
+                  xt_last <- jnp$take(xt_final, safe_last_valid,
                     axis = 0L)
                   list(xt_last = xt_last, cache = cache_final,
-                    prefix_len = pm$len)
+                    last_valid = last_valid, next_pos = next_pos)
                 }
                 transformer_decode_step_kv <- function(token_in,
                   pos, TransformerList, cache) {
@@ -4203,17 +4435,18 @@
                         jnp$expand_dims(k_KH, 0L), write_idx)
                       cache[[l_]]$v <- jax$lax$dynamic_update_slice(cache[[l_]]$v,
                         jnp$expand_dims(v_KH, 0L), write_idx)
-                      cache[[l_]]$len <- jnp$maximum(cache[[l_]]$len,
-                        jnp$array(pos_layer + 1L, dtype = jnp$int32))
+                      cache[[l_]]$valid <- jax$lax$dynamic_update_slice(cache[[l_]]$valid,
+                        jnp$greater(jnp$ones(list(1L), dtype = jnp$int32),
+                          jnp$array(0L, dtype = jnp$int32)),
+                        jnp$reshape(pos_layer, list(1L)))
                       q_TNH <- jnp$expand_dims(q_NH, 0L)
                       K_SNH <- repeat_kv_heads(cache[[l_]]$k,
                         kv_group_size)
                       V_SNH <- repeat_kv_heads(cache[[l_]]$v,
                         kv_group_size)
                       idx_full <- jnp$arange(max_len, dtype = jnp$int32)
-                      keys_mask_1d <- jnp$logical_and(jnp$less(idx_full,
-                        cache[[l_]]$len), jnp$less_equal(idx_full,
-                        pos_layer))
+                      keys_mask_1d <- jnp$logical_and(cache[[l_]]$valid,
+                        jnp$less_equal(idx_full, pos_layer))
                       mask_keys_decode <- jnp$expand_dims(keys_mask_1d,
                         0L)
                       mask_keys_decode <- jnp$expand_dims(mask_keys_decode,
@@ -4282,16 +4515,17 @@
                           k_KH, write_idx)
                         cache_in[[branch_idx]]$v <- jax$lax$dynamic_update_slice(cache_in[[branch_idx]]$v,
                           v_KH, write_idx)
-                        cache_in[[branch_idx]]$len <- jnp$maximum(cache_in[[branch_idx]]$len,
-                          jnp$array(pos_layer + 1L, dtype = jnp$int32))
+                        cache_in[[branch_idx]]$valid <- jax$lax$dynamic_update_slice(cache_in[[branch_idx]]$valid,
+                          jnp$greater(jnp$ones(list(1L), dtype = jnp$int32),
+                            jnp$array(0L, dtype = jnp$int32)),
+                          jnp$reshape(pos_layer, list(1L)))
                         K_SNH <- repeat_kv_heads(cache_in[[branch_idx]]$k,
                           kv_group_size)
                         V_SNH <- repeat_kv_heads(cache_in[[branch_idx]]$v,
                           kv_group_size)
                         idx_full <- jnp$arange(max_len, dtype = jnp$int32)
-                        keys_mask_1d <- jnp$logical_and(jnp$less(idx_full,
-                          cache_in[[branch_idx]]$len), jnp$less_equal(idx_full,
-                          pos_layer))
+                        keys_mask_1d <- jnp$logical_and(cache_in[[branch_idx]]$valid,
+                          jnp$less_equal(idx_full, pos_layer))
                         mask_keys_decode <- jnp$expand_dims(keys_mask_1d,
                           0L)
                         mask_keys_decode <- jnp$expand_dims(mask_keys_decode,
@@ -4329,14 +4563,6 @@
                   final_carry <- scan_result[[1]]
                   list(token_out = jnp$squeeze(final_carry[[1]],
                     0L), cache = final_carry[[4]])
-                }
-                make_prefix_index_mask <- function(prefix_len,
-                  max_len) {
-                  idx_full <- jnp$arange(max_len, dtype = jnp$int32)
-                  mask_full <- jnp$less(idx_full, jnp$astype(prefix_len,
-                    jnp$int32))
-                  list(idx = idx_full, mask = mask_full, len = jnp$astype(prefix_len,
-                    jnp$int32))
                 }
                 mask_prefix_rows <- function(x_T_any, mask_rows_bool) {
                   jnp$where(jnp$expand_dims(mask_rows_bool, 1L),
@@ -4509,12 +4735,12 @@
                       seed = seed_key)$astype(jaxFloatType)
                   }
                   print("Generating Multihead objects...")
-                  multihead_keys <- jax$random$split(key, 4L)
+                  multihead_keys <- ndm_transformer_initialization_keys(key)
                   TransformerList[[l_]]$Multihead <- list(W_q = make_w(list(ModelDims,
-                    q_proj_dim), multihead_keys[1]), W_k = make_w(list(ModelDims,
-                    kv_proj_dim), multihead_keys[2]), W_v = make_w(list(ModelDims,
-                    kv_proj_dim), multihead_keys[3]), W_o = make_w(list(q_proj_dim,
-                    ModelDims), multihead_keys[4]), QNormScale = jnp$ones(list(num_heads,
+                    q_proj_dim), multihead_keys$W_q), W_k = make_w(list(ModelDims,
+                    kv_proj_dim), multihead_keys$W_k), W_v = make_w(list(ModelDims,
+                    kv_proj_dim), multihead_keys$W_v), W_o = make_w(list(q_proj_dim,
+                    ModelDims), multihead_keys$W_o), QNormScale = jnp$ones(list(num_heads,
                     1L), dtype = jaxFloatType), KNormScale = jnp$ones(list(num_kv_heads,
                     1L), dtype = jaxFloatType))
                   if (isTRUE(UseFullAttentionResiduals)) {
@@ -4525,7 +4751,7 @@
                       dtype = jaxFloatType), NormScale = jnp$ones(list(ModelDims),
                       dtype = jaxFloatType))
                   }
-                  key <- jax$random$split(key)[[1]]
+                  key <- multihead_keys$next_layer
                 }
             }
             TransformerList[[l_]]$NormScalerInput <- oryx$Normal(loc = 1,
@@ -4578,7 +4804,53 @@
             TransformerList = TSList$TSBackbone)
     }, print("Done sourcing SuperLModel_BackboneTransformer.R"))
 
-.ndm_stage_expr_ModelDefiners_SuperLModel_ParseDynamicODE <- expression({
+.ndm_stage_expr_ModelDefiners_SuperLModel_ParseDynamicODE <- expression(.ndm_unwrap_pretransformed_observation_args <- function(expressions,
+    argument_names, transformation = "Sigmoid") {
+    expressions <- as.character(expressions)
+    argument_names <- unique(as.character(argument_names))
+    argument_names <- argument_names[!is.na(argument_names) &
+        nzchar(argument_names)]
+    if (!grepl("^[[:alpha:]_][[:alnum:]_]*$", transformation)) {
+        stop("`transformation` must be a valid function name.",
+            call. = FALSE)
+    }
+    if (length(argument_names) > 0L && any(!grepl("^[[:alpha:]_][[:alnum:]_]*$",
+        argument_names))) {
+        stop("Observation argument names must be valid identifiers.",
+            call. = FALSE)
+    }
+    for (argument_name in argument_names) {
+        sampled_argument <- sprintf("ODEParamsSampList_args$%s_samp",
+            argument_name)
+        expressions <- gsub(sprintf("%s\\(ODEParamsSampList_args\\$%s_samp\\)",
+            transformation, argument_name), sampled_argument,
+            expressions, perl = TRUE)
+    }
+    expressions
+}, .ndm_validate_ode_pair_lengths <- function(lefthandside_vec,
+    righthandside_vec) {
+    n_left <- length(lefthandside_vec)
+    n_right <- length(righthandside_vec)
+    if (n_left != n_right) {
+        stop(sprintf(paste0("ODE parser produced %d state derivative name(s) but %d ",
+            "right-hand-side expression(s); refusing to recycle them."),
+            n_left, n_right), call. = FALSE)
+    }
+    invisible(NULL)
+}, .ndm_require_parser_success <- function(value, context) {
+    if (!inherits(value, "try-error")) {
+        return(value)
+    }
+    condition <- attr(value, "condition", exact = TRUE)
+    detail <- if (inherits(condition, "condition")) {
+        conditionMessage(condition)
+    }
+    else {
+        as.character(value)[[1L]]
+    }
+    stop(sprintf("ODE parser failed while %s: %s", context, detail),
+        call. = FALSE)
+}, {
     print("Sarting SuperLModel_ParseDynamicODE.R")
     gc()
     py_gc$collect()
@@ -4682,10 +4954,8 @@
                     pattern = "Inv", replace = ""))), sd = zer2[2])$best_ex,
                 no = zer2[1])
         }
-        ret_ <- try(c(zer1, zer2, IsContext), T)
-        if ("try-error" %in% class(ret_)) {
-            browser()
-        }
+        ret_ <- .ndm_require_parser_success(try(c(zer1, zer2,
+            IsContext), silent = TRUE), "assembling a prior definition")
         return(ret_)
     })
     PriorDefinitions_jax <- rbind(PriorDefinitions_jax, gsub(PriorDefinitions_jax[2,
@@ -5157,7 +5427,7 @@
         if (length(Neural2_vec) > 0) {
             for (ja in 1:length(Neural2_vec)) {
                 zer <- gsub(zer, pattern = sprintf("y\\$%s",
-                  Neural2_vec[ja]), replacement = sprintf("jnp$take(y$Neural2, ai(LocalNeuralEmbedDim+%s-1L))",
+                  Neural2_vec[ja]), replacement = sprintf("jnp$take(y$Neural2, ai(GlobalNeuralEmbedDim+%s-1L))",
                   ja))
             }
         }
@@ -5172,10 +5442,7 @@
     lefthandside_vec[lefthandside_vec %in% uq_globalneural_vec] <- "Neural2"
     righthandside_vec <- transform_vec_final[!grepl(TexTransformationRules,
         pattern = "Observe")]
-    if (length(lefthandside_vec) != length(righthandside_vec)) {
-        print("left right here")
-        browser()
-    }
+    .ndm_validate_ode_pair_lengths(lefthandside_vec, righthandside_vec)
     ode_pairs <- data.frame(lefthandside_vec = lefthandside_vec,
         righthandside_vec = righthandside_vec, stringsAsFactors = FALSE)
     ode_pairs <- ode_pairs[!duplicated(ode_pairs), , drop = FALSE]
@@ -5193,8 +5460,6 @@
                 "Neural2"], "'=", righthandside_vec[lefthandside_vec ==
                 "Neural2"], sep = ""), collapse = ","))))
     }
-    transform_vec_final <- gsub(transform_vec_final, pattern = "jnp\\$take\\(y\\$Neural2, ai\\(LocalNeuralEmbedDim",
-        replace = "jnp$take(y$Neural2, ai(GlobalNeuralEmbedDim")
     observed_name <- transform_vec_final
     observed_name <- observed_name[grepl(TexTransformationRules,
         pattern = "Observe")]
@@ -5212,12 +5477,15 @@
         replace = "diff_eq_sol$ts", perl = TRUE)
     observed_vec_final <- gsub(observed_vec_final, pattern = " ",
         replace = "")
-    observed_vec_final <- gsub(observed_vec_final, pattern = "(jnp\\$take\\(diff_eq_sol\\$ys\\$Neural1,)([^)]+)\\)",
-        replace = "\\1\\2,axis=1L)")
-    if (!"delta" %in% uq_globalneural_vec) {
-        observed_vec_final <- gsub(observed_vec_final, pattern = "Sigmoid",
-            replace = "")
-    }
+    observed_vec_final <- gsub(observed_vec_final, pattern = paste0("(jnp\\$take\\(diff_eq_sol\\$ys\\$(?:Neural1|Neural2),)",
+        "(ai\\([^)]+\\)|[^)]+)\\)"), replace = "\\1\\2,axis=1L)",
+        perl = TRUE)
+    prior_sigmoid_args <- unique(PriorDefinitions_jax[5, PriorDefinitions_jax[1,
+        ] == "InvSigmoid"])
+    prior_sigmoid_args <- intersect(prior_sigmoid_args, uq_args_vec)
+    prior_sigmoid_args <- setdiff(prior_sigmoid_args, uq_allneural_vec)
+    observed_vec_final <- .ndm_unwrap_pretransformed_observation_args(expressions = observed_vec_final,
+        argument_names = prior_sigmoid_args, transformation = "Sigmoid")
     transform_vec_final <- transform_vec_final[!grepl(TexTransformationRules,
         pattern = "Observe")]
     LDeps <- unique(c(grep(uq_args_vec, pattern = "_l", value = T),
@@ -5567,6 +5835,7 @@
             iteration, state, PriorList, PolicyList, GetPredSaveAtInfo,
             seed)
         loss_and_state <- loss_and_grads[[1]]
+        loss_aux <- loss_and_state[[2]]
         grads <- loss_and_grads[[2]]
         model_arrays <- eq$partition(ModelList, eq$is_array)
         model_array_tree <- model_arrays[[1]]
@@ -5592,7 +5861,8 @@
         }
         updated_model <- eq$combine(optax$apply_updates(model_array_tree,
             updates_and_state[[1]]), model_arrays[[2]])
-        list(loss = loss_and_state[[1]], state = loss_and_state[[2]],
+        list(loss = loss_and_state[[1]], state = loss_aux$model_state,
+            solver_diagnostics = loss_aux$solver_diagnostics,
             grad_norm = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)),
             model = updated_model, opt_state = updates_and_state[[2]],
             block_update_metrics = block_update_metrics)
@@ -5689,7 +5959,110 @@
         "ndm"), ndm_numeric_summary <- utils::getFromNamespace(".ndm_numeric_summary",
         "ndm"), ndm_first_nonfinite_name <- utils::getFromNamespace(".ndm_first_nonfinite_name",
         "ndm"), ndm_write_nonfinite_report <- utils::getFromNamespace(".ndm_write_nonfinite_report",
-        "ndm"), nonfinite_empty_summary <- function(error = NA_character_) {
+        "ndm"), ndm_solver_failure_condition <- utils::getFromNamespace(".ndm_solver_failure_condition",
+        "ndm"), ndm_write_solver_failure_report <- utils::getFromNamespace(".ndm_write_solver_failure_report",
+        "ndm"), solver_runtime_scalar <- function(value, default = NA_real_) {
+        if (is.null(value)) {
+            return(default)
+        }
+        host_value <- try(as.vector(as.array(np$array(value))),
+            silent = TRUE)
+        if (inherits(host_value, "try-error") || length(host_value) <
+            1L) {
+            return(default)
+        }
+        suppressWarnings(as.numeric(host_value[[1L]]))
+    }, solver_runtime_attribute <- function(object, name) {
+        tryCatch(reticulate::py_get_attr(object, name), error = function(...) NULL)
+    }, solver_runtime_label <- function(object) {
+        tryCatch(as.character(reticulate::py_str(object)), error = function(...) paste(class(object),
+            collapse = "/"))
+    }, solver_runtime_configuration <- function() {
+        list(solver = solver_runtime_label(VI_diff_eq_solver_optim),
+            stepsize_controller = solver_runtime_label(stepsize_controller_optim),
+            rtol = solver_runtime_scalar(solver_runtime_attribute(stepsize_controller_optim,
+                "rtol")), atol = solver_runtime_scalar(solver_runtime_attribute(stepsize_controller_optim,
+                "atol")), dt0 = solver_runtime_scalar(dt0_init_optim),
+            max_steps = suppressWarnings(as.integer(MaxSteps)))
+    }, solver_batch_identifier <- function(value, name, expected_length) {
+        host_value <- try(as.vector(as.array(np$array(value))),
+            silent = TRUE)
+        if (inherits(host_value, "try-error")) {
+            stop("Could not transfer `", name, "` for solver diagnostics.",
+                call. = FALSE)
+        }
+        host_value <- suppressWarnings(as.integer(host_value))
+        if (length(host_value) != expected_length || anyNA(host_value)) {
+            stop("`", name, "` is not aligned with the solver diagnostic batch.",
+                call. = FALSE)
+        }
+        host_value
+    }, solver_diagnostics_to_host <- function(diagnostics) {
+        required_fields <- c("success", "failure_stage_code",
+            "prediction_finite", "global_attempted", "global_result_success",
+            "global_state_finite", "global_result_code", "global_num_steps",
+            "global_num_accepted_steps", "global_num_rejected_steps",
+            "global_max_steps", "local_attempted", "local_result_success",
+            "local_state_finite", "local_result_code", "local_num_steps",
+            "local_num_accepted_steps", "local_num_rejected_steps",
+            "local_max_steps")
+        missing_fields <- setdiff(required_fields, names(diagnostics))
+        if (length(missing_fields) > 0L) {
+            stop(sprintf("Training prediction omitted required solver diagnostics: %s.",
+                paste(missing_fields, collapse = ", ")), call. = FALSE)
+        }
+        boolean_fields <- c("success", "prediction_finite", "global_attempted",
+            "global_result_success", "global_state_finite", "local_attempted",
+            "local_result_success", "local_state_finite")
+        host_fields <- lapply(required_fields, function(field_name) {
+            value <- as.vector(as.array(np$array(diagnostics[[field_name]])))
+            if (field_name %in% boolean_fields) {
+                return(as.logical(value))
+            }
+            as.integer(value)
+        })
+        names(host_fields) <- required_fields
+        field_lengths <- vapply(host_fields, length, integer(1L))
+        if (length(unique(field_lengths)) != 1L || field_lengths[[1L]] <
+            1L) {
+            stop("Solver diagnostic fields do not share one non-empty batch dimension.",
+                call. = FALSE)
+        }
+        data.frame(example_index = seq_len(field_lengths[[1L]]),
+            host_fields, check.names = FALSE)
+    }, solver_failure_stage <- function(stage_code) {
+        stage_names <- c("success", "global_ode", "local_ode",
+            "prediction")
+        stage_code <- as.integer(stage_code)
+        valid <- !is.na(stage_code) & stage_code >= 0L & stage_code <
+            length(stage_names)
+        out <- rep("unknown", length(stage_code))
+        out[valid] <- stage_names[stage_code[valid] + 1L]
+        out
+    }, solver_iteration_telemetry <- function(diagnostics) {
+        global_rows <- which(diagnostics$global_attempted %in%
+            TRUE)
+        local_rows <- which(diagnostics$local_attempted %in%
+            TRUE)
+        steps <- c(diagnostics$global_num_steps[global_rows],
+            diagnostics$local_num_steps[local_rows])
+        rejected_steps <- c(diagnostics$global_num_rejected_steps[global_rows],
+            diagnostics$local_num_rejected_steps[local_rows])
+        steps <- steps[is.finite(steps)]
+        rejected_steps <- rejected_steps[is.finite(rejected_steps)]
+        list(solver_num_steps_max = if (length(steps) == 0L) 0L else max(steps),
+            solver_num_rejected_steps_max = if (length(rejected_steps) ==
+                0L) {
+                0L
+            } else {
+                max(rejected_steps)
+            }, solver_num_rejected_steps_total = if (length(rejected_steps) ==
+                0L) {
+                0L
+            } else {
+                sum(rejected_steps)
+            })
+    }, nonfinite_empty_summary <- function(error = NA_character_) {
         list(error = error, dims = integer(), length = 0L, finite_fraction = NA_real_,
             n_nonfinite = NA_integer_, n_nan = NA_integer_, n_inf = NA_integer_,
             min = NA_real_, max = NA_real_, mean = NA_real_,
@@ -5783,7 +6156,9 @@
         nCheckpoints), training_telemetry <- data.frame(iteration = integer(),
         elapsed_seconds = numeric(), gradient_seconds = numeric(),
         loss = numeric(), gradient_norm = numeric(), trainable_parameters = numeric(),
-        stringsAsFactors = FALSE), write_training_telemetry <- function() {
+        solver_num_steps_max = integer(), solver_num_rejected_steps_max = integer(),
+        solver_num_rejected_steps_total = integer(), stringsAsFactors = FALSE),
+    write_training_telemetry <- function() {
         if (nrow(training_telemetry) == 0L) {
             return(invisible(NULL))
         }
@@ -5799,7 +6174,32 @@
                 telemetry_file, ".", call. = FALSE)
         }
         invisible(telemetry_file)
-    }, for (i in i_:nSGD_model) {
+    }, ndm_training_iteration_sequence <- function(resume_iteration,
+        final_iteration) {
+        bounds <- suppressWarnings(as.numeric(c(resume_iteration,
+            final_iteration)))
+        if (length(bounds) != 2L || any(!is.finite(bounds)) ||
+            any(bounds < 1) || any(bounds > .Machine$integer.max) ||
+            any(bounds != floor(bounds))) {
+            stop("Training iteration bounds must be positive integers.",
+                call. = FALSE)
+        }
+        resume_iteration <- as.integer(bounds[[1L]])
+        final_iteration <- as.integer(bounds[[2L]])
+        if (resume_iteration > final_iteration) {
+            return(integer())
+        }
+        seq.int(resume_iteration, final_iteration)
+    }, ndm_training_iteration_key <- function(iteration) {
+        iteration <- suppressWarnings(as.numeric(iteration))
+        if (length(iteration) != 1L || !is.finite(iteration) ||
+            iteration < 1 || iteration > .Machine$integer.max ||
+            iteration != floor(iteration)) {
+            stop("Training iteration must be one positive integer.",
+                call. = FALSE)
+        }
+        jax$random$fold_in(ndm_runtime_seed_key(104729L), as.integer(iteration))
+    }, for (i in ndm_training_iteration_sequence(i_, nSGD_model)) {
         i_ <- i
         fulliter_timer <- Sys.time()
         if (i%%10 == 0) {
@@ -5829,10 +6229,8 @@
                 if (i == 1) {
                   print2("At first gradLoss_jax()")
                 }
-                iteration_seed <- as.integer((as.double(i) +
-                  104729 * as.double(get0("SEED_", inherits = TRUE,
-                    ifnotfound = 0L)))%%.Machine$integer.max)
-                keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(iteration_seed),
+                iteration_key <- ndm_training_iteration_key(i)
+                keys_mat <- ndm_runtime_data_to_device(jax$random$split(iteration_key,
                   nBatch))
                 batch_pkg <- batch2package(dat_)
                 GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info",
@@ -5849,6 +6247,43 @@
                   opt_state)
                 Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
                 GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
+                solver_diagnostics_host <- solver_diagnostics_to_host(train_step_result$solver_diagnostics)
+                solver_diagnostics_host$location_id_numeric <- solver_batch_identifier(dat_$location_id_numeric,
+                  "location_id_numeric", nrow(solver_diagnostics_host))
+                solver_diagnostics_host$time_id_numeric <- solver_batch_identifier(dat_$time_id_numeric,
+                  "time_id_numeric", nrow(solver_diagnostics_host))
+                failed_solver_examples <- which(is.na(solver_diagnostics_host$success) |
+                  !solver_diagnostics_host$success)
+                if (length(failed_solver_examples) > 0L) {
+                  failed_diagnostics <- solver_diagnostics_host[failed_solver_examples,
+                    , drop = FALSE]
+                  failed_diagnostics$failure_stage <- solver_failure_stage(failed_diagnostics$failure_stage_code)
+                  solver_configuration <- solver_runtime_configuration()
+                  failure_report <- list(schema_version = 1L,
+                    event = "ndm_solver_failure", created_at = format(Sys.time(),
+                      tz = "UTC", usetz = TRUE), analysis_name = get0("AnalysisName",
+                      ifnotfound = "Analysis2"), outer_iteration = get0("OUTER_ITERATION",
+                      ifnotfound = NA_integer_), iteration = as.integer(i),
+                    base_id = capture_nonfinite_base_id(), model_type = get0("ModelType",
+                      ifnotfound = NA_character_), loss = Loss_i,
+                    gradient_norm = GradNorm_i, candidate_update_applied = FALSE,
+                    solver_configuration = solver_configuration,
+                    failed_examples = failed_diagnostics)
+                  failure_report_path <- ndm_write_solver_failure_report(report = failure_report,
+                    holder_folder = HolderFolder, outer_iteration = get0("OUTER_ITERATION",
+                      ifnotfound = NA_integer_), iteration = i)
+                  stop(ndm_solver_failure_condition(iteration = i,
+                    example_indices = failed_diagnostics$example_index,
+                    stages = failed_diagnostics$failure_stage,
+                    diagnostics = failed_diagnostics, context = list(phase = "training",
+                      analysis_name = get0("AnalysisName", ifnotfound = "Analysis2"),
+                      outer_iteration = get0("OUTER_ITERATION",
+                        ifnotfound = NA_integer_), base_id = capture_nonfinite_base_id(),
+                      model_type = get0("ModelType", ifnotfound = NA_character_),
+                      candidate_update_applied = FALSE, solver_configuration = solver_configuration,
+                      report_path = failure_report_path)))
+                }
+                solver_telemetry_i <- solver_iteration_telemetry(solver_diagnostics_host)
                 UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i)
                 if (!UpdateParametersCond) {
                   nonfinite_capture <- capture_nonfinite_report(batch_l = dat_,
@@ -5969,6 +6404,9 @@
                     data.frame(iteration = as.integer(i), elapsed_seconds = te_total,
                       gradient_seconds = te_grads, loss = Loss_i,
                       gradient_norm = GradNorm_i, trainable_parameters = as.numeric(nParams),
+                      solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
+                      solver_num_rejected_steps_max = solver_telemetry_i$solver_num_rejected_steps_max,
+                      solver_num_rejected_steps_total = solver_telemetry_i$solver_num_rejected_steps_total,
                       stringsAsFactors = FALSE))
                 }
                 if (i %in% CheckPointSaveAt) {
@@ -5982,6 +6420,9 @@
                         gradient_seconds = checkpoint_gradient_seconds,
                         loss = Loss_i, gradient_norm = GradNorm_i,
                         trainable_parameters = as.numeric(nParams),
+                        solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
+                        solver_num_rejected_steps_max = solver_telemetry_i$solver_num_rejected_steps_max,
+                        solver_num_rejected_steps_total = solver_telemetry_i$solver_num_rejected_steps_total,
                         stringsAsFactors = FALSE))
                   }
                   print2("Saving checkpoint (Optimizer, Model, Model-generating Code)...")
@@ -6047,41 +6488,208 @@
 .ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics <- expression(ndm_source_extracted("ResultsGet/SuperLModel_GetAnalytics_Real.R"),
     ndm_source_extracted("ResultsGet/SuperLModel_GetAnalytics_Sim.R"))
 
-.ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics_Real <- expression(if (!SimMode) {
+.ndm_stage_expr_ResultsGet_SuperLModel_GetAnalytics_Real <- expression(ndm_inference_draw_plan <- function(model_type, neuralode_variational,
+    requested_draws = 5L, test_without_sampling = FALSE) {
+    requested_draws <- suppressWarnings(as.numeric(requested_draws))
+    if (length(requested_draws) != 1L || !is.finite(requested_draws) ||
+        requested_draws < 1 || requested_draws > .Machine$integer.max ||
+        requested_draws != floor(requested_draws)) {
+        stop("`InferenceMCDraws` must be one positive integer.",
+            call. = FALSE)
+    }
+    requested_draws <- as.integer(requested_draws)
+    stochastic <- identical(as.character(model_type), "NeuralODE") &&
+        isTRUE(neuralode_variational) && !isTRUE(test_without_sampling)
+    list(requested = requested_draws, effective = if (stochastic) requested_draws else 1L,
+        stochastic = stochastic, key_scheme = "jax-fold-in-v1")
+}, ndm_inference_key_lineage <- function(run_seed, outer_iteration,
+    checkpoint_step, draw_id, location_ids, time_anchor_ids) {
+    scalar_id <- function(value, name) {
+        value <- suppressWarnings(as.numeric(value))
+        if (length(value) != 1L || !is.finite(value) || value <
+            0 || value > .Machine$integer.max || value != floor(value)) {
+            stop(sprintf("`%s` must be one non-negative integer.",
+                name), call. = FALSE)
+        }
+        as.integer(value)
+    }
+    location_ids <- suppressWarnings(as.numeric(location_ids))
+    time_anchor_ids <- suppressWarnings(as.numeric(time_anchor_ids))
+    if (length(location_ids) != length(time_anchor_ids) || any(!is.finite(location_ids)) ||
+        any(!is.finite(time_anchor_ids)) || any(location_ids <
+        0) || any(time_anchor_ids < 0) || any(location_ids >
+        .Machine$integer.max) || any(time_anchor_ids > .Machine$integer.max) ||
+        any(location_ids != floor(location_ids)) || any(time_anchor_ids !=
+        floor(time_anchor_ids))) {
+        stop("Inference location and anchor identifiers must be aligned non-negative integers.",
+            call. = FALSE)
+    }
+    shared <- c(104729L, scalar_id(outer_iteration, "outer_iteration"),
+        scalar_id(checkpoint_step, "checkpoint_step"), scalar_id(draw_id,
+            "draw_id"))
+    list(run_seed = scalar_id(run_seed, "run_seed"), global = c(shared,
+        130363L), local = lapply(seq_along(location_ids), function(row_id) {
+        c(shared, 155921L, as.integer(location_ids[[row_id]]),
+            173867L, as.integer(time_anchor_ids[[row_id]]))
+    }))
+}, ndm_inference_scoped_keys <- function(jax, jnp, JaxKey, run_seed,
+    outer_iteration, checkpoint_step, draw_id, location_ids,
+    time_anchor_ids) {
+    lineage <- ndm_inference_key_lineage(run_seed = run_seed,
+        outer_iteration = outer_iteration, checkpoint_step = checkpoint_step,
+        draw_id = draw_id, location_ids = location_ids, time_anchor_ids = time_anchor_ids)
+    fold_lineage <- function(values) {
+        key <- JaxKey(lineage$run_seed)
+        for (value in values) {
+            key <- jax$random$fold_in(key, as.integer(value))
+        }
+        key
+    }
+    global_key <- fold_lineage(lineage$global)
+    row_keys <- lapply(lineage$local, function(local_lineage) {
+        jnp$stack(list(fold_lineage(local_lineage), global_key),
+            axis = 0L)
+    })
+    jnp$stack(row_keys, axis = 0L)
+}, ndm_stop_incomplete_inference_draws <- function(draw_results,
+    requested, checkpoint_step) {
+    failures <- which(!vapply(draw_results, function(result) isTRUE(result$ok),
+        logical(1)))
+    if (length(failures) == 0L) {
+        return(invisible(TRUE))
+    }
+    first_error <- draw_results[[failures[[1]]]]$error
+    if (inherits(first_error, "ndm_solver_failure")) {
+        stop(first_error)
+    }
+    message <- sprintf("Inference checkpoint %s completed %s of %s required posterior draws.",
+        checkpoint_step, length(draw_results) - length(failures),
+        requested)
+    condition <- structure(list(message = message, call = NULL,
+        failed_draws = as.integer(failures), requested_draws = as.integer(requested),
+        checkpoint_step = as.integer(checkpoint_step), parent = first_error),
+        class = c("ndm_inference_draw_failure", "error", "condition"))
+    stop(condition)
+}, ndm_mean_inference_draws <- function(draws, extract = identity) {
+    if (length(draws) == 0L) {
+        stop("At least one successful inference draw is required.",
+            call. = FALSE)
+    }
+    Reduce(`+`, lapply(draws, extract))/length(draws)
+}, ndm_inference_host_array <- function(value, np) {
+    as.vector(as.array(np$array(value)))
+}, ndm_validate_inference_solver_diagnostics <- function(prediction,
+    draw_id, location_ids, time_anchor_ids, host_array = as.vector,
+    require_diagnostics = TRUE) {
+    diagnostics <- prediction$solver_diagnostics
+    if (is.null(diagnostics)) {
+        if (isTRUE(require_diagnostics)) {
+            stop("Current-runtime inference did not return required solver diagnostics.",
+                call. = FALSE)
+        }
+        return(invisible(FALSE))
+    }
+    host_field <- function(name, default = NA) {
+        value <- diagnostics[[name]]
+        if (is.null(value)) {
+            return(rep(default, length(location_ids)))
+        }
+        value <- host_array(value)
+        if (length(value) == 1L && length(location_ids) > 1L) {
+            value <- rep(value, length(location_ids))
+        }
+        value
+    }
+    success <- as.logical(host_field("success", FALSE))
+    prediction_finite <- as.logical(host_field("prediction_finite",
+        FALSE))
+    if (length(success) != length(location_ids) || length(prediction_finite) !=
+        length(location_ids)) {
+        stop("Solver diagnostics are not aligned with the inference batch.",
+            call. = FALSE)
+    }
+    failed <- which(is.na(success) | !success | is.na(prediction_finite) |
+        !prediction_finite)
+    if (length(failed) == 0L) {
+        return(invisible(TRUE))
+    }
+    report <- data.frame(batch_row = as.integer(failed), location_id = as.integer(location_ids[failed]),
+        time_anchor_id = as.integer(time_anchor_ids[failed]),
+        failure_stage_code = as.integer(host_field("failure_stage_code")[failed]),
+        prediction_finite = prediction_finite[failed], global_attempted = as.logical(host_field("global_attempted",
+            FALSE)[failed]), global_result_success = as.logical(host_field("global_result_success",
+            FALSE)[failed]), global_state_finite = as.logical(host_field("global_state_finite",
+            FALSE)[failed]), global_result_code = as.integer(host_field("global_result_code")[failed]),
+        global_num_steps = as.integer(host_field("global_num_steps")[failed]),
+        global_num_accepted_steps = as.integer(host_field("global_num_accepted_steps")[failed]),
+        global_num_rejected_steps = as.integer(host_field("global_num_rejected_steps")[failed]),
+        global_max_steps = as.integer(host_field("global_max_steps")[failed]),
+        local_attempted = as.logical(host_field("local_attempted",
+            FALSE)[failed]), local_result_success = as.logical(host_field("local_result_success",
+            FALSE)[failed]), local_state_finite = as.logical(host_field("local_state_finite",
+            FALSE)[failed]), local_result_code = as.integer(host_field("local_result_code")[failed]),
+        local_num_steps = as.integer(host_field("local_num_steps")[failed]),
+        local_num_accepted_steps = as.integer(host_field("local_num_accepted_steps")[failed]),
+        local_num_rejected_steps = as.integer(host_field("local_num_rejected_steps")[failed]),
+        local_max_steps = as.integer(host_field("local_max_steps")[failed]),
+        stringsAsFactors = FALSE)
+    stage_names <- c(`0` = "none", `1` = "global_ode", `2` = "local_ode",
+        `3` = "prediction")
+    report$failure_stage <- unname(stage_names[as.character(report$failure_stage_code)])
+    report$failure_stage[is.na(report$failure_stage)] <- "unknown"
+    message <- sprintf("Inference posterior draw %s failed solver validation for %s batch row(s).",
+        draw_id, nrow(report))
+    condition <- structure(list(message = message, call = NULL,
+        stage = "inference", draw_id = as.integer(draw_id), solver_report = report),
+        class = c("ndm_solver_failure", "error", "condition"))
+    stop(condition)
+}, if (!SimMode) {
     print("Starting SuperLModel_GetAnalytics_Real.R")
     ndm_plot_log_series_safe <- utils::getFromNamespace(".ndm_plot_log_series_safe",
         "ndm")
+    inference_draw_plan <- ndm_inference_draw_plan(model_type = ModelType,
+        neuralode_variational = get0("neuralode_variational",
+            inherits = TRUE, ifnotfound = identical(ModelType,
+                "NeuralODE")), requested_draws = get0("InferenceMCDraws",
+            inherits = TRUE, ifnotfound = 5L), test_without_sampling = get0("testWithoutSampling",
+            inherits = TRUE, ifnotfound = FALSE))
+    inference_mc_draws_requested <- inference_draw_plan$requested
+    inference_mc_draws_effective <- inference_draw_plan$effective
+    inference_key_scheme <- paste0(inference_draw_plan$key_scheme,
+        ":run>outer>checkpoint>draw;", "local>location>anchor;global>shared-draw")
+    allow_legacy_missing_solver_diagnostics <- isTRUE(get0("AllowLegacyMissingSolverDiagnostics",
+        inherits = TRUE, ifnotfound = FALSE))
     gc()
     py_gc$collect()
     TFDatasetIterator_inference <- reticulate::as_iterator(TFDataset_inference)
+    next_inference_tfrecord_batch <- utils::getFromNamespace(".ndm_tfrecord_iter_next",
+        "ndm")
     inference_batch_dims <- function(batch_l) {
-        if ("try-error" %in% class(batch_l) || is.null(batch_l) ||
-            length(batch_l) == 0L) {
+        if (is.null(batch_l) || length(batch_l) == 0L) {
             return(integer())
         }
-        try(vapply(batch_l, function(l_) {
+        vapply(batch_l, function(l_) {
             as.integer(np$array(l_$shape)[[1]])
-        }, integer(1)), TRUE)
+        }, integer(1))
     }
     sl_dat <- c()
     ok_ <- F
     ok_counter_ <- 0
     while (!ok_) {
         ok_counter_ <- ok_counter_ + 1
-        batch_l <- try(reticulate::iter_next(TFDatasetIterator_inference),
-            T)
-        if ("try-error" %in% class(batch_l) | is.null(batch_l)) {
+        next_batch <- next_inference_tfrecord_batch(TFDatasetIterator_inference)
+        batch_l <- next_batch$batch
+        if (isTRUE(next_batch$completed)) {
             ok_ <- T
         }
         if (!ok_) {
             batch_dims <- inference_batch_dims(batch_l)
-            if ("try-error" %in% class(batch_dims) || length(batch_dims) ==
-                0L || batch_dims[[1]] == 0L) {
-                ok_ <- T
+            if (length(batch_dims) == 0L || batch_dims[[1]] ==
+                0L) {
+                stop("Malformed empty inference batch in GetAnalytics_Real.R")
             }
             if (!ok_ && any(batch_dims != batch_dims[[1]])) {
-                print2("Skipping malformed inference batch in GetAnalytics_Real.R...")
-                ok_ <- T
+                stop("Inconsistent field dimensions in inference batch in GetAnalytics_Real.R")
             }
             if (!ok_) {
                 batch_l <- TFConst2JAXArray(batch_l)
@@ -6092,12 +6700,39 @@
                 i, ok_counter_))
             if (!("try-error" %in% class(batch_l))) {
                 {
-                  add_pred_all <- replicate(5, list(try(GetPred_inference(ModelList,
-                    batch2package(batch_l), state, PriorList,
-                    PolicyList, GetPredSaveAtInfo_default, ndm_runtime_data_to_device(jax$random$split(JaxKey(999L),
-                      batch_l$XPred$shape[[1]])))[[1]], T)))
-                  add_pred_all <- add_pred_all[!(unlist(lapply(add_pred_all,
-                    class)) %in% "try-error")]
+                  inference_location_ids <- as.integer(c(np$array(batch_l$location_id_numeric)))
+                  inference_time_anchor_ids <- as.integer(c(np$array(batch_l$time_id_numeric)))
+                  draw_results <- lapply(seq_len(inference_mc_draws_effective),
+                    function(draw_id) {
+                      tryCatch({
+                        scoped_keys <- ndm_inference_scoped_keys(jax = jax,
+                          jnp = jnp, JaxKey = JaxKey, run_seed = SEED_,
+                          outer_iteration = OUTER_ITERATION,
+                          checkpoint_step = i, draw_id = draw_id,
+                          location_ids = inference_location_ids,
+                          time_anchor_ids = inference_time_anchor_ids)
+                        scoped_keys <- ndm_runtime_data_to_device(scoped_keys)
+                        prediction_raw <- GetPred_inference(ModelList,
+                          batch2package(batch_l), state, PriorList,
+                          PolicyList, GetPredSaveAtInfo_default,
+                          scoped_keys)
+                        prediction <- prediction_raw[[1]]
+                        ndm_validate_inference_solver_diagnostics(prediction = prediction,
+                          draw_id = draw_id, location_ids = inference_location_ids,
+                          time_anchor_ids = inference_time_anchor_ids,
+                          host_array = function(value) {
+                            ndm_inference_host_array(value, np)
+                          }, require_diagnostics = !allow_legacy_missing_solver_diagnostics)
+                        list(ok = TRUE, value = prediction, error = NULL)
+                      }, error = function(error) {
+                        list(ok = FALSE, value = NULL, error = error)
+                      })
+                    })
+                  ndm_stop_incomplete_inference_draws(draw_results,
+                    requested = inference_mc_draws_effective,
+                    checkpoint_step = i)
+                  add_pred_all <- lapply(draw_results, `[[`,
+                    "value")
                   plot(np$array(add_pred_all[[1]]$y_mu)[, , 1],
                     np$array(batch_l$YTrue_out)[, , 1], main = sprintf("Just1 at %s [Cor: %.3f]",
                       ok_counter_, cor(c(np$array(add_pred_all[[1]]$y_mu)[,
@@ -6140,10 +6775,10 @@
                     add_sd_past <- t(add_sd_all)
                     add_sd_out <- t(add_sd_all)
                   }
-                  add_pred_all_reduced <- Reduce(`+`, lapply(add_pred_all,
-                    function(l_) {
+                  add_pred_all_reduced <- ndm_mean_inference_draws(add_pred_all,
+                    extract = function(l_) {
                       np$asanyarray(l_$y_mu)[, , 1]
-                    }))/length(add_pred_all)
+                    })
                   add_pred_all_reduced[add_pred_all_reduced <
                     0] <- 0
                   if (UseShortOutcomes) {
@@ -6204,7 +6839,7 @@
             }
         }
     }
-    sl_dat <- eval(parse(text = sprintf("cbind(sl_dat,\n                    %s,\n                    \"modelingStrategy_name\" = modelingStrategyNameKey,\n                    \"nSGD\" = nSGD_model,\n                    \"nSGDPolicy\" = get0(\"nSGDPolicy\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorMaxSamplesTrain\" = get0(\"nSGDAnchorMaxSamplesTrain\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"nSGDAnchorScope\" = get0(\"nSGDAnchorScope\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorBatch\" = get0(\"nSGDAnchorBatch\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"nBatch\" = nBatch,\n                    \"maxTimesPast\" = maxTimesPast, # past context\n                    \"evaluationTime\" = evaluationTime,\n                    \"evaluationMethod\" = evaluationMethod,\n                    \"OUTER_ITERATION\" = OUTER_ITERATION,\n                    \"i_in_sgd\" = i,\n                    \"te_total\" = te_total, \n                    \"te_grads\" = te_grads, \n                    \"nTrainingSamplesSeen\" = i*nBatch, \n                    \"Skill8SanityCheck\" = Skill8SanityCheck, \n                    \"atEpoch\" = i*nBatch/nSamplesTrain, \n                    \"nParamsModel\" = nParamsModel, \n                    \"maxInSampleTime_id\" = max( input_df_red_in$time_id ),\n                    \"model_id\" = rlang::hash(modelingStrategyNameKey) )",
+    sl_dat <- eval(parse(text = sprintf("cbind(sl_dat,\n                    %s,\n                    \"modelingStrategy_name\" = modelingStrategyNameKey,\n                    \"nSGD\" = nSGD_model,\n                    \"nSGDPolicy\" = get0(\"nSGDPolicy\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorMaxSamplesTrain\" = get0(\"nSGDAnchorMaxSamplesTrain\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"nSGDAnchorScope\" = get0(\"nSGDAnchorScope\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorBatch\" = get0(\"nSGDAnchorBatch\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"inference_mc_draws_requested\" = inference_mc_draws_requested,\n                    \"inference_mc_draws_effective\" = inference_mc_draws_effective,\n                    \"inference_key_scheme\" = inference_key_scheme,\n                    \"nBatch\" = nBatch,\n                    \"maxTimesPast\" = maxTimesPast, # past context\n                    \"evaluationTime\" = evaluationTime,\n                    \"evaluationMethod\" = evaluationMethod,\n                    \"OUTER_ITERATION\" = OUTER_ITERATION,\n                    \"i_in_sgd\" = i,\n                    \"te_total\" = te_total, \n                    \"te_grads\" = te_grads, \n                    \"nTrainingSamplesSeen\" = i*nBatch, \n                    \"Skill8SanityCheck\" = Skill8SanityCheck, \n                    \"atEpoch\" = i*nBatch/nSamplesTrain, \n                    \"nParamsModel\" = nParamsModel, \n                    \"maxInSampleTime_id\" = max( input_df_red_in$time_id ),\n                    \"model_id\" = rlang::hash(modelingStrategyNameKey) )",
         paste(paste("'", names(unlist(RealEntry)), "'='", unlist(RealEntry),
             "'", sep = ""), collapse = ","))))
     sl_dat <- as.data.frame(sl_dat)
@@ -6392,15 +7027,14 @@
             AggNorm_Raw_baseline <- mean(sqrt((rowSums(pred_l_baselineVal_mat) -
                 rowSums(l_true))^2))
             AggNorm_Rel_baseline <- AggNorm_Raw_baseline/mean(sqrt(rowSums(l_true)^2))
-            RSS_baseline <- apply((pred_l_baselineVal_mat - l_true)^2,
-                2, function(zr) {
-                  return(mean(clipAt(zr)))
-                })
-            RSS_pred <- apply((pred_l_mean - l_true)^2, 2, function(zr) {
-                return(mean(clipAt(zr)))
-            })
-            skill_vec <- 1 - (0.001 + RSS_pred^0.5)/(0.001 +
-                RSS_baseline^0.5)
+            skill_metrics <- vapply(seq_len(ncol(l_true)), function(horizon) {
+                ndm_paired_rmse_skill(prediction = pred_l_mean[,
+                  horizon], baseline = pred_l_baselineVal_mat[,
+                  horizon], truth = l_true[, horizon])
+            }, numeric(3L))
+            skill_vec <- skill_metrics["skill", ]
+            RSS_pred <- skill_metrics["rss_pred", ]
+            RSS_baseline <- skill_metrics["rss_baseline", ]
             names(skill_vec) <- paste("SkillTime", 1:length(skill_vec),
                 sep = "")
             names(RSS_pred) <- paste("RSSPredTime", 1:length(skill_vec),
@@ -6673,14 +7307,11 @@
     }
     par(mfrow = c(1, 1))
     {
-        eps <- 0.001
         skill_horizon <- max(1L, min(8L, ncol(pred_l_mean)))
-        rmse_pred <- sqrt(mean(clipAt((c(pred_l_mean[, skill_horizon]) -
-            c(l_true[, skill_horizon]))^2), na.rm = TRUE))
-        rmse_base <- sqrt(mean(clipAt((c(pred_l_baselineVal_mat[,
-            skill_horizon]) - c(l_true[, skill_horizon]))^2),
-            na.rm = TRUE))
-        Skill8SanityCheck <- 1 - (eps + rmse_pred)/(eps + rmse_base)
+        sanity_metrics <- ndm_paired_rmse_skill(prediction = pred_l_mean[,
+            skill_horizon], baseline = pred_l_baselineVal_mat[,
+            skill_horizon], truth = l_true[, skill_horizon])
+        Skill8SanityCheck <- unname(sanity_metrics[["skill"]])
         print2(sprintf("Skill sanity: %.3f", Skill8SanityCheck))
     }
     res_vec <- t(c(sim_index = af, i_in_sgd = i, nTrainingSamplesSeen = i *
@@ -6813,12 +7444,8 @@
         res_mat$UpdatesPerParam_log <- log10(res_mat$UpdatesPerParam)
         res_mat$DataParamRatio <- res_mat$nSamplesTrain/res_mat$nParamsModel
         res_mat$DataParamRatio_log10 <- log10(res_mat$DataParamRatio)
-        Map2ConstrainedSkill <- function(x) {
-            1 - exp(x)
-        }
-        InvMap2ConstrainedSkill <- function(x) {
-            -log((1 - x) + 0.001)
-        }
+        Map2ConstrainedSkill <- ndm_skill_from_unconstrained
+        InvMap2ConstrainedSkill <- ndm_skill_to_unconstrained
         InvMap2ConstrainedSkill(1)
         res_mat$SkillSummary_inv <- InvMap2ConstrainedSkill(res_mat$SkillSummary)
         cor(res_mat$SkillSummary, res_mat$SkillSummary_inv)
@@ -6896,7 +7523,7 @@
                 geom_line(color = "blue", size = 1) + geom_abline(slope = 1,
                 intercept = 0, color = "red", linetype = "dashed") +
                 coord_fixed() + theme_minimal(base_size = 14,
-                base_line_size = 0) + labs(title = sprintf("P\\u2013P (CDF-vs-CDF) plot: Decoder vs NeuralODE (%s)",
+                base_line_size = 0) + labs(title = sprintf("P\u2013P (CDF-vs-CDF) plot: Decoder vs NeuralODE (%s)",
                 i___), subtitle = "Below 45 degree line indicates better NeuralODE skill",
                 x = "CDF(Decoder)", y = "CDF(NeuralODE)")
             ggsave(sprintf("./Figures/gcdfcdf_%s.pdf", i___),
@@ -6937,7 +7564,7 @@
         }
         dev.off()
         {
-            print2("---NeuralODE vs Decoder win probability by DATA\\u2011SET SIZE---")
+            print2("---NeuralODE vs Decoder win probability by DATA\u2011SET SIZE---")
             paired_df_EndOfTraining <- paired_df[paired_df$i_in_sgd_Decoder ==
                 max(paired_df$i_in_sgd_Decoder), ]
             dsizes <- sort(unique(paired_df_EndOfTraining$nSamplesTrain_Decoder))
@@ -6958,7 +7585,7 @@
                 par(mar = c(5, 5, 5, 1))
                 plot(dsizes, NeuralWinProb_ds, log = "x", type = "p",
                   pch = 19, col = "black", ylim = c(0.3, 0.9),
-                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \\u2265 Decoder )",
+                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \u2265 Decoder )",
                   main = "NeuralODE vs Decoder\nWin Probability by Training Set Size",
                   cex.lab = 1.75, cex.main = 1.75)
                 abline(h = 0.5, lty = 3, col = "gray", lwd = 2)
@@ -6985,7 +7612,7 @@
                 par(mar = c(5, 5, 5, 1))
                 plot(val_, NeuralWinProb_ds, log = "x", type = "p",
                   pch = 19, col = "black", ylim = c(0, 1.1),
-                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \\u2265 Decoder )",
+                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \u2265 Decoder )",
                   main = "NeuralODE vs Decoder\nWin Probability by Training Set Size",
                   cex.lab = 1.75, cex.main = 1.75)
                 abline(h = 0.5, lty = 3, col = "gray", lwd = 2)
@@ -7065,7 +7692,7 @@
                   scale_fill_viridis_c(name = "P(NeuralODE > Decoder)",
                     limits = c(0, 1)) + scale_x_discrete(expand = c(0,
                   0)) + scale_y_discrete(expand = c(0, 0)) +
-                  labs(title = "When does NeuralODE beat a Decoder\\u2011only model?",
+                  labs(title = "When does NeuralODE beat a Decoder\u2011only model?",
                     x = "Context length", y = "Training-set size") +
                   theme_minimal(base_size = 14) + theme(axis.text.x = element_text(angle = 45,
                   hjust = 1))
@@ -7274,9 +7901,10 @@
                     policy_effectiveness) %>% summarise(Ave = mean(eval(parse(text = theOutcome))))
                   aggregated_data_mean <- reshape2::acast(aggregated_data_mean,
                     c_endogeneous ~ policy_effectiveness, value.var = "Ave")
-                  aggregated_data_mean_clip <- res_mat_ %>% group_by(c_endogeneous,
-                    policy_effectiveness) %>% summarise(Ave = clippedMean(eval(parse(text = theOutcome))))
-                  aggregated_data_mean_clip <- reshape2::acast(aggregated_data_mean_clip,
+                  aggregated_data_mean_untrimmed <- res_mat_ %>%
+                    group_by(c_endogeneous, policy_effectiveness) %>%
+                    summarise(Ave = mean2(eval(parse(text = theOutcome))))
+                  aggregated_data_mean_untrimmed <- reshape2::acast(aggregated_data_mean_untrimmed,
                     c_endogeneous ~ policy_effectiveness, value.var = "Ave")
                   aggregated_data_var <- res_mat_ %>% group_by(c_endogeneous,
                     policy_effectiveness) %>% summarise(Ave = var(eval(parse(text = theOutcome))))
@@ -7738,7 +8366,7 @@
         y_summary_mat <- tapply(1:nrow(res_mat), res_mat$i_in_sgd,
             function(i_) {
                 apply(res_mat[i_, paste("SkillTime", 1:nTimesLookValidationInference,
-                  sep = "")], 2, clippedMean)
+                  sep = "")], 2, mean2)
             })
         names(y_summary_mat)
         grayCols <- gray.colors(length(y_summary_mat), start = 0.2,
@@ -7757,14 +8385,14 @@
                 if (j_ == 0) {
                   y_summary0 <- y_summary <- apply(res_mat_MaxIters[,
                     paste("SkillTime", 1:nTimesLookValidationInference,
-                      sep = "")], 2, clippedMean)
+                      sep = "")], 2, mean2)
                   tag0_ <- tag_ <- "All"
                 }
                 if (j_ == 1) {
                   y_summary1 <- y_summary <- apply(res_mat_MaxIters[res_mat_MaxIters$c_endogeneous ==
                     0 & res_mat_MaxIters$policy_effectiveness ==
                     0, paste("SkillTime", 1:nTimesLookValidationInference,
-                    sep = "")], 2, clippedMean)
+                    sep = "")], 2, mean2)
                   tag1_ <- tag_ <- "No Endogeneity; \n No Policy Effectiveness "
                 }
                 if (j_ == 2) {
@@ -7772,14 +8400,14 @@
                     0 & res_mat_MaxIters$policy_effectiveness ==
                     max(res_mat_MaxIters$policy_effectiveness),
                     paste("SkillTime", 1:nTimesLookValidationInference,
-                      sep = "")], 2, clippedMean)
+                      sep = "")], 2, mean2)
                   tag2_ <- tag_ <- "No Endogeneity; \n Max Policy Effectiveness "
                 }
                 if (j_ == 3) {
                   y_summary3 <- y_summary <- apply(res_mat_MaxIters[res_mat_MaxIters$c_endogeneous ==
                     max(res_mat_MaxIters$c_endogeneous) & res_mat_MaxIters$policy_effectiveness ==
                     0, paste("SkillTime", 1:nTimesLookValidationInference,
-                    sep = "")], 2, clippedMean)
+                    sep = "")], 2, mean2)
                   tag3_ <- tag_ <- "Max Endogeneity; \n No Policy Effectiveness "
                 }
                 if (j_ == 4) {
@@ -7787,7 +8415,7 @@
                     max(res_mat_MaxIters$c_endogeneous) & res_mat_MaxIters$policy_effectiveness ==
                     max(res_mat$policy_effectiveness), paste("SkillTime",
                     1:nTimesLookValidationInference, sep = "")],
-                    2, clippedMean)
+                    2, mean2)
                   tag4_ <- tag_ <- "Max Endogeneity; \n Max Policy Effectiveness "
                 }
                 print2("Skill fig gen...")
@@ -7811,10 +8439,10 @@
             print2("Counterfactual policies...")
             y_summary_PolicySkill <- apply(res_mat[, paste("PolicySkill",
                 1:nTimesLookValidationInference, sep = "")],
-                2, clippedMean)
+                2, mean2)
             y_summary_PolicyBaseline <- apply(res_mat[, paste("PolicySkillBaseline",
                 1:nTimesLookValidationInference, sep = "")],
-                2, clippedMean)
+                2, mean2)
             plot(y_summary)
             plot(y_summary_PolicySkill)
             plot(y_summary_PolicyBaseline[-1])
@@ -8061,16 +8689,16 @@
                 }
                 res_mat_zer <- res_mat[zer, ]
                 DT_skill_zer <- DT_skill[zer, ]
-                RSS_baseline <- apply(DT_skill_zer[, paste("RSSBaselineTime",
-                  1:nMax_FutureTruth, sep = "")], 2, function(zr) {
-                  return(mean(clipAt(f2n(zr)), na.rm = T))
-                })
-                RSS_pred <- apply(DT_skill_zer[, paste("RSSPredTime",
-                  1:nMax_FutureTruth, sep = "")], 2, function(zr) {
-                  return(mean(clipAt(f2n(zr)), na.rm = T))
-                })
-                skill_vec <- 1 - (0.001 + RSS_pred^0.5)/(0.001 +
-                  RSS_baseline^0.5)
+                skill_metrics <- vapply(seq_len(nMax_FutureTruth),
+                  function(horizon) {
+                    ndm_paired_squared_error_skill(squared_prediction_error = f2n(DT_skill_zer[[paste0("RSSPredTime",
+                      horizon)]]), squared_baseline_error = f2n(DT_skill_zer[[paste0("RSSBaselineTime",
+                      horizon)]]))
+                  }, numeric(3L))
+                skill_vec <- skill_metrics["skill", ]
+                RSS_pred <- skill_metrics["rss_pred", ]
+                RSS_baseline <- skill_metrics["rss_baseline",
+                  ]
                 names(skill_vec) <- paste("SkillTime", 1:length(skill_vec),
                   sep = "")
                 names(RSS_pred) <- paste("RSSPredTime", 1:length(skill_vec),
@@ -8129,8 +8757,17 @@
             names(DT), value = TRUE), grep("^RSS(Pred|Baseline)Time",
             names(DT), value = TRUE), grep("^Truth_l", names(DT),
             value = TRUE), c("location_id", "time_anchor_id")))
-        RSS_agg <- DT_skill[, lapply(.SD, function(z) mean(clipAt(f2n(z)),
-            na.rm = TRUE)), by = master_conditioning_id, .SDcols = c(rss_base_cols,
+        RSS_agg <- DT_skill[, {
+            paired_metrics <- vapply(seq_along(rss_base_cols),
+                function(horizon) {
+                  ndm_paired_squared_error_skill(squared_prediction_error = f2n(.SD[[rss_pred_cols[[horizon]]]]),
+                    squared_baseline_error = f2n(.SD[[rss_base_cols[[horizon]]]]))
+                }, numeric(3L))
+            aggregate_values <- c(paired_metrics["rss_baseline",
+                ], paired_metrics["rss_pred", ])
+            stats::setNames(as.list(aggregate_values), c(rss_base_cols,
+                rss_pred_cols))
+        }, by = master_conditioning_id, .SDcols = c(rss_base_cols,
             rss_pred_cols)]
         H <- length(grep("^Truth_l", names(DT)))
         RSS_base_mat <- as.matrix(RSS_agg[, ..rss_base_cols])
@@ -8468,7 +9105,7 @@
             {
                 latex_code <- capture.output(stargazer::stargazer(as.matrix(scaling_exponents_tex),
                   label = sprintf("tab:ExponentsSimMode%s", SimMode),
-                  title = sprintf("\n                       Scaling\\u2010law exponents $\\alpha$ and $R^2$ from fitting\n                       $\\log(g(\\text{skill}))\\sim \\alpha\\;\\log(\\text{resource})+\\beta$,\n                       disaggregated by hold\\u2010out regime and model type. \n                       Gray shading results $\\alpha$ values \n                       for which the null hypothesis of zero-equality cannot be rejected. \n                                       %s",
+                  title = sprintf("\n                       Scaling\u2010law exponents $\\alpha$ and $R^2$ from fitting\n                       $\\log(g(\\text{skill}))\\sim \\alpha\\;\\log(\\text{resource})+\\beta$,\n                       disaggregated by hold\u2010out regime and model type. \n                       Gray shading results $\\alpha$ values \n                       for which the null hypothesis of zero-equality cannot be rejected. \n                                       %s",
                     ifelse(SimMode, yes = "Case: simulation.",
                       no = "Case: COVID-19 analysis."))))
                 tabular_header_index <- 3 + grep("\\\\begin\\{tabular\\}\\{",
@@ -8546,7 +9183,7 @@
                     "ModelDims"] <- "Model dims"
                   delta_mat_tex <- as.matrix(delta_mat_tex)
                   row.names(delta_mat_tex) <- NULL
-                  table_title <- "Difference in scaling\\u2010law exponents ($\\alpha$) between Neural ODE and Decoder only models. Case: COVID-19 analysis."
+                  table_title <- "Difference in scaling\u2010law exponents ($\\alpha$) between Neural ODE and Decoder only models. Case: COVID-19 analysis."
                   delta_mat_tex <- delta_mat_tex[, !colnames(delta_mat_tex) %in%
                     c("NeuralODE", "DecoderOnly", "alpha_ratio")]
                   colnames(delta_mat_tex)[colnames(delta_mat_tex) ==
@@ -8600,7 +9237,7 @@
                     "ModelDims"] <- "Model dims"
                   delta_mat_tex <- as.matrix(delta_mat_tex)
                   row.names(delta_mat_tex) <- NULL
-                  table_title <- "Difference in scaling\\u2010law exponents ($\\alpha$) between Decoder Only and Neural ODE models. Case: simulation."
+                  table_title <- "Difference in scaling\u2010law exponents ($\\alpha$) between Decoder Only and Neural ODE models. Case: simulation."
                   delta_mat_tex <- delta_mat_tex[, !colnames(delta_mat_tex) %in%
                     c("NeuralODE", "DecoderOnly", "alpha_ratio")]
                   colnames(delta_mat_tex)[colnames(delta_mat_tex) ==
@@ -8822,6 +9459,36 @@
     }
     max_sgd <- max(1L, analysis2_as_int(n_sgd))
     max(1L, min(analysis2_as_int(default), max_sgd))
+}, analysis2_multidisease_structured_control_globals <- function(spec,
+    n_samples_train, n_sgd) {
+    if (!is.list(spec)) {
+        stop("`spec` must be a normalized multidisease run specification.",
+            call. = FALSE)
+    }
+    n_checkpoints_default <- analysis2_as_int(spec$n_checkpoints)
+    prior_sd_multiplier <- suppressWarnings(as.numeric(spec$prior_sd_multiplier))
+    if (length(n_checkpoints_default) != 1L || is.na(n_checkpoints_default) ||
+        n_checkpoints_default < 1L) {
+        stop("`n_checkpoints` must be one positive integer.",
+            call. = FALSE)
+    }
+    if (length(prior_sd_multiplier) != 1L || !is.finite(prior_sd_multiplier) ||
+        prior_sd_multiplier <= 0) {
+        stop("`prior_sd_multiplier` must be one finite positive value.",
+            call. = FALSE)
+    }
+    force_to_gpu <- spec$force_to_gpu
+    if (!is.logical(force_to_gpu) || length(force_to_gpu) !=
+        1L || is.na(force_to_gpu)) {
+        stop("`force_to_gpu` must be one non-missing logical value.",
+            call. = FALSE)
+    }
+    resolved_n_sgd <- max(1L, analysis2_as_int(n_sgd))
+    list(nCheckpointsDefault = n_checkpoints_default, nCheckpoints = analysis2_small_run_n_checkpoints(n_samples_train,
+        resolved_n_sgd, n_checkpoints_default), PriorSDMultiplier = prior_sd_multiplier,
+        force2GPU = force_to_gpu, GPU_MEM_FRAC = spec$gpu_mem_frac,
+        nSGD_DefiningLRSeq = resolved_n_sgd, nSGD_model = resolved_n_sgd,
+        nSGD_posttrain = resolved_n_sgd)
 }, analysis2_small_run_n_obs_inference <- function(n_samples_train,
     n_batch, configured = NULL, default = 1024L) {
     if (!is.null(configured) && !is.na(configured) && configured >
@@ -8863,21 +9530,27 @@
     formatter <- utils::getFromNamespace(".ndm_nsgd_calibration_message",
         "ndm")
     analysis2_log(formatter(mode, calibration))
-}, analysis2_parse_bool <- function(x) {
+}, analysis2_parse_bool <- function(x, field = NULL) {
     if (is.null(x)) {
         return(NULL)
     }
-    if (is.logical(x) && length(x) == 1L) {
+    if (is.logical(x) && length(x) == 1L && !is.na(x)) {
         return(x)
     }
-    value <- tolower(trimws(as.character(x)))
-    if (value %in% c("true", "t", "1", "yes", "y")) {
-        return(TRUE)
+    if (is.character(x) && length(x) == 1L && !is.na(x)) {
+        value <- tolower(trimws(x))
+        if (value %in% c("true", "t", "1", "yes", "y")) {
+            return(TRUE)
+        }
+        if (value %in% c("false", "f", "0", "no", "n")) {
+            return(FALSE)
+        }
     }
-    if (value %in% c("false", "f", "0", "no", "n")) {
-        return(FALSE)
-    }
-    stop("Could not parse logical value: ", x, call. = FALSE)
+    label <- if (is.null(field))
+        "Logical value"
+    else paste0("`", field, "`")
+    stop(label, " must be one non-missing logical value or canonical logical spelling.",
+        call. = FALSE)
 }, analysis2_parse_args <- function(args = commandArgs(TRUE)) {
     out <- list(positional = character())
     for (arg in args) {
@@ -8897,7 +9570,8 @@
         out[[key]] <- value
     }
     for (name in c("dry_run", "run_figures", "respect_grid_model_type",
-        "resave_tfrecords", "force_to_gpu", "help")) {
+        "resave_tfrecords", "force_to_gpu", "enable_kv_cache",
+        "neuralode_variational", "help")) {
         if (!is.null(out[[name]])) {
             out[[name]] <- analysis2_parse_bool(out[[name]])
         }
@@ -8934,6 +9608,8 @@
 }, analysis2_supported_flags <- function(mode) {
     base <- c("config", "project_root", "analysis_name", "grid_file",
         "outer", "run_seed", "force_to_gpu", "gpu_mem_frac",
+        "enable_kv_cache", "inference_mc_draws", "observation_scale_floor",
+        "initial_observation_scale", "neuralode_variational",
         "neuralode_kl_weight", "neuralode_mean_loss_weight",
         "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier",
         "solver_profile", "model_type", "respect_grid_model_type",
@@ -8962,11 +9638,18 @@
     known <- names(analysis2_mode_defaults(mode))
     unknown <- setdiff(names(manifest), c(known, "config_file",
         "paths"))
-    if (length(unknown) == 0L) {
-        return(invisible(manifest))
+    if (length(unknown) > 0L) {
+        stop("Unknown config field(s) in the Analysis2 ", mode,
+            " manifest: ", paste(unknown, collapse = ", "), ".",
+            call. = FALSE)
     }
-    stop("Unknown config field(s) in the Analysis2 ", mode, " manifest: ",
-        paste(unknown, collapse = ", "), ".", call. = FALSE)
+    boolean_fields <- intersect(c("respect_grid_model_type",
+        "resave_tfrecords", "run_figures", "force_to_gpu", "enable_kv_cache",
+        "neuralode_variational", "dry_run", "help"), names(manifest))
+    for (field in boolean_fields) {
+        analysis2_parse_bool(manifest[[field]], field = field)
+    }
+    invisible(manifest)
 }, analysis2_default_config_name <- function(mode) {
     switch(mode, real = "real.yaml", sim = "sim.yaml", multidisease = "real_multidisease.yaml",
         stop("Unsupported Analysis2 mode: ", mode, call. = FALSE))
@@ -8992,24 +9675,31 @@
 }, analysis2_mode_defaults <- function(mode) {
     switch(mode, real = list(mode = "real", analysis_name = "RealApril15",
         grid_file = NULL, outer = 3L, run_seed = NULL, force_to_gpu = TRUE,
-        gpu_mem_frac = NULL, neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
-        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
-        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
-        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
-        raw_data_dir = "Data/MainData", tfrecord_dir = NULL,
-        outcome_metric = "inc_death", data_subset = "high_income",
+        gpu_mem_frac = NULL, enable_kv_cache = FALSE, inference_mc_draws = 5L,
+        observation_scale_floor = 1e-05, initial_observation_scale = 1,
+        neuralode_variational = TRUE, neuralode_kl_weight = 1,
+        neuralode_mean_loss_weight = 0, n_checkpoints = 1L, max_sgd_steps = NULL,
+        prior_sd_multiplier = 1, solver_profile = "default",
+        model_type = NULL, respect_grid_model_type = TRUE, resave_tfrecords = FALSE,
+        run_figures = FALSE, project_root = NULL, raw_data_dir = "Data/MainData",
+        tfrecord_dir = NULL, outcome_metric = "inc_death", data_subset = "high_income",
         disease_names = NULL, data_format = NULL, dry_run = FALSE,
         help = FALSE), sim = list(mode = "sim", analysis_name = "BigSimsLatest",
         grid_file = NULL, outer = 1L, run_seed = NULL, force_to_gpu = TRUE,
-        gpu_mem_frac = NULL, neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
-        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
-        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
-        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
-        raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = NULL,
-        data_subset = NULL, disease_names = NULL, data_format = NULL,
-        dry_run = FALSE, help = FALSE), multidisease = list(mode = "multidisease",
+        gpu_mem_frac = NULL, enable_kv_cache = FALSE, inference_mc_draws = 5L,
+        observation_scale_floor = 1e-05, initial_observation_scale = 1,
+        neuralode_variational = TRUE, neuralode_kl_weight = 1,
+        neuralode_mean_loss_weight = 0, n_checkpoints = 1L, max_sgd_steps = NULL,
+        prior_sd_multiplier = 1, solver_profile = "default",
+        model_type = NULL, respect_grid_model_type = TRUE, resave_tfrecords = FALSE,
+        run_figures = FALSE, project_root = NULL, raw_data_dir = NULL,
+        tfrecord_dir = NULL, outcome_metric = NULL, data_subset = NULL,
+        disease_names = NULL, data_format = NULL, dry_run = FALSE,
+        help = FALSE), multidisease = list(mode = "multidisease",
         analysis_name = "RealLatest", grid_file = NULL, outer = 1L,
         run_seed = NULL, force_to_gpu = TRUE, gpu_mem_frac = NULL,
+        enable_kv_cache = FALSE, inference_mc_draws = 5L, observation_scale_floor = 1e-05,
+        initial_observation_scale = 1, neuralode_variational = TRUE,
         neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
         n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
         solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
@@ -9077,9 +9767,11 @@
     if ("run_seed" %in% names(opts)) {
         overrides$run_seed <- opts$run_seed
     }
-    for (field in intersect(c("gpu_mem_frac", "neuralode_kl_weight",
-        "neuralode_mean_loss_weight", "n_checkpoints", "max_sgd_steps",
-        "prior_sd_multiplier"), names(opts))) {
+    for (field in intersect(c("gpu_mem_frac", "inference_mc_draws",
+        "observation_scale_floor", "initial_observation_scale",
+        "neuralode_kl_weight", "neuralode_mean_loss_weight",
+        "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier"),
+        names(opts))) {
         overrides[[field]] <- opts[[field]]
     }
     if (!is.null(opts$outer) || length(opts$positional) > 0L) {
@@ -9090,7 +9782,8 @@
         overrides$disease_names <- analysis2_parse_csv(opts$disease_names)
     }
     for (field in c("respect_grid_model_type", "resave_tfrecords",
-        "run_figures", "force_to_gpu", "dry_run", "help")) {
+        "run_figures", "force_to_gpu", "enable_kv_cache", "neuralode_variational",
+        "dry_run", "help")) {
         if (!is.null(opts[[field]])) {
             overrides[[field]] <- analysis2_as_flag(opts[[field]])
         }
@@ -9124,10 +9817,16 @@
     spec$analysis_name <- analysis2_normalize_string(spec$analysis_name %||%
         defaults$analysis_name)
     spec$model_type <- analysis2_normalize_string(spec$model_type)
-    spec$respect_grid_model_type <- isTRUE(spec$respect_grid_model_type %||%
-        defaults$respect_grid_model_type)
-    spec$force_to_gpu <- isTRUE(spec$force_to_gpu %||% defaults$force_to_gpu)
-    resave_tfrecords <- spec$resave_tfrecords %||% defaults$resave_tfrecords
+    spec$respect_grid_model_type <- analysis2_parse_bool(spec$respect_grid_model_type %||%
+        defaults$respect_grid_model_type, field = "respect_grid_model_type")
+    spec$force_to_gpu <- analysis2_parse_bool(spec$force_to_gpu %||%
+        defaults$force_to_gpu, field = "force_to_gpu")
+    spec$enable_kv_cache <- analysis2_parse_bool(spec$enable_kv_cache %||%
+        defaults$enable_kv_cache, field = "enable_kv_cache")
+    spec$neuralode_variational <- analysis2_parse_bool(spec$neuralode_variational %||%
+        defaults$neuralode_variational, field = "neuralode_variational")
+    resave_tfrecords <- analysis2_parse_bool(spec$resave_tfrecords %||%
+        defaults$resave_tfrecords, field = "resave_tfrecords")
     if (!identical(resave_tfrecords, FALSE)) {
         guidance <- switch(mode, real = "Use `ndm_bootstrap_real_tfrecords()` before training.",
             sim = "Use `ndm_bootstrap_sim_tfrecords()` before training.",
@@ -9136,9 +9835,11 @@
             guidance, call. = FALSE)
     }
     spec$resave_tfrecords <- FALSE
-    spec$run_figures <- isTRUE(spec$run_figures %||% FALSE)
-    spec$dry_run <- isTRUE(spec$dry_run %||% FALSE)
-    spec$help <- isTRUE(spec$help %||% FALSE)
+    spec$run_figures <- analysis2_parse_bool(spec$run_figures %||%
+        FALSE, field = "run_figures")
+    spec$dry_run <- analysis2_parse_bool(spec$dry_run %||% FALSE,
+        field = "dry_run")
+    spec$help <- analysis2_parse_bool(spec$help %||% FALSE, field = "help")
     spec$outcome_metric <- analysis2_normalize_string(spec$outcome_metric)
     spec$data_subset <- analysis2_normalize_string(spec$data_subset)
     spec$data_format <- analysis2_normalize_string(spec$data_format)
@@ -9162,6 +9863,33 @@
             stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].",
                 call. = FALSE)
         }
+    }
+    spec$inference_mc_draws <- suppressWarnings(as.numeric(spec$inference_mc_draws %||%
+        defaults$inference_mc_draws))
+    if (length(spec$inference_mc_draws) != 1L || !is.finite(spec$inference_mc_draws) ||
+        spec$inference_mc_draws < 1 || spec$inference_mc_draws >
+        .Machine$integer.max || spec$inference_mc_draws != floor(spec$inference_mc_draws)) {
+        stop("`inference_mc_draws` must be one positive integer.",
+            call. = FALSE)
+    }
+    spec$inference_mc_draws <- as.integer(spec$inference_mc_draws)
+    spec$observation_scale_floor <- suppressWarnings(as.numeric(spec$observation_scale_floor %||%
+        defaults$observation_scale_floor))
+    if (length(spec$observation_scale_floor) != 1L || !is.finite(spec$observation_scale_floor) ||
+        spec$observation_scale_floor <= 0) {
+        stop("`observation_scale_floor` must be one finite positive value.",
+            call. = FALSE)
+    }
+    spec$initial_observation_scale <- suppressWarnings(as.numeric(spec$initial_observation_scale %||%
+        defaults$initial_observation_scale))
+    if (length(spec$initial_observation_scale) != 1L || !is.finite(spec$initial_observation_scale) ||
+        spec$initial_observation_scale <= 0) {
+        stop("`initial_observation_scale` must be one finite positive value.",
+            call. = FALSE)
+    }
+    if (spec$initial_observation_scale <= spec$observation_scale_floor) {
+        stop("`initial_observation_scale` must be greater than `observation_scale_floor`.",
+            call. = FALSE)
     }
     spec$neuralode_kl_weight <- suppressWarnings(as.numeric(spec$neuralode_kl_weight %||%
         defaults$neuralode_kl_weight))
@@ -9270,9 +9998,12 @@
         "  --config=PATH", "  --project_root=PATH", "  --analysis_name=NAME",
         "  --grid_file=PATH", "  --outer=1,2,3", "  --run_seed=INTEGER",
         "  --force_to_gpu=TRUE|FALSE", "  --gpu_mem_frac=NUMBER",
-        "  --neuralode_kl_weight=NUMBER", "  --neuralode_mean_loss_weight=NUMBER",
-        "  --n_checkpoints=POSITIVE_INTEGER", "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)",
-        "  --prior_sd_multiplier=POSITIVE_NUMBER", "  --solver_profile=default|loose|tight|alternative",
+        "  --enable_kv_cache=TRUE|FALSE", "  --inference_mc_draws=POSITIVE_INTEGER",
+        "  --observation_scale_floor=POSITIVE_NUMBER", "  --initial_observation_scale=NUMBER_GREATER_THAN_OBSERVATION_SCALE_FLOOR",
+        "  --neuralode_variational=TRUE|FALSE", "  --neuralode_kl_weight=NUMBER",
+        "  --neuralode_mean_loss_weight=NUMBER", "  --n_checkpoints=POSITIVE_INTEGER",
+        "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)", "  --prior_sd_multiplier=POSITIVE_NUMBER",
+        "  --solver_profile=default|loose|tight|alternative",
         "  --model_type=DecoderOnly|NeuralODE", "  --respect_grid_model_type=TRUE|FALSE",
         "  --resave_tfrecords=FALSE (TRUE is unsupported; prepare inputs before training)",
         "  --run_figures=TRUE|FALSE", "  --tfrecord_dir=PATH",
@@ -9458,16 +10189,21 @@
         "core_pair_id", "ModelType", "ModelDepth", "ModelDims",
         "nSamplesTrain", "nObsInference", "floatType", "model_spec_name",
         "model_tex_loc", "run_seed", "force_to_gpu", "gpu_mem_frac",
+        "enable_kv_cache", "inference_mc_draws", "observation_scale_floor",
+        "initial_observation_scale", "neuralode_variational",
         "neuralode_kl_weight", "neuralode_mean_loss_weight",
         "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier",
         "solver_profile", "addon_family", "ResaveThisTFRecord"),
         sim = c("row_id", "pair_id", "core_row_id", "core_pair_id",
             "ModelType", "ModelDepth", "ModelDims", "nSamplesTrain",
             "floatType", "model_spec_name", "model_tex_loc",
-            "run_seed", "force_to_gpu", "gpu_mem_frac", "neuralode_kl_weight",
-            "neuralode_mean_loss_weight", "n_checkpoints", "max_sgd_steps",
-            "prior_sd_multiplier", "solver_profile", "addon_family",
-            "ResaveThisTFRecord"), stop("Unsupported Analysis2 mode for canonical TFRecord validation: ",
+            "run_seed", "force_to_gpu", "gpu_mem_frac", "enable_kv_cache",
+            "inference_mc_draws", "observation_scale_floor",
+            "initial_observation_scale", "neuralode_variational",
+            "neuralode_kl_weight", "neuralode_mean_loss_weight",
+            "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier",
+            "solver_profile", "addon_family", "ResaveThisTFRecord"),
+        stop("Unsupported Analysis2 mode for canonical TFRecord validation: ",
             mode, call. = FALSE))
 }, analysis2_scalar_equal <- function(x, y) {
     if (is.null(x) || is.null(y)) {
@@ -9734,10 +10470,12 @@
         row_values, model_type = model_type)
     training_spec$n_samples_train <- as.integer(artifact_n_samples_train)
     backend <- resolve_backend()
+    preprocessed <- analysis2_preapply_real_initial_transform(backend$ndmdatasets_pkg,
+        backend$bundle, dataset_spec)
     analysis2_log(sprintf("Regenerating canonical real TFRecords for BaseID %s from row %s with nSamplesTrain %s",
         base_id, canonical_row, artifact_n_samples_train))
     result <- analysis2_call(backend$ndmdatasets_pkg, "ndm_real_bootstrap_tfrecords",
-        table_bundle = backend$bundle, dataset_spec = dataset_spec,
+        table_bundle = preprocessed$table_bundle, dataset_spec = preprocessed$dataset_spec,
         output_dir = tfrecord_dir, training_spec = training_spec,
         producer = producer, batch_size = 64L, seed = 0L, overwrite = isTRUE(overwrite),
         verify_readable = FALSE, lock_timeout_seconds = 3600,
@@ -9898,6 +10636,19 @@
     invisible(runtime_env)
 }, analysis2_real_dataset_spec <- function(ndmdatasets_pkg, row_values,
     outcome_metric = "inc_death", data_subset = "high_income") {
+    training_target_horizon <- NULL
+    for (field in c("training_target_horizon", "trainingTargetHorizon")) {
+        if (!field %in% names(row_values)) {
+            next
+        }
+        candidate <- row_values[[field]]
+        if (is.null(candidate) || length(candidate) == 0L ||
+            all(is.na(candidate)) || !nzchar(trimws(as.character(candidate[[1L]])))) {
+            next
+        }
+        training_target_horizon <- analysis2_as_int(candidate[[1L]])
+        break
+    }
     analysis2_call(ndmdatasets_pkg, "ndm_datasets_dataset_spec",
         kind = "real", disease = "Covid", context_length = analysis2_as_int(row_values$ContextLength),
         lookahead = 12L, evaluation_time = analysis2_as_int(row_values$evaluationTime),
@@ -9907,9 +10658,9 @@
         split_type = as.character(row_values$OSSType), data_subset = as.character(data_subset),
         data_inputs = as.character(row_values$dataInputs), outcomes = "ihme_true_value_per_capita",
         per_capita_scaling_factor = 10000, roll_window = 26L,
-        min_anchoring_time = 4L, train_location_fraction = 0.8,
-        n_inference_samples = 1024L, base_id = analysis2_as_int(row_values$BaseID),
-        outcome_metric = outcome_metric)
+        min_anchoring_time = 4L, training_target_horizon = training_target_horizon,
+        train_location_fraction = 0.8, n_inference_samples = 1024L,
+        base_id = analysis2_as_int(row_values$BaseID), outcome_metric = outcome_metric)
 }, analysis2_real_training_spec <- function(ndmdatasets_pkg,
     row_values, model_type) {
     analysis2_call(ndmdatasets_pkg, "ndm_datasets_training_spec",
@@ -9948,8 +10699,8 @@
         policy_effectiveness = analysis2_f2n(row_values$policy_effectiveness),
         policy_decay = analysis2_f2n(row_values$policy_decay),
         covariate_type = "sqrt", roll_window = 52L, measurement_noise = analysis2_f2n(row_values$measurement_noise),
-        hosp_rate = 0.1, death_rate = 0.01, forward_shift_h = 4L,
-        forward_shift_c = 7L, n_inference_batches = if ("n_inference_batches" %in%
+        hosp_rate = 0.1, death_rate = 0.01, forward_shift_h = 0L,
+        forward_shift_c = 0L, n_inference_batches = if ("n_inference_batches" %in%
             names(row_values)) {
             analysis2_as_int(row_values$n_inference_batches)
         }
@@ -9972,10 +10723,105 @@
     bundle, dataset_spec) {
     analysis2_call(ndmdatasets_pkg, "ndm_real_resolve_inputs",
         bundle, dataset_spec)
+}, analysis2_real_training_rows <- function(bundle, dataset_spec) {
+    truth_df <- as.data.frame(bundle$truth_df, stringsAsFactors = FALSE)
+    required_columns <- c("location_id", "location_name", "week_id")
+    missing_columns <- setdiff(required_columns, names(truth_df))
+    if (length(missing_columns) > 0L) {
+        stop("Real-data transform fitting is missing required source columns: ",
+            paste(missing_columns, collapse = ", "), ".", call. = FALSE)
+    }
+    eligible <- !is.na(truth_df$location_name)
+    if (identical(dataset_spec$data_subset, "high_income")) {
+        if (!"LOC2_region_name" %in% names(truth_df)) {
+            stop("Real-data high-income filtering requires `LOC2_region_name`.",
+                call. = FALSE)
+        }
+        high_income_regions <- c("Western Europe", "High-income North America",
+            "Central Europe", "High-income Asia Pacific")
+        eligible <- eligible & truth_df$LOC2_region_name %in%
+            high_income_regions
+    }
+    eligible_rows <- which(eligible)
+    if (length(eligible_rows) == 0L) {
+        stop("Real-data transform fitting found no eligible observations.",
+            call. = FALSE)
+    }
+    time_id <- as.numeric(truth_df$week_id[eligible_rows])
+    in_out_cutpoint <- round(stats::quantile(sort(unique(time_id)),
+        prob = dataset_spec$evaluation_time/(max(dataset_spec$evaluation_sequence) +
+            1)))
+    split_type <- as.character(dataset_spec$split_type)
+    if (identical(split_type, "OutOfTime")) {
+        return(eligible_rows[time_id <= in_out_cutpoint])
+    }
+    if (!split_type %in% c("OutOfPlace", "OutOfPlacetime")) {
+        stop("Unsupported real-data split type: ", split_type,
+            call. = FALSE)
+    }
+    locations <- sort(unique(truth_df$location_id[eligible_rows]))
+    n_train_locations <- max(1L, floor(length(locations) * dataset_spec$train_location_fraction))
+    had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    if (had_seed) {
+        previous_seed <- get(".Random.seed", envir = .GlobalEnv,
+            inherits = FALSE)
+    }
+    on.exit({
+        if (had_seed) {
+            assign(".Random.seed", previous_seed, envir = .GlobalEnv)
+        } else if (exists(".Random.seed", envir = .GlobalEnv,
+            inherits = FALSE)) {
+            rm(".Random.seed", envir = .GlobalEnv)
+        }
+    }, add = TRUE)
+    set.seed(1L)
+    training_locations <- sample(locations, n_train_locations,
+        replace = FALSE)
+    training <- truth_df$location_id[eligible_rows] %in% training_locations
+    if (identical(split_type, "OutOfPlacetime")) {
+        training <- training & time_id <= in_out_cutpoint
+    }
+    eligible_rows[training]
+}, analysis2_preapply_real_initial_transform <- function(ndmdatasets_pkg,
+    bundle, dataset_spec) {
+    requested_transform <- as.character(dataset_spec$initial_transform %||%
+        "none")
+    if (!identical(requested_transform, "yeoJohnson")) {
+        return(list(table_bundle = bundle, dataset_spec = dataset_spec,
+            applied = FALSE))
+    }
+    data_inputs <- analysis2_resolve_real_inputs(ndmdatasets_pkg,
+        bundle, dataset_spec)
+    missing_inputs <- setdiff(data_inputs, names(bundle$truth_df))
+    if (length(missing_inputs) > 0L) {
+        stop("Missing requested real-data inputs: ", paste(missing_inputs,
+            collapse = ", "), ".", call. = FALSE)
+    }
+    training_rows <- analysis2_real_training_rows(bundle, dataset_spec)
+    transformed_bundle <- bundle
+    transformed_bundle$truth_df <- data.table::copy(bundle$truth_df)
+    transform_parameters <- stats::setNames(vector("list", length(data_inputs)),
+        data_inputs)
+    for (column in data_inputs) {
+        values <- as.numeric(transformed_bundle$truth_df[[column]])
+        transform_fit <- bestNormalize::yeojohnson(values[training_rows],
+            standardize = FALSE)
+        transformed_bundle$truth_df[[column]] <- as.numeric(stats::predict(transform_fit,
+            newdata = values))
+        transform_parameters[[column]] <- list(lambda = as.numeric(transform_fit$lambda))
+    }
+    effective_spec <- dataset_spec
+    effective_spec$initial_transform <- "none"
+    effective_spec$analysis2_preapplied_initial_transform <- list(method = requested_transform,
+        fit_partition = "train", parameters = transform_parameters)
+    list(table_bundle = transformed_bundle, dataset_spec = effective_spec,
+        applied = TRUE)
 }, analysis2_prepare_real_state <- function(ndmdatasets_pkg,
     bundle, dataset_spec, project_root) {
+    preprocessed <- analysis2_preapply_real_initial_transform(ndmdatasets_pkg,
+        bundle, dataset_spec)
     prepared <- analysis2_call(ndmdatasets_pkg, "ndm_real_prepare_tables",
-        table_bundle = bundle, dataset_spec = dataset_spec)
+        table_bundle = preprocessed$table_bundle, dataset_spec = preprocessed$dataset_spec)
     truth_df_red <- as.data.frame(prepared$truth_df, stringsAsFactors = FALSE)
     truth_df_red$Pop <- truth_df_red$POP_population
     input_df_red_full <- as.data.frame(prepared$normalized_df,
@@ -9994,8 +10840,8 @@
     list(prepared = prepared, truth_df_red = truth_df_red, input_df_red_full = input_df_red_full,
         input_df_red_in = input_df_red_in, input_df_red_out = input_df_red_out,
         context_df_red = context_df_red, coordinates_mat = coordinates_mat,
-        data_inputs = analysis2_resolve_real_inputs(ndmdatasets_pkg,
-            bundle, dataset_spec))
+        data_inputs = prepared$data_inputs, dataset_spec = preprocessed$dataset_spec,
+        requested_dataset_spec = dataset_spec)
 }, analysis2_batch_to_runtime_jax <- function(x, runtime_env) {
     analysis2_ndm_internal(".ndm_batch_to_runtime_jax")(x, runtime_env)
 }, analysis2_real_get_batch_factory <- function(ndmdatasets_pkg,
@@ -10066,6 +10912,11 @@
     init_true <- c(s0, e0, i0, r0)
     forward_shift_h <- as.integer(dataset_spec$forward_shift_h)
     forward_shift_c <- as.integer(dataset_spec$forward_shift_c)
+    if (any(c(forward_shift_h, forward_shift_c) != 0L)) {
+        stop(paste("Simulation context covariates must be available at forecast issue time;",
+            "non-zero forward shifts require an explicit causal lag convention."),
+            call. = FALSE)
+    }
     max_shift <- n_times - (past + lookahead + forward_shift_c)
     if (max_shift < 0L) {
         stop("Simulation configuration leaves no valid initial shift.",
@@ -10372,22 +11223,27 @@
 }, analysis2_preflight_expected_tfrecords <- function(mode, write_plan,
     grid, tfrecord_dir, ndmdatasets_pkg, outcome_metric = "inc_death",
     data_subset = "high_income", real_bundle = NULL) {
-    source_sha256 <- if (identical(mode, "real") && !is.null(real_bundle)) {
-        analysis2_call(ndmdatasets_pkg, "ndm_real_source_sha256",
-            real_bundle)
-    }
-    else {
-        NULL
-    }
     trusted_index <- analysis2_trusted_artifact_index(tfrecord_dir)
     validated_pairs <- list()
     for (plan_idx in seq_len(nrow(write_plan))) {
         canonical_row <- write_plan$canonical_row[[plan_idx]]
         row_values <- analysis2_normalize_row_values(analysis2_row_to_list(grid[canonical_row,
             , drop = FALSE]))
+        source_sha256 <- NULL
         dataset_spec <- if (identical(mode, "real")) {
-            analysis2_real_dataset_spec(ndmdatasets_pkg, row_values,
-                outcome_metric = outcome_metric, data_subset = data_subset)
+            real_dataset_spec <- analysis2_real_dataset_spec(ndmdatasets_pkg,
+                row_values, outcome_metric = outcome_metric,
+                data_subset = data_subset)
+            if (!is.null(real_bundle)) {
+                preprocessed <- analysis2_preapply_real_initial_transform(ndmdatasets_pkg,
+                  real_bundle, real_dataset_spec)
+                source_sha256 <- analysis2_call(ndmdatasets_pkg,
+                  "ndm_real_source_sha256", preprocessed$table_bundle)
+                preprocessed$dataset_spec
+            }
+            else {
+                real_dataset_spec
+            }
         }
         else {
             analysis2_sim_dataset_spec(ndmdatasets_pkg, row_values)
@@ -10442,9 +11298,11 @@
         atol = unname(tolerances[["atol"]]), dt0 = 0.001)
 }, analysis2_real_runtime_globals <- function(row_values, dataset_spec,
     training_spec, state, runtime_env, model_type, run_seed,
-    gpu_mem_frac = NULL, analysis_name, analysis_date, outer_iteration,
-    holder_folder, tfrecord_dir, n_checkpoints = 1L, prior_sd_multiplier = 1,
-    solver_profile = "default", nsgd_calibration) {
+    gpu_mem_frac = NULL, enable_kv_cache = FALSE, inference_mc_draws = 5L,
+    observation_scale_floor = 1e-05, initial_observation_scale = 1,
+    neuralode_variational = TRUE, analysis_name, analysis_date,
+    outer_iteration, holder_folder, tfrecord_dir, n_checkpoints = 1L,
+    prior_sd_multiplier = 1, solver_profile = "default", nsgd_calibration) {
     n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
     n_batch <- min(32L, n_samples_train)
     n_sgd <- analysis2_as_int(nsgd_calibration$resolved_n_sgd)
@@ -10516,7 +11374,10 @@
         nPlaces = length(unique(state$truth_df_red$location_id)),
         MaxTimeIndex = max_time_index, useLSTM = FALSE, doGrid = TRUE,
         nRealGridSeed = 128L, nExamplesPerCell = 10L, nRealGrid = nrow(state$truth_df_red),
-        GPU_MEM_FRAC = gpu_mem_frac, AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita,
+        GPU_MEM_FRAC = gpu_mem_frac, EnableKVCaching = enable_kv_cache,
+        InferenceMCDraws = inference_mc_draws, ObservationScaleFloor = observation_scale_floor,
+        InitialObservationScale = initial_observation_scale,
+        neuralode_variational = neuralode_variational, AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita,
             na.rm = TRUE), VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$array(1L:vi_total_times)),
         diff_eq_solver = diffrax$Dopri8(), VI_diff_eq_solver = diffrax$Dopri8(),
         stepsize_controller = diffrax$PIDController(rtol = 1e-07,
@@ -10546,6 +11407,8 @@
     globals
 }, analysis2_sim_runtime_globals <- function(row_values, dataset_spec,
     training_spec, runtime_env, model_type, run_seed, gpu_mem_frac = NULL,
+    enable_kv_cache = FALSE, inference_mc_draws = 5L, observation_scale_floor = 1e-05,
+    initial_observation_scale = 1, neuralode_variational = TRUE,
     analysis_name, analysis_date, outer_iteration, holder_folder,
     tfrecord_dir, n_checkpoints = 1L, prior_sd_multiplier = 1,
     solver_profile = "default", sim_scaler, sim_outcome_sd, sim_covariates,
@@ -10597,7 +11460,10 @@
         nOutcomes = 1L, af = analysis2_as_int(outer_iteration),
         GPU_MEM_FRAC = gpu_mem_frac, AppendTimeEmbeds = FALSE,
         AppendPlaceEmbeds = FALSE, AttentionHeadDim = 64L, AttentionKVHeads = NULL,
-        endAppend = TRUE, EnableKVCaching = TRUE, MaxTimeIndex = max_time_index,
+        endAppend = TRUE, EnableKVCaching = enable_kv_cache,
+        InferenceMCDraws = inference_mc_draws, ObservationScaleFloor = observation_scale_floor,
+        InitialObservationScale = initial_observation_scale,
+        neuralode_variational = neuralode_variational, MaxTimeIndex = max_time_index,
         nPlaces = 1L, nMonteEval = 1L, nBatch_SimGridGen = 8L,
         SimScalingOuterLoops = 1L, SimScalingInnerLoops = 2L,
         nTimesPast = n_times_past, nTimesLookahead = n_times_lookahead,
@@ -10698,21 +11564,28 @@
             model_type = model_type, backbone = "transformer",
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType),
             force_to_gpu = spec$force_to_gpu, resave_tfrecords = FALSE,
-            gpu_mem_frac = spec$gpu_mem_frac, neuralode_variational = identical(model_type,
-                "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight,
+            gpu_mem_frac = spec$gpu_mem_frac, enable_kv_cache = spec$enable_kv_cache,
+            inference_mc_draws = spec$inference_mc_draws, observation_scale_floor = spec$observation_scale_floor,
+            initial_observation_scale = spec$initial_observation_scale,
+            neuralode_variational = isTRUE(spec$neuralode_variational) &&
+                identical(model_type, "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight,
             neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight)
         runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
         analysis2_seed_backends(runtime_env, run_seed)
         state <- analysis2_prepare_real_state(ndmdatasets_pkg = ndmdatasets_pkg,
             bundle = bundle, dataset_spec = dataset_spec, project_root = paths$project_root)
         get_batch <- analysis2_real_get_batch_factory(ndmdatasets_pkg = ndmdatasets_pkg,
-            prepared_state = state, dataset_spec = dataset_spec,
+            prepared_state = state, dataset_spec = state$dataset_spec,
             runtime_env = runtime_env)
         analysis2_call(ndm_pkg, "ndm_set_runtime_globals", runtime_env,
             c(analysis2_real_runtime_globals(row_values = row_values,
                 dataset_spec = dataset_spec, training_spec = training_spec,
                 state = state, runtime_env = runtime_env, model_type = model_type,
                 run_seed = run_seed, gpu_mem_frac = spec$gpu_mem_frac,
+                enable_kv_cache = config$enable_kv_cache, inference_mc_draws = config$inference_mc_draws,
+                observation_scale_floor = config$observation_scale_floor,
+                initial_observation_scale = config$initial_observation_scale,
+                neuralode_variational = config$neuralode_variational,
                 analysis_name = analysis_name, analysis_date = analysis_date,
                 outer_iteration = outer_iteration, holder_folder = run_holder_folder,
                 tfrecord_dir = tfrecord_dir, n_checkpoints = spec$n_checkpoints,
@@ -10823,8 +11696,11 @@
             model_type = model_type, backbone = "transformer",
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType),
             force_to_gpu = spec$force_to_gpu, resave_tfrecords = FALSE,
-            gpu_mem_frac = spec$gpu_mem_frac, neuralode_variational = identical(model_type,
-                "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight,
+            gpu_mem_frac = spec$gpu_mem_frac, enable_kv_cache = spec$enable_kv_cache,
+            inference_mc_draws = spec$inference_mc_draws, observation_scale_floor = spec$observation_scale_floor,
+            initial_observation_scale = spec$initial_observation_scale,
+            neuralode_variational = isTRUE(spec$neuralode_variational) &&
+                identical(model_type, "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight,
             neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight)
         runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
         analysis2_seed_backends(runtime_env, run_seed)
@@ -10846,6 +11722,10 @@
                 dataset_spec = dataset_spec, training_spec = training_spec,
                 runtime_env = runtime_env, model_type = model_type,
                 run_seed = run_seed, gpu_mem_frac = spec$gpu_mem_frac,
+                enable_kv_cache = config$enable_kv_cache, inference_mc_draws = config$inference_mc_draws,
+                observation_scale_floor = config$observation_scale_floor,
+                initial_observation_scale = config$initial_observation_scale,
+                neuralode_variational = config$neuralode_variational,
                 analysis_name = analysis_name, analysis_date = analysis_date,
                 outer_iteration = outer_iteration, holder_folder = run_holder_folder,
                 tfrecord_dir = tfrecord_dir, n_checkpoints = spec$n_checkpoints,
@@ -10910,25 +11790,33 @@
     paths <- spec$paths
     grid_file <- normalizePath(spec$grid_file, winslash = "/",
         mustWork = TRUE)
-    real_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)),
-        spec$outer)
+    real_grid_raw <- as.data.frame(data.table::fread(grid_file),
+        stringsAsFactors = FALSE)
+    nsgd_calibration <- analysis2_resolve_nsgd_calibration(mode = "multidisease",
+        spec = spec, grid = real_grid_raw, n_epoches_max = 9L)
+    real_grid <- analysis2_order_grid(real_grid_raw, spec$outer)
     analysis2_validate_outer_iterations(real_grid, spec$outer,
         grid_file)
     if (isTRUE(spec$dry_run)) {
-        return(analysis2_dry_run_result(spec, real_grid))
+        return(analysis2_dry_run_result(spec, real_grid, nsgd_calibration = nsgd_calibration))
     }
     setwd(paths$project_root)
     analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
+    analysis2_log_nsgd_calibration("multidisease", nsgd_calibration)
     holder_folder <- file.path(paths$project_root, "SavedResults",
         "Real", sprintf("Results_%s", spec$analysis_name))
     analysis2_dir_create(holder_folder)
     driver_env <- new.env(parent = globalenv())
     driver_env$analysis2_as_int <- analysis2_as_int
     driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
+    driver_env$analysis2_multidisease_structured_control_globals <- analysis2_multidisease_structured_control_globals
     driver_env$analysis2_small_run_n_obs_inference <- analysis2_small_run_n_obs_inference
+    driver_env$analysis2_resolve_nsgd_calibration <- analysis2_resolve_nsgd_calibration
+    driver_env$analysis2_solver_profile <- analysis2_solver_profile
     driver_env$analysis2_model_type <- analysis2_model_type
     driver_env$analysis2_multidisease_spec <- spec
     driver_env$analysis2_multidisease_grid <- real_grid
+    driver_env$analysis2_nsgd_calibration <- nsgd_calibration
     source(file.path(paths$analysis_root, "SetupEnv", "Analysis2_legacy_multidisease_driver.R"),
         local = driver_env, chdir = FALSE)
     if (!exists("analysis2_multidisease_result", envir = driver_env,
@@ -11007,8 +11895,9 @@
         SimMode <- FALSE
         nBatch <- as.integer(32L)
         nSGD_pretrain <- 0L
-        nCheckpointsDefault <- 10L
+        nCheckpointsDefault <- analysis2_as_int(analysis2_multidisease_spec$n_checkpoints)
         nCheckpoints <- nCheckpointsDefault
+        PriorSDMultiplier <- as.numeric(analysis2_multidisease_spec$prior_sd_multiplier)
         nEpochesMax <- 9L
         nSamples_max <- 20000L
         nSGD_DefiningLRSeq <- nSGD_model <- as.integer(round(nEpochesMax *
@@ -11070,13 +11959,9 @@
         nsgd_calibration <- get0("analysis2_nsgd_calibration",
             inherits = TRUE, ifnotfound = NULL)
         if (is.null(nsgd_calibration)) {
-            nsgd_resolver <- utils::getFromNamespace(".ndm_resolve_nsgd_calibration",
-                "ndm")
-            nsgd_calibration <- nsgd_resolver(mode = "multidisease",
-                project_root = analysis2_multidisease_spec$project_root,
-                analysis_name = AnalysisName, n_epoches_max = nEpochesMax,
-                grid = RealGrid, grid_file = analysis2_multidisease_spec$grid_file,
-                fallback_n_samples_train = nSamples_max)
+            nsgd_calibration <- analysis2_resolve_nsgd_calibration(mode = "multidisease",
+                spec = analysis2_multidisease_spec, n_epoches_max = nEpochesMax,
+                grid = RealGrid, fallback_n_samples_train = nSamples_max)
         }
         nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
         nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
@@ -11124,14 +12009,13 @@
                   nSamplesTrain > 0) {
                   nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
                   nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)
-                  nSGD_DefiningLRSeq <- nSGD_model <- as.integer(nsgd_calibration$resolved_n_sgd)
-                  nSGD_posttrain <- nSGD_model
-                  nCheckpoints <- analysis2_small_run_n_checkpoints(nSamples_max,
-                    nSGD_model, nCheckpointsDefault)
                   nObsInference <- analysis2_small_run_n_obs_inference(n_samples_train = nSamplesTrain,
                     n_batch = nBatch, configured = get0("nObsInference",
                       inherits = FALSE, ifnotfound = NULL))
                 }
+                list2env(analysis2_multidisease_structured_control_globals(spec = analysis2_multidisease_spec,
+                  n_samples_train = nSamples_max, n_sgd = nsgd_calibration$resolved_n_sgd),
+                  envir = environment())
                 modelingStrategyNameKey <- paste(c("RealMode",
                   paste(names(RealEntry), RealEntry, sep = "_")),
                   collapse = "__")
@@ -11147,12 +12031,21 @@
                 }
                 ModelType <- analysis2_model_type(analysis2_multidisease_spec,
                   RealEntry$ModelType, default = "DecoderOnly")
-                neuralode_variational <- identical(ModelType,
-                  "NeuralODE")
+                EnableKVCaching <- analysis2_multidisease_spec$enable_kv_cache
+                InferenceMCDraws <- analysis2_multidisease_spec$inference_mc_draws
+                ObservationScaleFloor <- analysis2_multidisease_spec$observation_scale_floor
+                InitialObservationScale <- analysis2_multidisease_spec$initial_observation_scale
+                neuralode_variational <- isTRUE(analysis2_multidisease_spec$neuralode_variational) &&
+                  identical(ModelType, "NeuralODE")
                 neuralode_kl_weight <- analysis2_multidisease_spec$neuralode_kl_weight
                 neuralode_mean_loss_weight <- analysis2_multidisease_spec$neuralode_mean_loss_weight
                 print(sprintf("Using model type: %s", ModelType))
                 ndm_source_extracted("SetupEnv/SuperLModel_MasterImports.R")
+                solver_settings <- analysis2_solver_profile(environment(),
+                  analysis2_multidisease_spec$solver_profile)
+                SolverProfile <- solver_settings$name
+                SolverRtol <- solver_settings$rtol
+                SolverAtol <- solver_settings$atol
                 if (exists("tf", inherits = FALSE) && !is.null(tf$random$set_seed)) {
                   tf$random$set_seed(as.integer(SEED_))
                 }
@@ -11181,19 +12074,13 @@
                     1L)))
                   VI_SaveAt_ODE_optim <- diffrax$SaveAt(ts = jnp$array(0L:(VI_TotalTimesInLikelihood -
                     1L)))
-                  VI_diff_eq_solver_optim <- VI_diff_eq_solver_dgp <- diffrax$Tsit5()
+                  VI_diff_eq_solver_dgp <- diffrax$Tsit5()
+                  VI_diff_eq_solver_optim <- solver_settings$solver
                   dt0_init_dgp <- 0.001
                   stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-06,
                     atol = 1e-07)
-                  if (!DecoderInNeuralODE) {
-                    dt0_init_optim <- 0.001
-                    stepsize_controller_optim = diffrax$PIDController(rtol = 1e-05,
-                      atol = 1e-07)
-                  }
-                  if (DecoderInNeuralODE) {
-                    dt0_init_optim <- 0.001
-                    stepsize_controller_optim = diffrax$ConstantStepSize()
-                  }
+                  dt0_init_optim <- solver_settings$dt0
+                  stepsize_controller_optim <- solver_settings$controller
                   diffraxInterpolator <- diffrax$LinearInterpolation
                 }
                 if (data_subset == "all") {

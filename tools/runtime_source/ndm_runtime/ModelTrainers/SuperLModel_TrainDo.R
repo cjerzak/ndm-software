@@ -86,6 +86,170 @@ ndm_condition_message <- utils::getFromNamespace(".ndm_condition_message", "ndm"
 ndm_numeric_summary <- utils::getFromNamespace(".ndm_numeric_summary", "ndm")
 ndm_first_nonfinite_name <- utils::getFromNamespace(".ndm_first_nonfinite_name", "ndm")
 ndm_write_nonfinite_report <- utils::getFromNamespace(".ndm_write_nonfinite_report", "ndm")
+ndm_solver_failure_condition <- utils::getFromNamespace(
+  ".ndm_solver_failure_condition",
+  "ndm"
+)
+ndm_write_solver_failure_report <- utils::getFromNamespace(
+  ".ndm_write_solver_failure_report",
+  "ndm"
+)
+solver_runtime_scalar <- function(value, default = NA_real_) {
+  if (is.null(value)) {
+    return(default)
+  }
+  host_value <- try(
+    as.vector(as.array(np$array(value))),
+    silent = TRUE
+  )
+  if (inherits(host_value, "try-error") || length(host_value) < 1L) {
+    return(default)
+  }
+  suppressWarnings(as.numeric(host_value[[1L]]))
+}
+solver_runtime_attribute <- function(object, name) {
+  tryCatch(
+    reticulate::py_get_attr(object, name),
+    error = function(...) NULL
+  )
+}
+solver_runtime_label <- function(object) {
+  tryCatch(
+    as.character(reticulate::py_str(object)),
+    error = function(...) paste(class(object), collapse = "/")
+  )
+}
+solver_runtime_configuration <- function() {
+  list(
+    solver = solver_runtime_label(VI_diff_eq_solver_optim),
+    stepsize_controller = solver_runtime_label(stepsize_controller_optim),
+    rtol = solver_runtime_scalar(
+      solver_runtime_attribute(stepsize_controller_optim, "rtol")
+    ),
+    atol = solver_runtime_scalar(
+      solver_runtime_attribute(stepsize_controller_optim, "atol")
+    ),
+    dt0 = solver_runtime_scalar(dt0_init_optim),
+    max_steps = suppressWarnings(as.integer(MaxSteps))
+  )
+}
+solver_batch_identifier <- function(value, name, expected_length) {
+  host_value <- try(
+    as.vector(as.array(np$array(value))),
+    silent = TRUE
+  )
+  if (inherits(host_value, "try-error")) {
+    stop("Could not transfer `", name, "` for solver diagnostics.", call. = FALSE)
+  }
+  host_value <- suppressWarnings(as.integer(host_value))
+  if (length(host_value) != expected_length || anyNA(host_value)) {
+    stop(
+      "`", name, "` is not aligned with the solver diagnostic batch.",
+      call. = FALSE
+    )
+  }
+  host_value
+}
+solver_diagnostics_to_host <- function(diagnostics) {
+  required_fields <- c(
+    "success",
+    "failure_stage_code",
+    "prediction_finite",
+    "global_attempted",
+    "global_result_success",
+    "global_state_finite",
+    "global_result_code",
+    "global_num_steps",
+    "global_num_accepted_steps",
+    "global_num_rejected_steps",
+    "global_max_steps",
+    "local_attempted",
+    "local_result_success",
+    "local_state_finite",
+    "local_result_code",
+    "local_num_steps",
+    "local_num_accepted_steps",
+    "local_num_rejected_steps",
+    "local_max_steps"
+  )
+  missing_fields <- setdiff(required_fields, names(diagnostics))
+  if (length(missing_fields) > 0L) {
+    stop(
+      sprintf(
+        "Training prediction omitted required solver diagnostics: %s.",
+        paste(missing_fields, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+  boolean_fields <- c(
+    "success",
+    "prediction_finite",
+    "global_attempted",
+    "global_result_success",
+    "global_state_finite",
+    "local_attempted",
+    "local_result_success",
+    "local_state_finite"
+  )
+  host_fields <- lapply(required_fields, function(field_name) {
+    value <- as.vector(as.array(np$array(diagnostics[[field_name]])))
+    if (field_name %in% boolean_fields) {
+      return(as.logical(value))
+    }
+    as.integer(value)
+  })
+  names(host_fields) <- required_fields
+  field_lengths <- vapply(host_fields, length, integer(1L))
+  if (length(unique(field_lengths)) != 1L || field_lengths[[1L]] < 1L) {
+    stop("Solver diagnostic fields do not share one non-empty batch dimension.", call. = FALSE)
+  }
+  data.frame(
+    example_index = seq_len(field_lengths[[1L]]),
+    host_fields,
+    check.names = FALSE
+  )
+}
+solver_failure_stage <- function(stage_code) {
+  stage_names <- c(
+    "success",
+    "global_ode",
+    "local_ode",
+    "prediction"
+  )
+  stage_code <- as.integer(stage_code)
+  valid <- !is.na(stage_code) & stage_code >= 0L & stage_code < length(stage_names)
+  out <- rep("unknown", length(stage_code))
+  out[valid] <- stage_names[stage_code[valid] + 1L]
+  out
+}
+solver_iteration_telemetry <- function(diagnostics) {
+  global_rows <- which(diagnostics$global_attempted %in% TRUE)
+  local_rows <- which(diagnostics$local_attempted %in% TRUE)
+  steps <- c(
+    diagnostics$global_num_steps[global_rows],
+    diagnostics$local_num_steps[local_rows]
+  )
+  rejected_steps <- c(
+    diagnostics$global_num_rejected_steps[global_rows],
+    diagnostics$local_num_rejected_steps[local_rows]
+  )
+  steps <- steps[is.finite(steps)]
+  rejected_steps <- rejected_steps[is.finite(rejected_steps)]
+  list(
+    solver_num_steps_max = if (length(steps) == 0L) 0L else max(steps),
+    solver_num_rejected_steps_max = if (length(rejected_steps) == 0L) {
+      0L
+    } else {
+      max(rejected_steps)
+    },
+    solver_num_rejected_steps_total = if (length(rejected_steps) == 0L) {
+      0L
+    } else {
+      sum(rejected_steps)
+    }
+  )
+}
 nonfinite_empty_summary <- function(error = NA_character_){
   list(
     error = error,
@@ -223,6 +387,9 @@ training_telemetry <- data.frame(
   loss = numeric(),
   gradient_norm = numeric(),
   trainable_parameters = numeric(),
+  solver_num_steps_max = integer(),
+  solver_num_rejected_steps_max = integer(),
+  solver_num_rejected_steps_total = integer(),
   stringsAsFactors = FALSE
 )
 write_training_telemetry <- function() {
@@ -239,7 +406,40 @@ write_training_telemetry <- function() {
   }
   invisible(telemetry_file)
 }
-for(i in i_:nSGD_model){
+ndm_training_iteration_sequence <- function(resume_iteration, final_iteration) {
+  bounds <- suppressWarnings(as.numeric(c(resume_iteration, final_iteration)))
+  if (length(bounds) != 2L ||
+      any(!is.finite(bounds)) ||
+      any(bounds < 1) ||
+      any(bounds > .Machine$integer.max) ||
+      any(bounds != floor(bounds))) {
+    stop(
+      "Training iteration bounds must be positive integers.",
+      call. = FALSE
+    )
+  }
+  resume_iteration <- as.integer(bounds[[1L]])
+  final_iteration <- as.integer(bounds[[2L]])
+  if (resume_iteration > final_iteration) {
+    return(integer())
+  }
+  seq.int(resume_iteration, final_iteration)
+}
+ndm_training_iteration_key <- function(iteration) {
+  iteration <- suppressWarnings(as.numeric(iteration))
+  if (length(iteration) != 1L ||
+      !is.finite(iteration) ||
+      iteration < 1 ||
+      iteration > .Machine$integer.max ||
+      iteration != floor(iteration)) {
+    stop("Training iteration must be one positive integer.", call. = FALSE)
+  }
+  jax$random$fold_in(
+    ndm_runtime_seed_key(104729L),
+    as.integer(iteration)
+  )
+}
+for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
   i_ <- i; fulliter_timer <- Sys.time()
   if(i %% 10 == 0){  print(i); gc(); py_gc$collect() }
 
@@ -276,10 +476,10 @@ for(i in i_:nSGD_model){
   {
     gd_timer <- Sys.time()
     if( i == 1 ){ print2( "At first gradLoss_jax()" ) }
-    iteration_seed <- as.integer((
-      as.double(i) + 104729 * as.double(get0("SEED_", inherits = TRUE, ifnotfound = 0L))
-    ) %% .Machine$integer.max)
-    keys_mat <- ndm_runtime_data_to_device(jax$random$split(JaxKey(iteration_seed),nBatch))
+    iteration_key <- ndm_training_iteration_key(i)
+    keys_mat <- ndm_runtime_data_to_device(
+      jax$random$split(iteration_key, nBatch)
+    )
     batch_pkg <- batch2package(dat_)
     GetPredSaveAtInfo_runtime <- if (exists("ndm_runtime_normalize_getpred_saveat_info", inherits = TRUE)) {
       ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
@@ -301,6 +501,78 @@ for(i in i_:nSGD_model){
     )
     Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
     GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
+
+    solver_diagnostics_host <- solver_diagnostics_to_host(
+      train_step_result$solver_diagnostics
+    )
+    solver_diagnostics_host$location_id_numeric <- solver_batch_identifier(
+      dat_$location_id_numeric,
+      "location_id_numeric",
+      nrow(solver_diagnostics_host)
+    )
+    solver_diagnostics_host$time_id_numeric <- solver_batch_identifier(
+      dat_$time_id_numeric,
+      "time_id_numeric",
+      nrow(solver_diagnostics_host)
+    )
+    failed_solver_examples <- which(
+      is.na(solver_diagnostics_host$success) |
+        !solver_diagnostics_host$success
+    )
+    if (length(failed_solver_examples) > 0L) {
+      failed_diagnostics <- solver_diagnostics_host[
+        failed_solver_examples,
+        ,
+        drop = FALSE
+      ]
+      failed_diagnostics$failure_stage <- solver_failure_stage(
+        failed_diagnostics$failure_stage_code
+      )
+      solver_configuration <- solver_runtime_configuration()
+      failure_report <- list(
+        schema_version = 1L,
+        event = "ndm_solver_failure",
+        created_at = format(Sys.time(), tz = "UTC", usetz = TRUE),
+        analysis_name = get0("AnalysisName", ifnotfound = "Analysis2"),
+        outer_iteration = get0("OUTER_ITERATION", ifnotfound = NA_integer_),
+        iteration = as.integer(i),
+        base_id = capture_nonfinite_base_id(),
+        model_type = get0("ModelType", ifnotfound = NA_character_),
+        loss = Loss_i,
+        gradient_norm = GradNorm_i,
+        candidate_update_applied = FALSE,
+        solver_configuration = solver_configuration,
+        failed_examples = failed_diagnostics
+      )
+      failure_report_path <- ndm_write_solver_failure_report(
+        report = failure_report,
+        holder_folder = HolderFolder,
+        outer_iteration = get0(
+          "OUTER_ITERATION",
+          ifnotfound = NA_integer_
+        ),
+        iteration = i
+      )
+      stop(ndm_solver_failure_condition(
+        iteration = i,
+        example_indices = failed_diagnostics$example_index,
+        stages = failed_diagnostics$failure_stage,
+        diagnostics = failed_diagnostics,
+        context = list(
+          phase = "training",
+          analysis_name = get0("AnalysisName", ifnotfound = "Analysis2"),
+          outer_iteration = get0("OUTER_ITERATION", ifnotfound = NA_integer_),
+          base_id = capture_nonfinite_base_id(),
+          model_type = get0("ModelType", ifnotfound = NA_character_),
+          candidate_update_applied = FALSE,
+          solver_configuration = solver_configuration,
+          report_path = failure_report_path
+        )
+      ))
+    }
+    solver_telemetry_i <- solver_iteration_telemetry(
+      solver_diagnostics_host
+    )
 
     UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i)
     if(! UpdateParametersCond ){
@@ -415,6 +687,11 @@ for(i in i_:nSGD_model){
               loss = Loss_i,
               gradient_norm = GradNorm_i,
               trainable_parameters = as.numeric(nParams),
+              solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
+              solver_num_rejected_steps_max =
+                solver_telemetry_i$solver_num_rejected_steps_max,
+              solver_num_rejected_steps_total =
+                solver_telemetry_i$solver_num_rejected_steps_total,
               stringsAsFactors = FALSE
             )
           )
@@ -435,6 +712,11 @@ for(i in i_:nSGD_model){
               loss = Loss_i,
               gradient_norm = GradNorm_i,
               trainable_parameters = as.numeric(nParams),
+              solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
+              solver_num_rejected_steps_max =
+                solver_telemetry_i$solver_num_rejected_steps_max,
+              solver_num_rejected_steps_total =
+                solver_telemetry_i$solver_num_rejected_steps_total,
               stringsAsFactors = FALSE
             )
           )

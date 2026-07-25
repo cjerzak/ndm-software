@@ -6,6 +6,56 @@ ndm_runtime_lookup_env <- environment()
 ndm_runtime_get0 <- function(name, ifnotfound = NULL) {
   get0(name, envir = ndm_runtime_lookup_env, inherits = FALSE, ifnotfound = ifnotfound)
 }
+ndm_runtime_run_seed <- suppressWarnings(as.numeric(
+  ndm_runtime_get0("SEED_", ifnotfound = 0L)
+))
+if (length(ndm_runtime_run_seed) != 1L ||
+    !is.finite(ndm_runtime_run_seed) ||
+    ndm_runtime_run_seed < 0 ||
+    ndm_runtime_run_seed > .Machine$integer.max ||
+    ndm_runtime_run_seed != floor(ndm_runtime_run_seed)) {
+  stop("SEED_ must be one non-negative integer.", call. = FALSE)
+}
+ndm_runtime_run_seed <- as.integer(ndm_runtime_run_seed)
+ndm_runtime_seed_key <- function(domain_tag) {
+  domain_tag <- suppressWarnings(as.numeric(domain_tag))
+  if (length(domain_tag) != 1L ||
+      !is.finite(domain_tag) ||
+      domain_tag < 0 ||
+      domain_tag > .Machine$integer.max ||
+      domain_tag != floor(domain_tag)) {
+    stop("Seed domain tags must be non-negative integers.", call. = FALSE)
+  }
+  jax$random$fold_in(
+    JaxKey(as.integer(ndm_runtime_run_seed)),
+    as.integer(domain_tag)
+  )
+}
+InitialObservationScale <- suppressWarnings(as.numeric(
+  ndm_runtime_get0("InitialObservationScale", ifnotfound = 1.0)
+))
+ObservationScaleFloor <- suppressWarnings(as.numeric(
+  ndm_runtime_get0("ObservationScaleFloor", ifnotfound = 1e-5)
+))
+if (length(InitialObservationScale) != 1L ||
+    !is.finite(InitialObservationScale) ||
+    InitialObservationScale <= 0) {
+  stop("InitialObservationScale must be one finite positive number.", call. = FALSE)
+}
+if (length(ObservationScaleFloor) != 1L ||
+    !is.finite(ObservationScaleFloor) ||
+    ObservationScaleFloor <= 0) {
+  stop("ObservationScaleFloor must be one finite positive number.", call. = FALSE)
+}
+if (InitialObservationScale <= ObservationScaleFloor) {
+  stop(
+    "InitialObservationScale must be greater than ObservationScaleFloor.",
+    call. = FALSE
+  )
+}
+InitialObservationScaleLearned <- InitialObservationScale - ObservationScaleFloor
+InitialObservationScaleUnconstrained <- InitialObservationScaleLearned +
+  log(-expm1(-InitialObservationScaleLearned))
 
 # Special tokens config 
 doGeoInfo <- FALSE
@@ -174,21 +224,21 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       #InitialTransformType <- "Linear"
       if(InitialTransformType == "Linear"){
         InitProcessList$InitialEncodingTransform <- eq$nn$Linear(in_features = TSInputSize, out_features = ModelDims,
-                                                          key = jax$random$PRNGKey(ai(SEED_*658L)), use_bias = F)
+                                                          key = ndm_runtime_seed_key(658L), use_bias = F)
       }
       if(InitialTransformType == "CNN" & FALSE){
         InitProcessList$InitialEncodingTransform <- list(
                                 "Conv1d_short"=eq$nn$Conv1d(in_channels = TSInputSize, out_channels = ModelDims,
                                       padding = "SAME",  padding_mode = "REPLICATE", 
-                                      kernel_size = 1L, key = jax$random$PRNGKey(ai(SEED_*658L)), use_bias = F),
+                                      kernel_size = 1L, key = ndm_runtime_seed_key(658L), use_bias = F),
                                 "Conv1d_mid"=eq$nn$Conv1d(in_channels = TSInputSize, out_channels = ModelDims,
                                       padding = "SAME",  padding_mode = "REPLICATE", 
-                                      kernel_size = 3L, key = jax$random$PRNGKey(ai(SEED_*615228L)), use_bias = F),
+                                      kernel_size = 3L, key = ndm_runtime_seed_key(615228L), use_bias = F),
                                 "Conv1d_long"=eq$nn$Conv1d(in_channels = TSInputSize, out_channels = ModelDims,
                                       padding = "SAME",  padding_mode = "REPLICATE", 
-                                      kernel_size = 7L, key = jax$random$PRNGKey(ai(SEED_*6158L)), use_bias = F),
+                                      kernel_size = 7L, key = ndm_runtime_seed_key(6158L), use_bias = F),
                                 "EncodingCombine"=eq$nn$Linear(in_features = ModelDims*3L, out_features = ModelDims,
-                                      key = jax$random$PRNGKey(ai(SEED_*411L)), use_bias = F)
+                                      key = ndm_runtime_seed_key(411L), use_bias = F)
                                 )
       }
       
@@ -248,9 +298,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         }
 
         # Initialize kernels (orthogonal init for stability, as in Equinox defaults)
-        key_short <- jax$random$PRNGKey(ai(SEED_*6581L))
-        key_mid <- jax$random$PRNGKey(ai(SEED_*6152228L))
-        key_long <- jax$random$PRNGKey(ai(SEED_*61584L))
+        key_short <- ndm_runtime_seed_key(6581L)
+        key_mid <- ndm_runtime_seed_key(6152228L)
+        key_long <- ndm_runtime_seed_key(61584L)
         init_orthogonal_kernel <- function(key, kernel_size, in_channels, out_channels) {
           # Create orthogonal matrix for each position in kernel
           kernels <- list()
@@ -280,7 +330,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           "Conv1d_mid" = list("kernel" = kernel_mid),
           "Conv1d_long" = list("kernel" = kernel_long),
           "EncodingCombine" = eq$nn$Linear(in_features = ModelDims*3L, out_features = ModelDims,
-                                           key = jax$random$PRNGKey(ai(SEED_*411L)), use_bias = F)
+                                           key = ndm_runtime_seed_key(411L), use_bias = F)
         )
       }
       
@@ -332,10 +382,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                 )
       InitProcessList$TimeEmbeds_Proj <- eq$nn$Linear(in_features = ModelDims,
                                                       out_features = ModelDims, use_bias = FALSE,
-                                                      key = jax$random$PRNGKey(ai(SEED_*123123)))
+                                                      key = ndm_runtime_seed_key(123123L))
       InitProcessList$PlaceEmbeds_Proj <- eq$nn$Linear(in_features = ModelDims,
                                                        out_features = ModelDims, use_bias = FALSE,
-                                                       key = jax$random$PRNGKey(ai(SEED_*23411)))
+                                                       key = ndm_runtime_seed_key(23411L))
       # hist(np$array( InitProcessList$TimeEmbeds ))
       # hist(np$array( InitProcessList$PlaceEmbeds ))
 
@@ -397,7 +447,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   SampleConst <- function(const=1., shape, key){ oryx$Normal(loc = const, scale =  0.000001)$sample(shape, seed = key) }
   #TSList <- eq$filter_vmap(function(key){
   print("Setting up rest of TSList...")
-  TSList <- {key <- jax$random$PRNGKey(ai(123L*SEED_))
+  TSList <- {key <- ndm_runtime_seed_key(123L)
   
     if("transformer" %in% BackboneType){
       print("Initializing transformer objects")
@@ -415,24 +465,27 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       print("Done sourcing SuperLModel_BackboneMamba.R in initialize path")
     }
     
-    RNNList <- oryx$Normal(loc = 1, scale = 0.001)$sample(list(), seed = key+40L)
+    RNNList <- oryx$Normal(loc = 1, scale = 0.001)$sample(
+      list(),
+      seed = ndm_runtime_seed_key(123040L)
+    )
     
     print("Defining TSList object...")
     TSList <- c("TSBackbone"=list(TransformerList), # Transformer list
-                "InitialCLS" = oryx$Normal(loc = 0., scale =  InitTransform_CLS(ModelDims))$sample( list(1L,ModelDims), seed = key*234L)$astype(jaxFloatType),  # initial hidden state for agg token
-                "FinalNormScaler" = jnp$array( oryx$Normal( loc = 1., scale =  0.0001)$sample( list(1L,ModelDims), seed = key*2334L) ),  # final RMS norm re-weightor
+                "InitialCLS" = oryx$Normal(loc = 0., scale =  InitTransform_CLS(ModelDims))$sample( list(1L,ModelDims), seed = ndm_runtime_seed_key(123234L))$astype(jaxFloatType),  # initial hidden state for agg token
+                "FinalNormScaler" = jnp$array( oryx$Normal( loc = 1., scale =  0.0001)$sample( list(1L,ModelDims), seed = ndm_runtime_seed_key(1232334L)) ),  # final RMS norm re-weightor
                 "OutputProcess" = list(list("Proj1"=eq$nn$Linear( in_features = ModelDims, 
                                                                   out_features = nDimOutput_dense,
                                         use_bias = ifelse(ModelType == "DecoderOnly",
                                                           yes = TRUE,
                                                           no = FALSE),# if neuralODE, then using manual bias 
-                                        key = key*34000L), # final projection 
+                                        key = ndm_runtime_seed_key(12334000L)), # final projection
                        "ManualBias"=oryx$Normal(
                          loc = c(NeuralVariationalInitEncLocalMean, 
                                  rep(0,times = max(c(0,nDimOutput_dense - length(NeuralVariationalInitEncLocalMean))))),
-                            scale =  0.000001)$sample( list(1L), seed = key*234L*SEED_ )$astype(jaxFloatType)$flatten(),  # final projection bias 
+                            scale =  0.000001)$sample( list(1L), seed = ndm_runtime_seed_key(12323401L) )$astype(jaxFloatType)$flatten(),  # final projection bias
                        "Proj2" = eq$nn$Linear( in_features = ModelDims, out_features = ModelDims,
-                                     use_bias = F, key = key*340L*SEED_) # extra projection for LN if used
+                                     use_bias = F, key = ndm_runtime_seed_key(123340L)) # extra projection for LN if used
                        )
                 ))
   #return(TSList) }, in_axes = 0L)(
@@ -446,8 +499,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     print2("Setting up scale list...")
     ScaleList <- list(
                  "ScaleBayes" = {list(
-                            "VarInit" = InvSoftPlus( jnp$array(rep(1,times=nOutcomes) )),  # Var Init Scale -> this is later calibrated
-                            "DecoderObservationScale" = InvSoftPlus(jnp$array(rep(1, times = nOutcomes))),
+                            "VarInit" = jnp$array(rep(InitialObservationScaleUnconstrained, times = nOutcomes))$astype(jaxFloatType),
+                            "DecoderObservationScale" = jnp$array(rep(InitialObservationScaleUnconstrained, times = nOutcomes))$astype(jaxFloatType),
                             
                             "DirichletScale1"=InvSoftPlus( jnp$array(c(1, 1, 1, 1) ) ),  # dirichletparams 
                             "DirichletScale2"=InvSoftPlus( jnp$array(rep(1, times=4)) ),  # dirichletparams 
@@ -1012,6 +1065,73 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       ]) * suppressWarnings(as.numeric(ndm_runtime_get0("PriorSDMultiplier", ifnotfound = 1.0))))
     )
   }
+
+  ndm_runtime_tree_all_finite <- function(tree) {
+    jax$tree_util$tree_reduce(
+      function(accumulator, leaf) {
+        jnp$logical_and(
+          accumulator,
+          jnp$all(jnp$isfinite(leaf))
+        )
+      },
+      tree,
+      initializer = jnp$array(TRUE)
+    )
+  }
+
+  ndm_runtime_empty_solver_diagnostics <- function() {
+    list(
+      "success" = jnp$array(TRUE),
+      "failure_stage_code" = jnp$array(0L, dtype = jnp$int32),
+      "prediction_finite" = jnp$array(TRUE),
+      "global_attempted" = jnp$array(FALSE),
+      "global_result_success" = jnp$array(TRUE),
+      "global_state_finite" = jnp$array(TRUE),
+      "global_result_code" = jnp$array(0L, dtype = jnp$int32),
+      "global_num_steps" = jnp$array(0L, dtype = jnp$int32),
+      "global_num_accepted_steps" = jnp$array(0L, dtype = jnp$int32),
+      "global_num_rejected_steps" = jnp$array(0L, dtype = jnp$int32),
+      "global_max_steps" = jnp$array(0L, dtype = jnp$int32),
+      "local_attempted" = jnp$array(FALSE),
+      "local_result_success" = jnp$array(TRUE),
+      "local_state_finite" = jnp$array(TRUE),
+      "local_result_code" = jnp$array(0L, dtype = jnp$int32),
+      "local_num_steps" = jnp$array(0L, dtype = jnp$int32),
+      "local_num_accepted_steps" = jnp$array(0L, dtype = jnp$int32),
+      "local_num_rejected_steps" = jnp$array(0L, dtype = jnp$int32),
+      "local_max_steps" = jnp$array(0L, dtype = jnp$int32)
+    )
+  }
+
+  ndm_runtime_solution_diagnostics <- function(solution) {
+    result_success <- solution$result == diffrax$RESULTS$successful
+    state_finite <- ndm_runtime_tree_all_finite(solution$ys)
+    list(
+      "success" = jnp$logical_and(result_success, state_finite),
+      "result_success" = result_success,
+      "state_finite" = state_finite,
+      "result_code" = jnp$asarray(
+        solution$result$`_value`,
+        dtype = jnp$int32
+      ),
+      "num_steps" = jnp$asarray(
+        solution$stats[["num_steps"]],
+        dtype = jnp$int32
+      ),
+      "num_accepted_steps" = jnp$asarray(
+        solution$stats[["num_accepted_steps"]],
+        dtype = jnp$int32
+      ),
+      "num_rejected_steps" = jnp$asarray(
+        solution$stats[["num_rejected_steps"]],
+        dtype = jnp$int32
+      ),
+      "max_steps" = jnp$asarray(
+        solution$stats[["max_steps"]],
+        dtype = jnp$int32
+      )
+    )
+  }
   
   GetPred <- function(ModelList, # not externally vectorized 
                       x, # vectorized
@@ -1034,6 +1154,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     return_v <- {
       state <- jnp$array(1.); 
       KL_LOCAL <- KL_GLOBAL <- KL_PLACE <- jnp$array(0.)
+      solver_diagnostics <- ndm_runtime_empty_solver_diagnostics()
 
       # initial processing 
       x <- ProcessEncoderInput(
@@ -1060,9 +1181,6 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             jnp$concatenate(list(x[[1]], jnp$zeros(list(GEN_CAP, x[[1]]$shape[[2]]))), 0L),  # [T_total, D]
             jnp$concatenate(list(x[[2]], jnp$zeros(list(GEN_CAP, 1L))), 0L)                  # [T_total, 1]
           )
-          
-          # Count known prefix length from mask (ones)
-          prefix_len <- jnp$sum(xt_running[[2]])$astype(jnp$int32)
           
           # When KV caching cannot be used, fall back to original full pass/scan
           if (!EnableKVCaching) {
@@ -1102,7 +1220,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             decoder_scan_out <- scan_out[[2]]
             y_mean  <- jax$nn$softplus(decoder_scan_out$logits)
             y_sigma <- jnp$ones_like(y_mean) * (
-              0.001 + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
+              ObservationScaleFloor + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
             )
             TemporalLatents <- list("decoder_head_input" = decoder_scan_out$decoder_head_input)
             ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
@@ -1111,13 +1229,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           if( EnableKVCaching) {
             # ---- KV-CACHED PATH ----
             
-            # 1) Prefill KV cache once for the known prefix subset.
-            #    This uses the per-layer TRY_FLASH projections (W_q/W_k/W_v/W_o).
+            # 1) Prefill KV cache once at the input's physical sequence
+            #    positions. The actual mask, rather than its count, preserves
+            #    left padding and keeps the most recent observed token.
             prefill_ret <- transformer_prefill_kv(
               xt        = xt_running[[1]],
               x_mask    = xt_running[[2]],
-              TransformerList = ModelList$TSList$TSBackbone,
-              prefix_len = prefix_len
+              TransformerList = ModelList$TSList$TSBackbone
             )
             kv_cache   <- prefill_ret$cache
             xt_last_raw <- prefill_ret$xt_last
@@ -1129,8 +1247,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             # 2) First prediction y_1 uses representation at last known token.
             y_first    <- ModelList$TSList$TSBackbone$DecoderProj(xt_last)  # [nOutcomes]
             
-            # 3) Insert xt_last as the embedding for the *next* position (prefix_len)
-            insert_pos <- prefix_len                         # index to write next token (0-based)
+            # 3) Insert xt_last at the physical position after the last valid
+            #    token. For left-padded input this is not the mask sum.
+            insert_pos <- prefill_ret$next_pos
             xt_running[[1]] <- jax$lax$dynamic_update_slice(
               xt_running[[1]],
               jnp$expand_dims(xt_last, 0L),                 # [1, D]
@@ -1210,7 +1329,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             
             y_mean  <- jax$nn$softplus(y_all)   # preserve your softplus post-proj
             y_sigma <- jnp$ones_like(y_mean) * (
-              0.001 + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
+              ObservationScaleFloor + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
             )
             TemporalLatents <- list("decoder_head_input" = decoder_head_input_all)
             ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
@@ -1297,7 +1416,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         xt_running_final <- scan_out[[1]]   # final updated carry
         y_mean          <- jax$nn$softplus( scan_out[[2]] )# * 0.1 
         y_sigma         <- jnp$ones_like(y_mean) * (
-          0.001 + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
+          ObservationScaleFloor + SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale)
         )
 
         # 6) If your code expects a big T dimension including historical time,
@@ -1474,13 +1593,35 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       testWithoutSampling_requested <- isTRUE(ndm_runtime_get0("testWithoutSampling", ifnotfound = FALSE))
       testWithoutSampling <- !isTRUE(neuralode_variational) || testWithoutSampling_requested
       if(testWithoutSampling_requested){ warning("Testing with no sampling!")}
+
+      # Legacy callers pass one PRNG key with shape [2]. Inference may instead
+      # pass a scoped key pair with shape [2, 2]: row 0 is stable per example
+      # for local draws, while row 1 is shared across the batch for one global
+      # posterior draw. Keep the legacy arithmetic subkeys unchanged so old
+      # training runs remain numerically reproducible.
+      scoped_sampling_keys <- length(seed$shape) == 2L
+      local_sampling_seed <- global_sampling_seed <- seed
+      if(scoped_sampling_keys){
+        if(as.integer(seed$shape[[1]]) != 2L ||
+           as.integer(seed$shape[[2]]) != 2L){
+          stop("Scoped inference seeds must have shape [2, 2].", call. = FALSE)
+        }
+        local_sampling_seed <- jnp$take(seed, jnp$array(0L), axis = 0L)
+        global_sampling_seed <- jnp$take(seed, jnp$array(1L), axis = 0L)
+      }
+      sampling_subkey <- function(root_key, domain_tag){
+        if(scoped_sampling_keys){
+          return(jax$random$fold_in(root_key, ai(domain_tag)))
+        }
+        jnp$add(root_key, jnp$array(ai(domain_tag)))
+      }
   
       # sample local
-      if(!testWithoutSampling){ local_x_base_params_samp <- localParamD$sample(seed = jnp$add(seed, jnp$array(25L))) }
+      if(!testWithoutSampling){ local_x_base_params_samp <- localParamD$sample(seed = sampling_subkey(local_sampling_seed, 25L)) }
       if(testWithoutSampling){ local_x_base_params_samp <- localParamD$parameters$loc }
   
       # sample local neural
-      if(!testWithoutSampling){ local_x_neural_params_samp <- localParamD_neural$sample(seed = jnp$add(seed, jnp$array(2435L))) }
+      if(!testWithoutSampling){ local_x_neural_params_samp <- localParamD_neural$sample(seed = sampling_subkey(local_sampling_seed, 2435L)) }
       if(testWithoutSampling){ local_x_neural_params_samp <- localParamD_neural$parameters$loc }
   
       # check this
@@ -1489,13 +1630,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   
       # sample global parameters (consider incorporating one draw for entire batch)
       if(length(ArgNoDeps) > 0 && nGlobalParams > 0L){
-        if(!testWithoutSampling){ global_x_params_samp <- globalParamD$sample(seed = jnp$add(seed, jnp$array(77245L)))  }
+        if(!testWithoutSampling){ global_x_params_samp <- globalParamD$sample(seed = sampling_subkey(global_sampling_seed, 77245L))  }
         if(testWithoutSampling){ global_x_params_samp <- globalParamD$parameters$loc }
       }
 
       # sample fixed local parameters
       if(nFixedLocal > 0){
-        if(!testWithoutSampling){ fixedlocal_x_params_samp <- fixedLocalParamD$sample(seed = jnp$add(seed, jnp$array(295L))) }
+        if(!testWithoutSampling){ fixedlocal_x_params_samp <- fixedLocalParamD$sample(seed = sampling_subkey(local_sampling_seed, 295L)) }
         if(testWithoutSampling){ fixedlocal_x_params_samp <- fixedLocalParamD$parameters$loc }
       }
       
@@ -1529,7 +1670,19 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                            t0 = 0.,
                                            t1 = f2n(NTimeGlobalNeuralMax),
                                            dt0 = (dt0_init_optim),
-                                           stepsize_controller = stepsize_controller_optim )
+                                           stepsize_controller = stepsize_controller_optim,
+                                           throw = FALSE )
+        global_solver_diagnostics <- ndm_runtime_solution_diagnostics(
+          dynamicglobal_x_params_samp
+        )
+        solver_diagnostics$global_attempted <- jnp$array(TRUE)
+        solver_diagnostics$global_result_success <- global_solver_diagnostics$result_success
+        solver_diagnostics$global_state_finite <- global_solver_diagnostics$state_finite
+        solver_diagnostics$global_result_code <- global_solver_diagnostics$result_code
+        solver_diagnostics$global_num_steps <- global_solver_diagnostics$num_steps
+        solver_diagnostics$global_num_accepted_steps <- global_solver_diagnostics$num_accepted_steps
+        solver_diagnostics$global_num_rejected_steps <- global_solver_diagnostics$num_rejected_steps
+        solver_diagnostics$global_max_steps <- global_solver_diagnostics$max_steps
         dynamicglobal_x0_samp <- jnp$take(dynamicglobal_x_params_samp$ys$Neural2, time_indices, axis = 0L)
         # plot( np$array(dynamicglobal_x_params_samp$ys$Neural2)[,sample(1:100,1)] )
         # saveat is zero-based so time_indices line up directly with the solved path
@@ -1545,7 +1698,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                                                  ( ModelList$ScaleList$ScaleBayes$DirichletScale2 ) ), 
                                          context_ = context,
                                          tze = time_indices,
-                                         seed = jnp$add(seed, jnp$array(4223131L))  )
+                                         seed = sampling_subkey(
+                                           local_sampling_seed,
+                                           4223131L
+                                         )  )
       # explicit name for initial neural condition & drop NULLs
       names(ODEParamsSampList_args$Neural1_samp)[length(names(ODEParamsSampList_args$Neural1_samp))] <- "Neural1_0"
       ODEParamsSampList_args$Neural1_samp <- ODEParamsSampList_args$Neural1_samp[!unlist(lapply(ODEParamsSampList_args$Neural1_samp,is.null))]
@@ -1671,7 +1827,17 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                          t1 = GetPredSaveAtInfo[[1]], 
                                          saveat = GetPredSaveAtInfo[[2]],
                                          dt0 = dt0_init_optim,
-                                         stepsize_controller = stepsize_controller_optim )
+                                         stepsize_controller = stepsize_controller_optim,
+                                         throw = FALSE )
+      local_solver_diagnostics <- ndm_runtime_solution_diagnostics(diff_eq_sol)
+      solver_diagnostics$local_attempted <- jnp$array(TRUE)
+      solver_diagnostics$local_result_success <- local_solver_diagnostics$result_success
+      solver_diagnostics$local_state_finite <- local_solver_diagnostics$state_finite
+      solver_diagnostics$local_result_code <- local_solver_diagnostics$result_code
+      solver_diagnostics$local_num_steps <- local_solver_diagnostics$num_steps
+      solver_diagnostics$local_num_accepted_steps <- local_solver_diagnostics$num_accepted_steps
+      solver_diagnostics$local_num_rejected_steps <- local_solver_diagnostics$num_rejected_steps
+      solver_diagnostics$local_max_steps <- local_solver_diagnostics$max_steps
       # np$array(tmp$Neural1$val$val)[,1,]
       # does this speed up or slow down execution? TEST
       # diff_eq_sol$ys$e_l$devices() # analyze chip placement 
@@ -1693,11 +1859,60 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       #y_mean <- jnp$expand_dims(jnp$take(x, jnp$array(0L:(y_mean$shape[[1]]-1L))),1L) * jnp$ones_like(y_mean)
       #y_mean <- jnp$mean(ModelList[[8]][[6]],0L) * jnp$ones_like(y_mean)
   
-      y_sigma <- 0.001+SoftPlus( jnp$take(diff_eq_sol$ys$Neural1,
+      y_sigma <- ObservationScaleFloor + SoftPlus( jnp$take(diff_eq_sol$ys$Neural1,
                               jnp$array((diff_eq_sol$ys$Neural1$aval$shape[[2]]-nOutcomes):
                                   (diff_eq_sol$ys$Neural1$aval$shape[[2]]-1L)), axis = 1L) )
       if( nOutcomes == 1 ){ y_sigma <- jnp$expand_dims(y_sigma,1L) }
       }
+
+      solver_diagnostics$prediction_finite <- jnp$logical_and(
+        jnp$all(jnp$isfinite(y_mean)),
+        jnp$all(jnp$isfinite(y_sigma))
+      )
+      solver_diagnostics$success <- jnp$logical_and(
+        jnp$logical_and(
+          jnp$logical_or(
+            jnp$logical_not(solver_diagnostics$global_attempted),
+            jnp$logical_and(
+              solver_diagnostics$global_result_success,
+              solver_diagnostics$global_state_finite
+            )
+          ),
+          jnp$logical_or(
+            jnp$logical_not(solver_diagnostics$local_attempted),
+            jnp$logical_and(
+              solver_diagnostics$local_result_success,
+              solver_diagnostics$local_state_finite
+            )
+          )
+        ),
+        solver_diagnostics$prediction_finite
+      )
+      solver_diagnostics$failure_stage_code <- jnp$where(
+        jnp$logical_and(
+          solver_diagnostics$global_attempted,
+          jnp$logical_not(jnp$logical_and(
+            solver_diagnostics$global_result_success,
+            solver_diagnostics$global_state_finite
+          ))
+        ),
+        jnp$array(1L, dtype = jnp$int32),
+        jnp$where(
+          jnp$logical_and(
+            solver_diagnostics$local_attempted,
+            jnp$logical_not(jnp$logical_and(
+              solver_diagnostics$local_result_success,
+              solver_diagnostics$local_state_finite
+            ))
+          ),
+          jnp$array(2L, dtype = jnp$int32),
+          jnp$where(
+            jnp$logical_not(solver_diagnostics$prediction_finite),
+            jnp$array(3L, dtype = jnp$int32),
+            jnp$array(0L, dtype = jnp$int32)
+          )
+        )
+      )
   
       return_v <- list(list("y_mu" = y_mean,
                             "y_sigma" = y_sigma,
@@ -1706,6 +1921,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                             "KL_GLOBAL" = KL_GLOBAL,
                             "KL_PLACE" = KL_PLACE,
                             "TemporalLatents" = TemporalLatents,
+                            "solver_diagnostics" = solver_diagnostics,
                             "ODEParamsSampList" = c(ODEParamsSampList_args,
                                                     ODEParamsSampList_y0,
                                                     "center_param" = y_mean,
@@ -1786,7 +2002,43 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         loss_y_mask <- model_targets$y_mask
 
         GetPred_output <- GetPred_train(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed)
-        state <- GetPred_output[[2]]; GetPred_output <- GetPred_output[[1]]
+        state <- GetPred_output[[2]]
+        GetPred_output <- GetPred_output[[1]]
+        solver_diagnostics <- GetPred_output$solver_diagnostics
+        solver_example_success <- solver_diagnostics$success
+        solver_success_mask <- jnp$broadcast_to(
+          jnp$reshape(
+            solver_example_success,
+            list(solver_example_success$shape[[1]], 1L, 1L)
+          ),
+          loss_y_mask$shape
+        )
+        solver_safe_loss_mask <- jnp$logical_and(
+          loss_y_mask,
+          solver_success_mask
+        )
+        solver_safe_y_mu <- jnp$nan_to_num(
+          GetPred_output$y_mu,
+          nan = 0.,
+          posinf = 0.,
+          neginf = 0.
+        )
+        solver_safe_y_sigma <- jnp$nan_to_num(
+          GetPred_output$y_sigma,
+          nan = ObservationScaleFloor,
+          posinf = ObservationScaleFloor,
+          neginf = ObservationScaleFloor
+        )
+        solver_safe_y_mu <- jnp$where(
+          solver_success_mask,
+          solver_safe_y_mu,
+          jnp$zeros_like(solver_safe_y_mu)
+        )
+        solver_safe_y_sigma <- jnp$where(
+          solver_success_mask,
+          solver_safe_y_sigma,
+          jnp$ones_like(solver_safe_y_sigma) * ObservationScaleFloor
+        )
         {
           #y_mask <- y[[2]];
           #y <- y[[1]]
@@ -1797,11 +2049,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             jax = jax,
             jnp = jnp,
             y = loss_y,
-            location = GetPred_output$y_mu,
-            scale = GetPred_output$y_sigma,
-            mask = loss_y_mask,
+            location = solver_safe_y_mu,
+            scale = solver_safe_y_sigma,
+            mask = solver_safe_loss_mask,
             df = 4.,
-            scale_floor = 1e-3
+            scale_floor = ObservationScaleFloor
           )
           likelihood_loss <- student_t_loss$loss
           local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
@@ -1820,9 +2072,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             as.numeric(neuralode_kl_weight),
             dtype = GetPred_output$y_mu$dtype
           ) * (local_kl + persistent_kl)
-          observation_mask <- loss_y_mask$astype(GetPred_output$y_mu$dtype)
+          observation_mask <- solver_safe_loss_mask$astype(
+            GetPred_output$y_mu$dtype
+          )
           mean_squared_error <- jnp$sum(
-            jnp$square(GetPred_output$y_mu - loss_y) * observation_mask
+            jnp$square(solver_safe_y_mu - loss_y) * observation_mask
           ) / jnp$maximum(
             jnp$sum(observation_mask),
             jnp$array(1., dtype = GetPred_output$y_mu$dtype)
@@ -1833,7 +2087,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           ) * mean_squared_error
           minThis <- likelihood_loss + weighted_kl + weighted_mean_loss
         }
-        return( list(minThis, state)  )
+        return(list(
+          minThis,
+          list(
+            "model_state" = state,
+            "solver_diagnostics" = solver_diagnostics
+          )
+        ))
       }
 
     GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(
@@ -1857,7 +2117,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         PriorList,
         PolicyList,
         GetPredSaveAtInfo_default,
-        jax$random$split(JaxKey(ai(6L*SEED_)),nBatch))
+        jax$random$split(ndm_runtime_seed_key(6L),nBatch))
       plot( np$asanyarray( prior_grad_checks[[2]][[1]]), cex = 0)
         text( np$asanyarray( prior_grad_checks[[2]][[1]]), labels = PriorDefinitions_jax[2,])
         image2( np$asanyarray( prior_grad_checks[[2]][[2]]) )

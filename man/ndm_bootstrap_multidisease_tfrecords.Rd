@@ -18,6 +18,7 @@ ndm_bootstrap_multidisease_tfrecords(
   data_subset = "all",
   lookahead = 12L,
   min_anchoring_time = 4L,
+  training_target_horizon = NULL,
   producer = NULL,
   overwrite = FALSE,
   dry_run = FALSE
@@ -50,6 +51,11 @@ loader.}
 shorter `evaluationHorizon`.}
 
 \item{min_anchoring_time}{Minimum training anchor time.}
+
+\item{training_target_horizon}{Optional positive number of consecutive
+post-anchor targets that must be finite for an anchor to be eligible for
+training. It must not exceed `lookahead`; a same-named grid column is used
+when this argument is `NULL`.}
 
 \item{producer}{Non-empty named producer metadata. Required to publish.
 For environment-bound training, use `list(contract = "<contract>")`.}

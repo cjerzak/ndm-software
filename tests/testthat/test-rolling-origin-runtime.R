@@ -17,6 +17,11 @@ test_that("run configs expose GPU and NeuralODE KL controls with safe defaults",
     grid = data.frame(BaseID = 1L, ModelType = "NeuralODE"),
     outer = 1L,
     gpu_mem_frac = 0.5,
+    enable_kv_cache = TRUE,
+    inference_mc_draws = 7L,
+    observation_scale_floor = 2e-5,
+    initial_observation_scale = 0.02,
+    neuralode_variational = FALSE,
     neuralode_kl_weight = 0,
     neuralode_mean_loss_weight = 0.3,
     dry_run = TRUE
@@ -26,10 +31,20 @@ test_that("run configs expose GPU and NeuralODE KL controls with safe defaults",
   expect_true(config$force_to_gpu)
   expect_true(config$respect_grid_model_type)
   expect_equal(config$gpu_mem_frac, 0.5)
+  expect_true(config$enable_kv_cache)
+  expect_identical(config$inference_mc_draws, 7L)
+  expect_equal(config$observation_scale_floor, 2e-5)
+  expect_equal(config$initial_observation_scale, 0.02)
+  expect_false(config$neuralode_variational)
   expect_equal(config$neuralode_kl_weight, 0)
   expect_equal(config$neuralode_mean_loss_weight, 0.3)
   expect_true("--force_to_gpu=TRUE" %in% args)
   expect_true("--gpu_mem_frac=0.5" %in% args)
+  expect_true("--enable_kv_cache=TRUE" %in% args)
+  expect_true("--inference_mc_draws=7" %in% args)
+  expect_true("--observation_scale_floor=2e-05" %in% args)
+  expect_true("--initial_observation_scale=0.02" %in% args)
+  expect_true("--neuralode_variational=FALSE" %in% args)
   expect_true("--neuralode_kl_weight=0" %in% args)
   expect_true("--neuralode_mean_loss_weight=0.3" %in% args)
 })
@@ -94,17 +109,21 @@ test_that("explicit multidisease origins must exist and cannot be time zero", {
 })
 
 test_that("training Monte Carlo keys incorporate the configured run seed", {
-  runtime_source <- ndm:::.ndm_embedded_runtime_sources[[
+  runtime_source <- ndm_test_runtime_source_text(
     "ModelTrainers/SuperLModel_TrainDo.R"
-  ]]
+  )
 
-  expect_match(runtime_source, "iteration_seed <- as.integer", fixed = TRUE)
-  expect_match(runtime_source, "get0(\"SEED_\"", fixed = TRUE)
-  expect_match(runtime_source, "JaxKey(iteration_seed)", fixed = TRUE)
+  expect_match(
+    runtime_source,
+    "ndm_training_iteration_key <- function(iteration)",
+    fixed = TRUE
+  )
+  expect_match(runtime_source, "ndm_runtime_seed_key(104729L)", fixed = TRUE)
+  expect_match(runtime_source, "jax$random$fold_in(", fixed = TRUE)
 
-  driver_source <- ndm:::.ndm_embedded_runtime_sources[[
+  driver_source <- ndm_test_runtime_source_text(
     "SetupEnv/Analysis2_legacy_multidisease_driver.R"
-  ]]
+  )
   expect_match(driver_source, "tf$random$set_seed(as.integer(SEED_))", fixed = TRUE)
   expect_match(driver_source, "np$random$seed(as.integer(SEED_))", fixed = TRUE)
 })

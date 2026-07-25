@@ -38,6 +38,48 @@ analysis2_small_run_n_checkpoints <- function(n_samples_train, n_sgd, default = 
   max(1L, min(analysis2_as_int(default), max_sgd))
 }
 
+analysis2_multidisease_structured_control_globals <- function(spec,
+                                                              n_samples_train,
+                                                              n_sgd) {
+  if (!is.list(spec)) {
+    stop("`spec` must be a normalized multidisease run specification.", call. = FALSE)
+  }
+  n_checkpoints_default <- analysis2_as_int(spec$n_checkpoints)
+  prior_sd_multiplier <- suppressWarnings(as.numeric(spec$prior_sd_multiplier))
+  if (length(n_checkpoints_default) != 1L ||
+      is.na(n_checkpoints_default) ||
+      n_checkpoints_default < 1L) {
+    stop("`n_checkpoints` must be one positive integer.", call. = FALSE)
+  }
+  if (length(prior_sd_multiplier) != 1L ||
+      !is.finite(prior_sd_multiplier) ||
+      prior_sd_multiplier <= 0) {
+    stop("`prior_sd_multiplier` must be one finite positive value.", call. = FALSE)
+  }
+  force_to_gpu <- spec$force_to_gpu
+  if (!is.logical(force_to_gpu) ||
+      length(force_to_gpu) != 1L ||
+      is.na(force_to_gpu)) {
+    stop("`force_to_gpu` must be one non-missing logical value.", call. = FALSE)
+  }
+  resolved_n_sgd <- max(1L, analysis2_as_int(n_sgd))
+
+  list(
+    nCheckpointsDefault = n_checkpoints_default,
+    nCheckpoints = analysis2_small_run_n_checkpoints(
+      n_samples_train,
+      resolved_n_sgd,
+      n_checkpoints_default
+    ),
+    PriorSDMultiplier = prior_sd_multiplier,
+    force2GPU = force_to_gpu,
+    GPU_MEM_FRAC = spec$gpu_mem_frac,
+    nSGD_DefiningLRSeq = resolved_n_sgd,
+    nSGD_model = resolved_n_sgd,
+    nSGD_posttrain = resolved_n_sgd
+  )
+}
+
 analysis2_small_run_n_obs_inference <- function(n_samples_train,
                                                 n_batch,
                                                 configured = NULL,
@@ -98,23 +140,30 @@ analysis2_log_nsgd_calibration <- function(mode,
   analysis2_log(formatter(mode, calibration))
 }
 
-analysis2_parse_bool <- function(x) {
+analysis2_parse_bool <- function(x, field = NULL) {
   if (is.null(x)) {
     return(NULL)
   }
-  if (is.logical(x) && length(x) == 1L) {
+  if (is.logical(x) && length(x) == 1L && !is.na(x)) {
     return(x)
   }
 
-  value <- tolower(trimws(as.character(x)))
-  if (value %in% c("true", "t", "1", "yes", "y")) {
-    return(TRUE)
-  }
-  if (value %in% c("false", "f", "0", "no", "n")) {
-    return(FALSE)
+  if (is.character(x) && length(x) == 1L && !is.na(x)) {
+    value <- tolower(trimws(x))
+    if (value %in% c("true", "t", "1", "yes", "y")) {
+      return(TRUE)
+    }
+    if (value %in% c("false", "f", "0", "no", "n")) {
+      return(FALSE)
+    }
   }
 
-  stop("Could not parse logical value: ", x, call. = FALSE)
+  label <- if (is.null(field)) "Logical value" else paste0("`", field, "`")
+  stop(
+    label,
+    " must be one non-missing logical value or canonical logical spelling.",
+    call. = FALSE
+  )
 }
 
 analysis2_parse_args <- function(args = commandArgs(TRUE)) {
@@ -137,7 +186,16 @@ analysis2_parse_args <- function(args = commandArgs(TRUE)) {
     out[[key]] <- value
   }
 
-  for (name in c("dry_run", "run_figures", "respect_grid_model_type", "resave_tfrecords", "force_to_gpu", "help")) {
+  for (name in c(
+    "dry_run",
+    "run_figures",
+    "respect_grid_model_type",
+    "resave_tfrecords",
+    "force_to_gpu",
+    "enable_kv_cache",
+    "neuralode_variational",
+    "help"
+  )) {
     if (!is.null(out[[name]])) {
       out[[name]] <- analysis2_parse_bool(out[[name]])
     }
@@ -189,6 +247,11 @@ analysis2_supported_flags <- function(mode) {
     "run_seed",
     "force_to_gpu",
     "gpu_mem_frac",
+    "enable_kv_cache",
+    "inference_mc_draws",
+    "observation_scale_floor",
+    "initial_observation_scale",
+    "neuralode_variational",
     "neuralode_kl_weight",
     "neuralode_mean_loss_weight",
     "n_checkpoints",
@@ -238,16 +301,33 @@ analysis2_validate_manifest <- function(manifest, mode) {
 
   known <- names(analysis2_mode_defaults(mode))
   unknown <- setdiff(names(manifest), c(known, "config_file", "paths"))
-  if (length(unknown) == 0L) {
-    return(invisible(manifest))
+  if (length(unknown) > 0L) {
+    stop(
+      "Unknown config field(s) in the Analysis2 ", mode, " manifest: ",
+      paste(unknown, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
   }
 
-  stop(
-    "Unknown config field(s) in the Analysis2 ", mode, " manifest: ",
-    paste(unknown, collapse = ", "),
-    ".",
-    call. = FALSE
+  boolean_fields <- intersect(
+    c(
+      "respect_grid_model_type",
+      "resave_tfrecords",
+      "run_figures",
+      "force_to_gpu",
+      "enable_kv_cache",
+      "neuralode_variational",
+      "dry_run",
+      "help"
+    ),
+    names(manifest)
   )
+  for (field in boolean_fields) {
+    analysis2_parse_bool(manifest[[field]], field = field)
+  }
+
+  invisible(manifest)
 }
 
 analysis2_default_config_name <- function(mode) {
@@ -295,6 +375,11 @@ analysis2_mode_defaults <- function(mode) {
       run_seed = NULL,
       force_to_gpu = TRUE,
       gpu_mem_frac = NULL,
+      enable_kv_cache = FALSE,
+      inference_mc_draws = 5L,
+      observation_scale_floor = 1e-5,
+      initial_observation_scale = 1.0,
+      neuralode_variational = TRUE,
       neuralode_kl_weight = 1.0,
       neuralode_mean_loss_weight = 0.0,
       n_checkpoints = 1L,
@@ -323,6 +408,11 @@ analysis2_mode_defaults <- function(mode) {
       run_seed = NULL,
       force_to_gpu = TRUE,
       gpu_mem_frac = NULL,
+      enable_kv_cache = FALSE,
+      inference_mc_draws = 5L,
+      observation_scale_floor = 1e-5,
+      initial_observation_scale = 1.0,
+      neuralode_variational = TRUE,
       neuralode_kl_weight = 1.0,
       neuralode_mean_loss_weight = 0.0,
       n_checkpoints = 1L,
@@ -351,6 +441,11 @@ analysis2_mode_defaults <- function(mode) {
       run_seed = NULL,
       force_to_gpu = TRUE,
       gpu_mem_frac = NULL,
+      enable_kv_cache = FALSE,
+      inference_mc_draws = 5L,
+      observation_scale_floor = 1e-5,
+      initial_observation_scale = 1.0,
+      neuralode_variational = TRUE,
       neuralode_kl_weight = 1.0,
       neuralode_mean_loss_weight = 0.0,
       n_checkpoints = 1L,
@@ -454,7 +549,15 @@ analysis2_cli_overrides <- function(opts, mode) {
     overrides$run_seed <- opts$run_seed
   }
   for (field in intersect(c(
-    "gpu_mem_frac", "neuralode_kl_weight", "neuralode_mean_loss_weight", "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier"
+    "gpu_mem_frac",
+    "inference_mc_draws",
+    "observation_scale_floor",
+    "initial_observation_scale",
+    "neuralode_kl_weight",
+    "neuralode_mean_loss_weight",
+    "n_checkpoints",
+    "max_sgd_steps",
+    "prior_sd_multiplier"
   ), names(opts))) {
     overrides[[field]] <- opts[[field]]
   }
@@ -467,7 +570,16 @@ analysis2_cli_overrides <- function(opts, mode) {
     overrides$disease_names <- analysis2_parse_csv(opts$disease_names)
   }
 
-  for (field in c("respect_grid_model_type", "resave_tfrecords", "run_figures", "force_to_gpu", "dry_run", "help")) {
+  for (field in c(
+    "respect_grid_model_type",
+    "resave_tfrecords",
+    "run_figures",
+    "force_to_gpu",
+    "enable_kv_cache",
+    "neuralode_variational",
+    "dry_run",
+    "help"
+  )) {
     if (!is.null(opts[[field]])) {
       overrides[[field]] <- analysis2_as_flag(opts[[field]])
     }
@@ -504,9 +616,26 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
   spec$project_root <- analysis2_path_from_project(spec$project_root %||% paths$project_root, paths$project_root, must_work = TRUE)
   spec$analysis_name <- analysis2_normalize_string(spec$analysis_name %||% defaults$analysis_name)
   spec$model_type <- analysis2_normalize_string(spec$model_type)
-  spec$respect_grid_model_type <- isTRUE(spec$respect_grid_model_type %||% defaults$respect_grid_model_type)
-  spec$force_to_gpu <- isTRUE(spec$force_to_gpu %||% defaults$force_to_gpu)
-  resave_tfrecords <- spec$resave_tfrecords %||% defaults$resave_tfrecords
+  spec$respect_grid_model_type <- analysis2_parse_bool(
+    spec$respect_grid_model_type %||% defaults$respect_grid_model_type,
+    field = "respect_grid_model_type"
+  )
+  spec$force_to_gpu <- analysis2_parse_bool(
+    spec$force_to_gpu %||% defaults$force_to_gpu,
+    field = "force_to_gpu"
+  )
+  spec$enable_kv_cache <- analysis2_parse_bool(
+    spec$enable_kv_cache %||% defaults$enable_kv_cache,
+    field = "enable_kv_cache"
+  )
+  spec$neuralode_variational <- analysis2_parse_bool(
+    spec$neuralode_variational %||% defaults$neuralode_variational,
+    field = "neuralode_variational"
+  )
+  resave_tfrecords <- analysis2_parse_bool(
+    spec$resave_tfrecords %||% defaults$resave_tfrecords,
+    field = "resave_tfrecords"
+  )
   if (!identical(resave_tfrecords, FALSE)) {
     guidance <- switch(
       mode,
@@ -521,9 +650,18 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
     )
   }
   spec$resave_tfrecords <- FALSE
-  spec$run_figures <- isTRUE(spec$run_figures %||% FALSE)
-  spec$dry_run <- isTRUE(spec$dry_run %||% FALSE)
-  spec$help <- isTRUE(spec$help %||% FALSE)
+  spec$run_figures <- analysis2_parse_bool(
+    spec$run_figures %||% FALSE,
+    field = "run_figures"
+  )
+  spec$dry_run <- analysis2_parse_bool(
+    spec$dry_run %||% FALSE,
+    field = "dry_run"
+  )
+  spec$help <- analysis2_parse_bool(
+    spec$help %||% FALSE,
+    field = "help"
+  )
   spec$outcome_metric <- analysis2_normalize_string(spec$outcome_metric)
   spec$data_subset <- analysis2_normalize_string(spec$data_subset)
   spec$data_format <- analysis2_normalize_string(spec$data_format)
@@ -544,6 +682,39 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
         spec$gpu_mem_frac <= 0 || spec$gpu_mem_frac > 1) {
       stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", call. = FALSE)
     }
+  }
+  spec$inference_mc_draws <- suppressWarnings(as.numeric(
+    spec$inference_mc_draws %||% defaults$inference_mc_draws
+  ))
+  if (length(spec$inference_mc_draws) != 1L ||
+      !is.finite(spec$inference_mc_draws) ||
+      spec$inference_mc_draws < 1 ||
+      spec$inference_mc_draws > .Machine$integer.max ||
+      spec$inference_mc_draws != floor(spec$inference_mc_draws)) {
+    stop("`inference_mc_draws` must be one positive integer.", call. = FALSE)
+  }
+  spec$inference_mc_draws <- as.integer(spec$inference_mc_draws)
+  spec$observation_scale_floor <- suppressWarnings(as.numeric(
+    spec$observation_scale_floor %||% defaults$observation_scale_floor
+  ))
+  if (length(spec$observation_scale_floor) != 1L ||
+      !is.finite(spec$observation_scale_floor) ||
+      spec$observation_scale_floor <= 0) {
+    stop("`observation_scale_floor` must be one finite positive value.", call. = FALSE)
+  }
+  spec$initial_observation_scale <- suppressWarnings(as.numeric(
+    spec$initial_observation_scale %||% defaults$initial_observation_scale
+  ))
+  if (length(spec$initial_observation_scale) != 1L ||
+      !is.finite(spec$initial_observation_scale) ||
+      spec$initial_observation_scale <= 0) {
+    stop("`initial_observation_scale` must be one finite positive value.", call. = FALSE)
+  }
+  if (spec$initial_observation_scale <= spec$observation_scale_floor) {
+    stop(
+      "`initial_observation_scale` must be greater than `observation_scale_floor`.",
+      call. = FALSE
+    )
   }
   spec$neuralode_kl_weight <- suppressWarnings(as.numeric(
     spec$neuralode_kl_weight %||% defaults$neuralode_kl_weight
@@ -679,6 +850,11 @@ analysis2_usage <- function(mode, paths = analysis2_paths()) {
       "  --run_seed=INTEGER",
       "  --force_to_gpu=TRUE|FALSE",
       "  --gpu_mem_frac=NUMBER",
+      "  --enable_kv_cache=TRUE|FALSE",
+      "  --inference_mc_draws=POSITIVE_INTEGER",
+      "  --observation_scale_floor=POSITIVE_NUMBER",
+      "  --initial_observation_scale=NUMBER_GREATER_THAN_OBSERVATION_SCALE_FLOOR",
+      "  --neuralode_variational=TRUE|FALSE",
       "  --neuralode_kl_weight=NUMBER",
       "  --neuralode_mean_loss_weight=NUMBER",
       "  --n_checkpoints=POSITIVE_INTEGER",
@@ -954,6 +1130,11 @@ analysis2_canonical_variation_fields <- function(mode) {
       "run_seed",
       "force_to_gpu",
       "gpu_mem_frac",
+      "enable_kv_cache",
+      "inference_mc_draws",
+      "observation_scale_floor",
+      "initial_observation_scale",
+      "neuralode_variational",
       "neuralode_kl_weight",
       "neuralode_mean_loss_weight",
       "n_checkpoints",
@@ -978,6 +1159,11 @@ analysis2_canonical_variation_fields <- function(mode) {
       "run_seed",
       "force_to_gpu",
       "gpu_mem_frac",
+      "enable_kv_cache",
+      "inference_mc_draws",
+      "observation_scale_floor",
+      "initial_observation_scale",
+      "neuralode_variational",
       "neuralode_kl_weight",
       "neuralode_mean_loss_weight",
       "n_checkpoints",
@@ -1452,6 +1638,11 @@ analysis2_bootstrap_write_real_tfrecord <- function(base_id,
   )
   training_spec$n_samples_train <- as.integer(artifact_n_samples_train)
   backend <- resolve_backend()
+  preprocessed <- analysis2_preapply_real_initial_transform(
+    backend$ndmdatasets_pkg,
+    backend$bundle,
+    dataset_spec
+  )
 
   analysis2_log(sprintf(
     "Regenerating canonical real TFRecords for BaseID %s from row %s with nSamplesTrain %s",
@@ -1462,8 +1653,8 @@ analysis2_bootstrap_write_real_tfrecord <- function(base_id,
   result <- analysis2_call(
     backend$ndmdatasets_pkg,
     "ndm_real_bootstrap_tfrecords",
-    table_bundle = backend$bundle,
-    dataset_spec = dataset_spec,
+    table_bundle = preprocessed$table_bundle,
+    dataset_spec = preprocessed$dataset_spec,
     output_dir = tfrecord_dir,
     training_spec = training_spec,
     producer = producer,
@@ -1702,6 +1893,20 @@ analysis2_real_dataset_spec <- function(ndmdatasets_pkg,
                                         row_values,
                                         outcome_metric = "inc_death",
                                         data_subset = "high_income") {
+  training_target_horizon <- NULL
+  for (field in c("training_target_horizon", "trainingTargetHorizon")) {
+    if (!field %in% names(row_values)) {
+      next
+    }
+    candidate <- row_values[[field]]
+    if (is.null(candidate) || length(candidate) == 0L ||
+        all(is.na(candidate)) ||
+        !nzchar(trimws(as.character(candidate[[1L]])))) {
+      next
+    }
+    training_target_horizon <- analysis2_as_int(candidate[[1L]])
+    break
+  }
   analysis2_call(
     ndmdatasets_pkg,
     "ndm_datasets_dataset_spec",
@@ -1721,6 +1926,7 @@ analysis2_real_dataset_spec <- function(ndmdatasets_pkg,
     per_capita_scaling_factor = 10000,
     roll_window = 26L,
     min_anchoring_time = 4L,
+    training_target_horizon = training_target_horizon,
     train_location_fraction = 0.8,
     n_inference_samples = 1024L,
     base_id = analysis2_as_int(row_values$BaseID),
@@ -1783,8 +1989,11 @@ analysis2_sim_dataset_spec <- function(ndmdatasets_pkg, row_values) {
     measurement_noise = analysis2_f2n(row_values$measurement_noise),
     hosp_rate = 0.1,
     death_rate = 0.01,
-    forward_shift_h = 4L,
-    forward_shift_c = 7L,
+    # Simulation inputs are restricted to measurements available when the
+    # forecast is issued. Positive shifts would place context covariates inside
+    # the target window.
+    forward_shift_h = 0L,
+    forward_shift_c = 0L,
     n_inference_batches = if ("n_inference_batches" %in% names(row_values)) {
       analysis2_as_int(row_values$n_inference_batches)
     } else {
@@ -1816,15 +2025,160 @@ analysis2_resolve_real_inputs <- function(ndmdatasets_pkg, bundle, dataset_spec)
   analysis2_call(ndmdatasets_pkg, "ndm_real_resolve_inputs", bundle, dataset_spec)
 }
 
+analysis2_real_training_rows <- function(bundle, dataset_spec) {
+  truth_df <- as.data.frame(bundle$truth_df, stringsAsFactors = FALSE)
+  required_columns <- c("location_id", "location_name", "week_id")
+  missing_columns <- setdiff(required_columns, names(truth_df))
+  if (length(missing_columns) > 0L) {
+    stop(
+      "Real-data transform fitting is missing required source columns: ",
+      paste(missing_columns, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  eligible <- !is.na(truth_df$location_name)
+  if (identical(dataset_spec$data_subset, "high_income")) {
+    if (!"LOC2_region_name" %in% names(truth_df)) {
+      stop(
+        "Real-data high-income filtering requires `LOC2_region_name`.",
+        call. = FALSE
+      )
+    }
+    high_income_regions <- c(
+      "Western Europe",
+      "High-income North America",
+      "Central Europe",
+      "High-income Asia Pacific"
+    )
+    eligible <- eligible & truth_df$LOC2_region_name %in% high_income_regions
+  }
+  eligible_rows <- which(eligible)
+  if (length(eligible_rows) == 0L) {
+    stop("Real-data transform fitting found no eligible observations.", call. = FALSE)
+  }
+
+  time_id <- as.numeric(truth_df$week_id[eligible_rows])
+  in_out_cutpoint <- round(stats::quantile(
+    sort(unique(time_id)),
+    prob = dataset_spec$evaluation_time /
+      (max(dataset_spec$evaluation_sequence) + 1)
+  ))
+  split_type <- as.character(dataset_spec$split_type)
+  if (identical(split_type, "OutOfTime")) {
+    return(eligible_rows[time_id <= in_out_cutpoint])
+  }
+  if (!split_type %in% c("OutOfPlace", "OutOfPlacetime")) {
+    stop("Unsupported real-data split type: ", split_type, call. = FALSE)
+  }
+
+  locations <- sort(unique(truth_df$location_id[eligible_rows]))
+  n_train_locations <- max(
+    1L,
+    floor(length(locations) * dataset_spec$train_location_fraction)
+  )
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_seed) {
+    previous_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  }
+  on.exit({
+    if (had_seed) {
+      assign(".Random.seed", previous_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+  set.seed(1L)
+  training_locations <- sample(
+    locations,
+    n_train_locations,
+    replace = FALSE
+  )
+  training <- truth_df$location_id[eligible_rows] %in% training_locations
+  if (identical(split_type, "OutOfPlacetime")) {
+    training <- training & time_id <= in_out_cutpoint
+  }
+  eligible_rows[training]
+}
+
+analysis2_preapply_real_initial_transform <- function(ndmdatasets_pkg,
+                                                      bundle,
+                                                      dataset_spec) {
+  requested_transform <- as.character(dataset_spec$initial_transform %||% "none")
+  if (!identical(requested_transform, "yeoJohnson")) {
+    return(list(
+      table_bundle = bundle,
+      dataset_spec = dataset_spec,
+      applied = FALSE
+    ))
+  }
+
+  data_inputs <- analysis2_resolve_real_inputs(
+    ndmdatasets_pkg,
+    bundle,
+    dataset_spec
+  )
+  missing_inputs <- setdiff(data_inputs, names(bundle$truth_df))
+  if (length(missing_inputs) > 0L) {
+    stop(
+      "Missing requested real-data inputs: ",
+      paste(missing_inputs, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  training_rows <- analysis2_real_training_rows(bundle, dataset_spec)
+  transformed_bundle <- bundle
+  transformed_bundle$truth_df <- data.table::copy(bundle$truth_df)
+  transform_parameters <- stats::setNames(
+    vector("list", length(data_inputs)),
+    data_inputs
+  )
+
+  for (column in data_inputs) {
+    values <- as.numeric(transformed_bundle$truth_df[[column]])
+    transform_fit <- bestNormalize::yeojohnson(
+      values[training_rows],
+      standardize = FALSE
+    )
+    transformed_bundle$truth_df[[column]] <- as.numeric(stats::predict(
+      transform_fit,
+      newdata = values
+    ))
+    transform_parameters[[column]] <- list(
+      lambda = as.numeric(transform_fit$lambda)
+    )
+  }
+
+  effective_spec <- dataset_spec
+  effective_spec$initial_transform <- "none"
+  effective_spec$analysis2_preapplied_initial_transform <- list(
+    method = requested_transform,
+    fit_partition = "train",
+    parameters = transform_parameters
+  )
+  list(
+    table_bundle = transformed_bundle,
+    dataset_spec = effective_spec,
+    applied = TRUE
+  )
+}
+
 analysis2_prepare_real_state <- function(ndmdatasets_pkg,
                                          bundle,
                                          dataset_spec,
                                          project_root) {
+  preprocessed <- analysis2_preapply_real_initial_transform(
+    ndmdatasets_pkg,
+    bundle,
+    dataset_spec
+  )
   prepared <- analysis2_call(
     ndmdatasets_pkg,
     "ndm_real_prepare_tables",
-    table_bundle = bundle,
-    dataset_spec = dataset_spec
+    table_bundle = preprocessed$table_bundle,
+    dataset_spec = preprocessed$dataset_spec
   )
 
   truth_df_red <- as.data.frame(prepared$truth_df, stringsAsFactors = FALSE)
@@ -1850,7 +2204,9 @@ analysis2_prepare_real_state <- function(ndmdatasets_pkg,
     input_df_red_out = input_df_red_out,
     context_df_red = context_df_red,
     coordinates_mat = coordinates_mat,
-    data_inputs = analysis2_resolve_real_inputs(ndmdatasets_pkg, bundle, dataset_spec)
+    data_inputs = prepared$data_inputs,
+    dataset_spec = preprocessed$dataset_spec,
+    requested_dataset_spec = dataset_spec
   )
 }
 
@@ -1946,6 +2302,15 @@ analysis2_simulate_one <- function(dataset_spec,
 
   forward_shift_h <- as.integer(dataset_spec$forward_shift_h)
   forward_shift_c <- as.integer(dataset_spec$forward_shift_c)
+  if (any(c(forward_shift_h, forward_shift_c) != 0L)) {
+    stop(
+      paste(
+        "Simulation context covariates must be available at forecast issue time;",
+        "non-zero forward shifts require an explicit causal lag convention."
+      ),
+      call. = FALSE
+    )
+  }
   max_shift <- n_times - (past + lookahead + forward_shift_c)
   if (max_shift < 0L) {
     stop("Simulation configuration leaves no valid initial shift.", call. = FALSE)
@@ -2372,11 +2737,6 @@ analysis2_preflight_expected_tfrecords <- function(mode,
                                                    outcome_metric = "inc_death",
                                                    data_subset = "high_income",
                                                    real_bundle = NULL) {
-  source_sha256 <- if (identical(mode, "real") && !is.null(real_bundle)) {
-    analysis2_call(ndmdatasets_pkg, "ndm_real_source_sha256", real_bundle)
-  } else {
-    NULL
-  }
   trusted_index <- analysis2_trusted_artifact_index(tfrecord_dir)
   validated_pairs <- list()
   for (plan_idx in seq_len(nrow(write_plan))) {
@@ -2384,13 +2744,29 @@ analysis2_preflight_expected_tfrecords <- function(mode,
     row_values <- analysis2_normalize_row_values(
       analysis2_row_to_list(grid[canonical_row, , drop = FALSE])
     )
+    source_sha256 <- NULL
     dataset_spec <- if (identical(mode, "real")) {
-      analysis2_real_dataset_spec(
+      real_dataset_spec <- analysis2_real_dataset_spec(
         ndmdatasets_pkg,
         row_values,
         outcome_metric = outcome_metric,
         data_subset = data_subset
       )
+      if (!is.null(real_bundle)) {
+        preprocessed <- analysis2_preapply_real_initial_transform(
+          ndmdatasets_pkg,
+          real_bundle,
+          real_dataset_spec
+        )
+        source_sha256 <- analysis2_call(
+          ndmdatasets_pkg,
+          "ndm_real_source_sha256",
+          preprocessed$table_bundle
+        )
+        preprocessed$dataset_spec
+      } else {
+        real_dataset_spec
+      }
     } else {
       analysis2_sim_dataset_spec(ndmdatasets_pkg, row_values)
     }
@@ -2481,6 +2857,11 @@ analysis2_real_runtime_globals <- function(row_values,
                                            model_type,
                                            run_seed,
                                            gpu_mem_frac = NULL,
+                                           enable_kv_cache = FALSE,
+                                           inference_mc_draws = 5L,
+                                           observation_scale_floor = 1e-5,
+                                           initial_observation_scale = 1.0,
+                                           neuralode_variational = TRUE,
                                            analysis_name,
                                            analysis_date,
                                            outer_iteration,
@@ -2604,6 +2985,11 @@ analysis2_real_runtime_globals <- function(row_values,
     nExamplesPerCell = 10L,
     nRealGrid = nrow(state$truth_df_red),
     GPU_MEM_FRAC = gpu_mem_frac,
+    EnableKVCaching = enable_kv_cache,
+    InferenceMCDraws = inference_mc_draws,
+    ObservationScaleFloor = observation_scale_floor,
+    InitialObservationScale = initial_observation_scale,
+    neuralode_variational = neuralode_variational,
     AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita, na.rm = TRUE),
     VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$array(1L:vi_total_times)),
     diff_eq_solver = diffrax$Dopri8(),
@@ -2657,6 +3043,11 @@ analysis2_sim_runtime_globals <- function(row_values,
                                           model_type,
                                           run_seed,
                                           gpu_mem_frac = NULL,
+                                          enable_kv_cache = FALSE,
+                                          inference_mc_draws = 5L,
+                                          observation_scale_floor = 1e-5,
+                                          initial_observation_scale = 1.0,
+                                          neuralode_variational = TRUE,
                                           analysis_name,
                                           analysis_date,
                                           outer_iteration,
@@ -2752,7 +3143,11 @@ analysis2_sim_runtime_globals <- function(row_values,
     AttentionHeadDim = 64L,
     AttentionKVHeads = NULL,
     endAppend = TRUE,
-    EnableKVCaching = TRUE,
+    EnableKVCaching = enable_kv_cache,
+    InferenceMCDraws = inference_mc_draws,
+    ObservationScaleFloor = observation_scale_floor,
+    InitialObservationScale = initial_observation_scale,
+    neuralode_variational = neuralode_variational,
     MaxTimeIndex = max_time_index,
     nPlaces = 1L,
     nMonteEval = 1L,
@@ -2908,7 +3303,12 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
       force_to_gpu = spec$force_to_gpu,
       resave_tfrecords = FALSE,
       gpu_mem_frac = spec$gpu_mem_frac,
-      neuralode_variational = identical(model_type, "NeuralODE"),
+      enable_kv_cache = spec$enable_kv_cache,
+      inference_mc_draws = spec$inference_mc_draws,
+      observation_scale_floor = spec$observation_scale_floor,
+      initial_observation_scale = spec$initial_observation_scale,
+      neuralode_variational = isTRUE(spec$neuralode_variational) &&
+        identical(model_type, "NeuralODE"),
       neuralode_kl_weight = spec$neuralode_kl_weight,
       neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight
     )
@@ -2924,7 +3324,7 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
     get_batch <- analysis2_real_get_batch_factory(
       ndmdatasets_pkg = ndmdatasets_pkg,
       prepared_state = state,
-      dataset_spec = dataset_spec,
+      dataset_spec = state$dataset_spec,
       runtime_env = runtime_env
     )
 
@@ -2942,6 +3342,11 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
           model_type = model_type,
           run_seed = run_seed,
           gpu_mem_frac = spec$gpu_mem_frac,
+          enable_kv_cache = config$enable_kv_cache,
+          inference_mc_draws = config$inference_mc_draws,
+          observation_scale_floor = config$observation_scale_floor,
+          initial_observation_scale = config$initial_observation_scale,
+          neuralode_variational = config$neuralode_variational,
           analysis_name = analysis_name,
           analysis_date = analysis_date,
           outer_iteration = outer_iteration,
@@ -3110,7 +3515,12 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
       force_to_gpu = spec$force_to_gpu,
       resave_tfrecords = FALSE,
       gpu_mem_frac = spec$gpu_mem_frac,
-      neuralode_variational = identical(model_type, "NeuralODE"),
+      enable_kv_cache = spec$enable_kv_cache,
+      inference_mc_draws = spec$inference_mc_draws,
+      observation_scale_floor = spec$observation_scale_floor,
+      initial_observation_scale = spec$initial_observation_scale,
+      neuralode_variational = isTRUE(spec$neuralode_variational) &&
+        identical(model_type, "NeuralODE"),
       neuralode_kl_weight = spec$neuralode_kl_weight,
       neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight
     )
@@ -3148,6 +3558,11 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
           model_type = model_type,
           run_seed = run_seed,
           gpu_mem_frac = spec$gpu_mem_frac,
+          enable_kv_cache = config$enable_kv_cache,
+          inference_mc_draws = config$inference_mc_draws,
+          observation_scale_floor = config$observation_scale_floor,
+          initial_observation_scale = config$initial_observation_scale,
+          neuralode_variational = config$neuralode_variational,
           analysis_name = analysis_name,
           analysis_date = analysis_date,
           outer_iteration = outer_iteration,
@@ -3247,25 +3662,42 @@ analysis2_run_real_multidisease <- function(args = commandArgs(TRUE)) {
 
   paths <- spec$paths
   grid_file <- normalizePath(spec$grid_file, winslash = "/", mustWork = TRUE)
-  real_grid <- analysis2_order_grid(as.data.frame(data.table::fread(grid_file)), spec$outer)
+  real_grid_raw <- as.data.frame(data.table::fread(grid_file), stringsAsFactors = FALSE)
+  nsgd_calibration <- analysis2_resolve_nsgd_calibration(
+    mode = "multidisease",
+    spec = spec,
+    grid = real_grid_raw,
+    n_epoches_max = 9L
+  )
+  real_grid <- analysis2_order_grid(real_grid_raw, spec$outer)
   analysis2_validate_outer_iterations(real_grid, spec$outer, grid_file)
 
   if (isTRUE(spec$dry_run)) {
-    return(analysis2_dry_run_result(spec, real_grid))
+    return(analysis2_dry_run_result(
+      spec,
+      real_grid,
+      nsgd_calibration = nsgd_calibration
+    ))
   }
 
   setwd(paths$project_root)
   analysis2_prepare_output_roots(paths$project_root, sim_mode = FALSE)
+  analysis2_log_nsgd_calibration("multidisease", nsgd_calibration)
   holder_folder <- file.path(paths$project_root, "SavedResults", "Real", sprintf("Results_%s", spec$analysis_name))
   analysis2_dir_create(holder_folder)
 
   driver_env <- new.env(parent = globalenv())
   driver_env$analysis2_as_int <- analysis2_as_int
   driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
+  driver_env$analysis2_multidisease_structured_control_globals <-
+    analysis2_multidisease_structured_control_globals
   driver_env$analysis2_small_run_n_obs_inference <- analysis2_small_run_n_obs_inference
+  driver_env$analysis2_resolve_nsgd_calibration <- analysis2_resolve_nsgd_calibration
+  driver_env$analysis2_solver_profile <- analysis2_solver_profile
   driver_env$analysis2_model_type <- analysis2_model_type
   driver_env$analysis2_multidisease_spec <- spec
   driver_env$analysis2_multidisease_grid <- real_grid
+  driver_env$analysis2_nsgd_calibration <- nsgd_calibration
   source(
     file.path(paths$analysis_root, "SetupEnv", "Analysis2_legacy_multidisease_driver.R"),
     local = driver_env,

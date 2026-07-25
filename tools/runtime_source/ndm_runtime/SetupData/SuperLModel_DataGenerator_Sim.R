@@ -24,8 +24,9 @@
     #plot( init_true )
 
     # DGP shifts
-    forward_shift_h <- 4 # sample(ai(c(2:9)),1)
-    forward_shift_c <- forward_shift_h + 3 # sample(ai(c(2,9)),1)
+    # Keep every context covariate at or before the forecast issue time.
+    forward_shift_h <- 0L
+    forward_shift_c <- 0L
 
     # take initial sample shift
     MIN_SHIFT <- 0L; MAX_SHIFT <- nTimes - (nTimesPast + nTimesLook + forward_shift_c)
@@ -408,7 +409,7 @@
                        "YTrue_pure" = YTrue_d_pure, #11
                        "YTrue_out_pure" = YTrue_d_out_pure, #12
                        "PolicyDat_all" = PolicyDat_all, #13
-                       "initial_shift" = initial_shift$astype(XPred$dtype)
+                       "initial_shift" = initial_shift$astype(jnp$int32)
       )
       }
     }

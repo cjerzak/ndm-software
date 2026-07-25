@@ -417,10 +417,39 @@
   stats::sd(values, na.rm = TRUE)
 }
 
+.ndm_assert_sim_covariates_available_at_issue <- function(dataset_spec) {
+  shifts <- vapply(
+    c("forward_shift_h", "forward_shift_c"),
+    function(name) {
+      value <- suppressWarnings(as.numeric(dataset_spec[[name]] %||% 0))
+      if (length(value) != 1L || !is.finite(value)) {
+        stop(
+          "Simulation `", name, "` must be one finite value.",
+          call. = FALSE
+        )
+      }
+      value
+    },
+    numeric(1L)
+  )
+  if (any(shifts != 0)) {
+    stop(
+      paste(
+        "Simulation context covariates must be available at forecast issue time;",
+        "non-zero `forward_shift_h` or `forward_shift_c` values are not supported",
+        "without an explicit causal lag convention."
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(dataset_spec)
+}
+
 .ndm_sim_get_batch_factory <- function(dataset_spec,
                                        scaler,
                                        runtime_env,
                                        dataset_call = .ndm_canonical_dataset_call) {
+  .ndm_assert_sim_covariates_available_at_issue(dataset_spec)
   force(dataset_spec)
   force(scaler)
   force(runtime_env)
@@ -550,8 +579,8 @@
     measurement_noise = number("measurement_noise", 0),
     hosp_rate = number("hosp_rate", 0.1),
     death_rate = number("death_rate", 0.01),
-    forward_shift_h = integer_value("forward_shift_h", 4L),
-    forward_shift_c = integer_value("forward_shift_c", 7L),
+    forward_shift_h = 0L,
+    forward_shift_c = 0L,
     n_inference_batches = integer_value("n_inference_batches", 8L),
     scaling_batches = integer_value("scaling_batches", 8L),
     base_id = integer_value(c("BaseID", "base_id"))
@@ -897,6 +926,7 @@
       sim_entry = sim_entry,
       dataset_call = dataset_call
     )
+    .ndm_assert_sim_covariates_available_at_issue(expected_dataset_spec)
     n_inference <- n_inference %||% if (!is.null(expected_dataset_spec$n_inference_batches)) {
       as.integer(expected_dataset_spec$n_inference_batches) * 128L
     } else {

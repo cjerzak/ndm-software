@@ -21,6 +21,10 @@ ndm_create_config(
   neuralode_optim_controller = c("pid", "constant"),
   neuralode_optim_rtol = 1e-05,
   neuralode_optim_atol = 1e-07,
+  enable_kv_cache = FALSE,
+  inference_mc_draws = 5L,
+  observation_scale_floor = 1e-05,
+  initial_observation_scale = 1,
   neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
@@ -72,6 +76,23 @@ Use `"pid"` or `"constant"`.}
 
 \item{neuralode_optim_atol}{Absolute tolerance used when
 `neuralode_optim_controller = "pid"`.}
+
+\item{enable_kv_cache}{Logical scalar controlling DecoderOnly KV caching.
+The corrected default is `FALSE`; opt in only when the cached and uncached
+paths have been verified equivalent for the active padding layout.}
+
+\item{inference_mc_draws}{Positive integer number of posterior draws
+requested for inference. Deterministic NeuralODE and DecoderOnly inference
+reduce this to one effective draw downstream.}
+
+\item{observation_scale_floor}{Finite positive lower bound added to learned
+observation scales.}
+
+\item{initial_observation_scale}{Finite positive initial observation-scale
+value on the outcome scale. The default is \code{1}, matching the unit-scale
+initialization used before this control became configurable. It must be
+greater than
+\code{observation_scale_floor}.}
 
 \item{neuralode_variational}{Logical scalar. When `FALSE`, NeuralODE
 training uses deterministic posterior means instead of stochastic

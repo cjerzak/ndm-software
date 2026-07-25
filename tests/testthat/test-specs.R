@@ -12,6 +12,64 @@ test_that("built-in model spec presets are available", {
   ) %in% presets$preset))
 })
 
+test_that("fixed SEIR preset uses population-normalized incidence", {
+  spec <- ndm_model_spec(preset = "seir_fixed")
+  relative_path <- file.path(
+    "ModelStructureTex",
+    "bayes_ode_SEIRS_FixedBeta_FixedGlobal.tex"
+  )
+  packaged_path <- system.file(
+    "extdata",
+    "model_specs",
+    basename(relative_path),
+    package = "ndm"
+  )
+  expect_true(nzchar(packaged_path))
+  expect_identical(
+    spec$tex_text,
+    paste(readLines(packaged_path, warn = FALSE), collapse = "\n")
+  )
+
+  spec_lines <- strsplit(spec$tex_text, "\n", fixed = TRUE)[[1L]]
+  incidence_rules <- spec_lines[
+    grepl("\\Evolve{s_l}", spec_lines, fixed = TRUE) |
+      grepl("\\Evolve{e_l}", spec_lines, fixed = TRUE)
+  ]
+  expect_length(incidence_rules, 2L)
+  expect_true(all(grepl(
+    "\\frac{1}{N}",
+    incidence_rules,
+    fixed = TRUE
+  )))
+
+  runtime_path <- testthat::test_path(
+    "..",
+    "..",
+    "tools",
+    "runtime_source",
+    "ndm_runtime",
+    relative_path
+  )
+  if (file.exists(runtime_path)) {
+    expect_identical(
+      spec$tex_text,
+      paste(readLines(runtime_path, warn = FALSE), collapse = "\n")
+    )
+  }
+
+  population <- 10000
+  beta <- 0.2
+  susceptible <- population - 1
+  infected <- 1
+  normalized_incidence <- beta * susceptible * infected / population
+  expect_equal(normalized_incidence, 0.19998, tolerance = 1e-12)
+  expect_equal(
+    normalized_incidence / (beta * susceptible * infected),
+    1 / population,
+    tolerance = 1e-12
+  )
+})
+
 test_that("preset selection respects the requested model type", {
   spec <- ndm_model_spec(
     preset = "seirs_dynamic_beta",
@@ -286,7 +344,13 @@ test_that("structured TB balanced incidence variant observes original incidence 
     }
     expect_equal(
       balanced_spec$execution_spec$state_init_priors[["i_l"]]$prior_mean,
-      0.08 / 1.02,
+      0.0008 / 1.02,
+      tolerance = 1e-12,
+      info = preset
+    )
+    expect_equal(
+      balanced_spec$execution_spec$state_init_priors[["i_l"]]$prior_sd,
+      0.001,
       tolerance = 1e-12,
       info = preset
     )
@@ -384,7 +448,13 @@ test_that("structured TB seir variant produces sustained SEIR dynamics", {
     # i_l init prior seeded above the disease-free equilibrium: initial_incidence/(gamma+mu).
     expect_equal(
       spec$execution_spec$state_init_priors[["i_l"]]$prior_mean,
-      0.08 / 1.02,
+      0.0008 / 1.02,
+      tolerance = 1e-12,
+      info = preset
+    )
+    expect_equal(
+      spec$execution_spec$state_init_priors[["i_l"]]$prior_sd,
+      0.001,
       tolerance = 1e-12,
       info = preset
     )

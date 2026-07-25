@@ -11,6 +11,100 @@ test_that("sysdata keeps model specs and package-owned runtime sources", {
   expect_true(exists(".ndm_embedded_model_spec_sources", envir = ns, inherits = FALSE))
   expect_true(exists(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE))
   expect_true(is.list(get(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE)))
+
+  embedded_specs <- get(
+    ".ndm_embedded_model_spec_sources",
+    envir = ns,
+    inherits = FALSE
+  )
+  for (name in names(embedded_specs)) {
+    packaged_path <- system.file(
+      "extdata",
+      "model_specs",
+      name,
+      package = "ndm"
+    )
+    expect_true(nzchar(packaged_path), info = name)
+    expect_identical(
+      embedded_specs[[name]],
+      paste(readLines(packaged_path, warn = FALSE), collapse = "\n"),
+      info = name
+    )
+  }
+})
+
+test_that("runtime source root resolves pkgload and installed layouts explicitly", {
+  checkout_root <- tempfile("ndm-pkgload-checkout-")
+  source_root <- file.path(
+    checkout_root,
+    "tools",
+    "runtime_source",
+    "ndm_runtime"
+  )
+  dir.create(source_root, recursive = TRUE)
+  writeLines("Package: ndm", file.path(checkout_root, "DESCRIPTION"))
+  on.exit(unlink(checkout_root, recursive = TRUE), add = TRUE)
+  source_root <- normalizePath(source_root, winslash = "/", mustWork = TRUE)
+
+  local_mocked_bindings(
+    .ndm_package_root = function() file.path(checkout_root, "inst"),
+    .package = "ndm"
+  )
+  expect_identical(ndm:::.ndm_runtime_source_root(), source_root)
+
+  installed_root <- tempfile("ndm-installed-package-")
+  dir.create(installed_root)
+  on.exit(unlink(installed_root, recursive = TRUE), add = TRUE)
+  local_mocked_bindings(
+    .ndm_package_root = function() installed_root,
+    .package = "ndm"
+  )
+  expect_null(ndm:::.ndm_runtime_source_root())
+})
+
+test_that("materialized runtime manifests come from generated authoritative sources", {
+  ns <- asNamespace("ndm")
+  embedded_sources <- get(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE)
+  expect_false(exists(".ndm_runtime_manifest_sources", envir = ns, inherits = FALSE))
+  manifest_paths <- grep("^config/[^/]+[.]yaml$", names(embedded_sources), value = TRUE)
+  expect_setequal(
+    manifest_paths,
+    c("config/real.yaml", "config/sim.yaml", "config/real_multidisease.yaml")
+  )
+
+  materialized_root <- tempfile("ndm-materialized-runtime-")
+  on.exit(unlink(materialized_root, recursive = TRUE), add = TRUE)
+  local_mocked_bindings(
+    .ndm_runtime_source_root = function() NULL,
+    .package = "ndm"
+  )
+  ndm:::.ndm_materialize_runtime_tree(materialized_root)
+  expect_setequal(
+    list.files(materialized_root, recursive = TRUE),
+    names(embedded_sources)
+  )
+
+  for (relative_path in manifest_paths) {
+    expect_identical(
+      ndm:::.ndm_embedded_runtime_source(relative_path),
+      embedded_sources[[relative_path]],
+      info = relative_path
+    )
+    materialized <- paste(
+      readLines(file.path(materialized_root, relative_path), warn = FALSE),
+      collapse = "\n"
+    )
+    expect_identical(
+      materialized,
+      embedded_sources[[relative_path]],
+      info = relative_path
+    )
+    expect_match(materialized, "enable_kv_cache:", fixed = TRUE)
+    expect_match(materialized, "inference_mc_draws:", fixed = TRUE)
+    expect_match(materialized, "observation_scale_floor:", fixed = TRUE)
+    expect_match(materialized, "initial_observation_scale:", fixed = TRUE)
+    expect_match(materialized, "neuralode_variational:", fixed = TRUE)
+  }
 })
 
 test_that("ndm_prepare_runtime loads package-managed helpers without inst/extdata", {
@@ -32,6 +126,37 @@ test_that("ndm_prepare_runtime loads package-managed helpers without inst/extdat
   expect_true(exists("ndm_source_extracted", envir = env, inherits = FALSE))
   expect_match(env$NDM_INTERNAL_ANALYSIS_DIR, "ndm_runtime")
   expect_false(grepl("inst/extdata/analysis_runtime/Analysis2$", env$NDM_INTERNAL_ANALYSIS_DIR))
+  expect_false(env$EnableKVCaching)
+  expect_identical(env$InferenceMCDraws, 5L)
+  expect_equal(env$ObservationScaleFloor, 1e-5)
+  expect_equal(env$InitialObservationScale, 1)
+  expect_true(env$neuralode_variational)
+})
+
+test_that("ndm_prepare_runtime exposes validated inference globals", {
+  env <- ndm_new_runtime_env()
+  config <- ndm_create_config(
+    model_type = "NeuralODE",
+    force_to_gpu = FALSE,
+    enable_kv_cache = TRUE,
+    inference_mc_draws = 7L,
+    observation_scale_floor = 2e-5,
+    initial_observation_scale = 0.02,
+    neuralode_variational = FALSE
+  )
+
+  local_mocked_bindings(
+    .ndm_require_namespaces = function(...) invisible(TRUE),
+    ndm_source_runtime_backend = function(...) invisible(env),
+    .package = "ndm"
+  )
+  ndm_prepare_runtime(config = config, runtime_env = env)
+
+  expect_true(env$EnableKVCaching)
+  expect_identical(env$InferenceMCDraws, 7L)
+  expect_equal(env$ObservationScaleFloor, 2e-5)
+  expect_equal(env$InitialObservationScale, 0.02)
+  expect_false(env$neuralode_variational)
 })
 
 test_that("ndm_prepare_runtime rejects every public regeneration override", {

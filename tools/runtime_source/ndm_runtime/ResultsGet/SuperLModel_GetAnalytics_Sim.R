@@ -142,9 +142,16 @@ if(SimMode == T){
   # Skill measure
   #plot(l_true[rer<-sample(1:10,1),],ylim=c(0,max(l_true))); points(pred_l_mean[rer,],pch="^")
   #plot(l_true[1,]);plot(pred_l_mean[1,])
-  RSS_baseline <- apply( (pred_l_baselineVal_mat - l_true)^2, 2, function(zr){ return(mean(clipAt(zr))) } )
-  RSS_pred <- apply( (pred_l_mean - l_true)^2, 2, function(zr){ return(mean(clipAt(zr) )) } )
-  skill_vec <- 1 - (0.001+RSS_pred^0.5) / (0.001+RSS_baseline^0.5)
+  skill_metrics <- vapply(seq_len(ncol(l_true)), function(horizon) {
+    ndm_paired_rmse_skill(
+      prediction = pred_l_mean[,horizon],
+      baseline = pred_l_baselineVal_mat[,horizon],
+      truth = l_true[,horizon]
+    )
+  }, numeric(3L))
+  skill_vec <- skill_metrics["skill",]
+  RSS_pred <- skill_metrics["rss_pred",]
+  RSS_baseline <- skill_metrics["rss_baseline",]
   names(skill_vec) <- paste("SkillTime",1:length(skill_vec), sep = "")
   names(RSS_pred) <- paste("RSSPredTime",1:length(skill_vec), sep = "")
   names(RSS_baseline) <- paste("RSSBaselineTime",1:length(skill_vec), sep = "")
@@ -451,11 +458,13 @@ if(SimMode == T){
   
   # --- Skill sanity check (aggregate RMSE vs. persistence baseline) ---
   {
-    eps <- 1e-3
     skill_horizon <- max(1L, min(8L, ncol(pred_l_mean)))
-    rmse_pred <- sqrt(mean(clipAt((c(pred_l_mean[,skill_horizon]) - c(l_true[,skill_horizon]))^2), na.rm = TRUE))
-    rmse_base <- sqrt(mean(clipAt((c(pred_l_baselineVal_mat[,skill_horizon]) - c(l_true[,skill_horizon]))^2), na.rm = TRUE))
-    Skill8SanityCheck <- 1 - (eps + rmse_pred) / (eps + rmse_base)
+    sanity_metrics <- ndm_paired_rmse_skill(
+      prediction = pred_l_mean[,skill_horizon],
+      baseline = pred_l_baselineVal_mat[,skill_horizon],
+      truth = l_true[,skill_horizon]
+    )
+    Skill8SanityCheck <- unname(sanity_metrics[["skill"]])
     print2(sprintf("Skill sanity: %.3f", Skill8SanityCheck))
   }
   

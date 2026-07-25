@@ -25,6 +25,10 @@ test_that("configuration objects preserve requested modeling defaults", {
       "neuralode_optim_controller",
       "neuralode_optim_rtol",
       "neuralode_optim_atol",
+      "enable_kv_cache",
+      "inference_mc_draws",
+      "observation_scale_floor",
+      "initial_observation_scale",
       "neuralode_variational",
       "neuralode_kl_weight",
       "neuralode_mean_loss_weight"
@@ -39,9 +43,27 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_equal(cfg$neuralode_optim_controller, "pid")
   expect_equal(cfg$neuralode_optim_rtol, 1e-5)
   expect_equal(cfg$neuralode_optim_atol, 1e-7)
+  expect_false(cfg$enable_kv_cache)
+  expect_identical(cfg$inference_mc_draws, 5L)
+  expect_equal(cfg$observation_scale_floor, 1e-5)
+  expect_equal(cfg$initial_observation_scale, 1)
   expect_true(cfg$neuralode_variational)
   expect_equal(cfg$neuralode_kl_weight, 1)
   expect_equal(cfg$neuralode_mean_loss_weight, 0)
+})
+
+test_that("public config constructors share the unit observation-scale default", {
+  configs <- list(
+    model = ndm_create_config(),
+    real = ndm_create_real_run_config(project_root = tempdir()),
+    sim = ndm_create_sim_run_config(project_root = tempdir()),
+    multidisease = ndm_create_multidisease_run_config(project_root = tempdir())
+  )
+
+  expect_equal(
+    unname(vapply(configs, `[[`, numeric(1L), "initial_observation_scale")),
+    rep(1, length(configs))
+  )
 })
 
 test_that("NeuralODE remains a supported model type", {
@@ -63,12 +85,49 @@ test_that("NeuralODE variational config validates KL weight", {
   expect_true(cfg$neuralode_variational)
   expect_equal(cfg$neuralode_kl_weight, 0.25)
   expect_error(
+    ndm_create_config(model_type = "NeuralODE", neuralode_variational = NA),
+    "non-missing logical"
+  )
+  expect_error(
     ndm_create_config(model_type = "NeuralODE", neuralode_kl_weight = -1),
     "non-negative"
   )
   expect_error(
     ndm_create_config(model_type = "NeuralODE", neuralode_kl_weight = Inf),
     "finite"
+  )
+})
+
+test_that("inference and observation-scale controls validate their domains", {
+  cfg <- ndm_create_config(
+    enable_kv_cache = TRUE,
+    inference_mc_draws = 7L,
+    observation_scale_floor = 2e-5,
+    initial_observation_scale = 0.02
+  )
+
+  expect_true(cfg$enable_kv_cache)
+  expect_identical(cfg$inference_mc_draws, 7L)
+  expect_equal(cfg$observation_scale_floor, 2e-5)
+  expect_equal(cfg$initial_observation_scale, 0.02)
+  expect_error(ndm_create_config(enable_kv_cache = NA), "non-missing logical")
+  expect_error(ndm_create_config(inference_mc_draws = 0L), "positive integer")
+  expect_error(ndm_create_config(inference_mc_draws = 1.5), "positive integer")
+  expect_error(ndm_create_config(observation_scale_floor = 0), "finite positive")
+  expect_error(ndm_create_config(initial_observation_scale = Inf), "finite positive")
+  expect_error(
+    ndm_create_config(
+      observation_scale_floor = 0.01,
+      initial_observation_scale = 0.01
+    ),
+    "greater than `observation_scale_floor`"
+  )
+  expect_error(
+    ndm_create_config(
+      observation_scale_floor = 0.02,
+      initial_observation_scale = 0.01
+    ),
+    "greater than `observation_scale_floor`"
   )
 })
 

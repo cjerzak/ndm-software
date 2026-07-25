@@ -1,3 +1,7 @@
+test_that("Student-t likelihood uses the incidence-scale default floor", {
+  expect_equal(formals(ndm:::.ndm_student_t_masked_nll)$scale_floor, 1e-5)
+})
+
 test_that("masked df=4 Student-t loss is a mean of per-example observed sums", {
   conda_env <- ndm_require_backend_test_stack("Student-t likelihood tests", packages = c("reticulate"))
   old_backend <- ndm:::ndm_env$backend
@@ -90,6 +94,6 @@ test_that("runtime model loss delegates to the shared Student-t helper", {
   )
   expect_match(build_source, "ndm_student_t_masked_nll\\(", perl = TRUE)
   expect_match(build_source, "df = 4", fixed = TRUE)
-  expect_match(build_source, "scale_floor = 0.001", fixed = TRUE)
+  expect_match(build_source, "scale_floor = ObservationScaleFloor", fixed = TRUE)
   expect_false(grepl("loss with MSE", build_source, fixed = TRUE))
 })

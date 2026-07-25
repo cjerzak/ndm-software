@@ -55,6 +55,17 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
 
   ndm_set_runtime_globals(runtime_env, list(ndm_config = config))
   ndm_set_runtime_globals(runtime_env, as.list(config))
+  ndm_set_runtime_globals(
+    runtime_env,
+    list(
+      EnableKVCaching = config$enable_kv_cache %||% FALSE,
+      InferenceMCDraws = config$inference_mc_draws %||% 5L,
+      ObservationScaleFloor = config$observation_scale_floor %||% 1e-5,
+      InitialObservationScale = config$initial_observation_scale %||% 1.0,
+      neuralode_variational = config$neuralode_variational %||%
+        identical(config$model_type, "NeuralODE")
+    )
+  )
   ndm_set_runtime_globals(runtime_env, runtime_globals)
   ndm_load_runtime(
     env = runtime_env,

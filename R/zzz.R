@@ -21,6 +21,7 @@ ndm_env$backend <- NULL
 #' @examples
 #' ndm_print("starting")
 #'
+#' @importFrom bestNormalize yeojohnson
 #' @export
 ndm_print <- function(text, quiet = FALSE) {
   if (!quiet) {
@@ -211,6 +212,18 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   `neuralode_optim_controller = "pid"`.
 #' @param neuralode_optim_atol Absolute tolerance used when
 #'   `neuralode_optim_controller = "pid"`.
+#' @param enable_kv_cache Logical scalar controlling DecoderOnly KV caching.
+#'   The corrected default is `FALSE`; opt in only when the cached and uncached
+#'   paths have been verified equivalent for the active padding layout.
+#' @param inference_mc_draws Positive integer number of posterior draws
+#'   requested for inference. Deterministic NeuralODE and DecoderOnly inference
+#'   reduce this to one effective draw downstream.
+#' @param observation_scale_floor Finite positive lower bound added to learned
+#'   observation scales.
+#' @param initial_observation_scale Finite positive initial observation-scale
+#'   value on the outcome scale. The default is `1`, matching the unit-scale
+#'   initialization used before this control became configurable. It must be
+#'   greater than `observation_scale_floor`.
 #' @param neuralode_variational Logical scalar. When `FALSE`, NeuralODE
 #'   training uses deterministic posterior means instead of stochastic
 #'   variational samples.
@@ -243,6 +256,10 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_optim_controller = c("pid", "constant"),
                               neuralode_optim_rtol = 1e-5,
                               neuralode_optim_atol = 1e-7,
+                              enable_kv_cache = FALSE,
+                              inference_mc_draws = 5L,
+                              observation_scale_floor = 1e-5,
+                              initial_observation_scale = 1.0,
                               neuralode_variational = TRUE,
                               neuralode_kl_weight = 1.0,
                               neuralode_mean_loss_weight = 0.0,
@@ -257,6 +274,14 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   if (!is.logical(force_to_gpu) || length(force_to_gpu) != 1L || is.na(force_to_gpu)) {
     stop("`force_to_gpu` must be one non-missing logical value.", call. = FALSE)
   }
+  if (!is.logical(enable_kv_cache) || length(enable_kv_cache) != 1L || is.na(enable_kv_cache)) {
+    stop("`enable_kv_cache` must be one non-missing logical value.", call. = FALSE)
+  }
+  if (!is.logical(neuralode_variational) ||
+      length(neuralode_variational) != 1L ||
+      is.na(neuralode_variational)) {
+    stop("`neuralode_variational` must be one non-missing logical value.", call. = FALSE)
+  }
   .ndm_validate_resave_tfrecords("generic", resave_tfrecords)
   if (!is.null(gpu_mem_frac)) {
     gpu_mem_frac <- suppressWarnings(as.numeric(gpu_mem_frac))
@@ -264,6 +289,29 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
         gpu_mem_frac <= 0 || gpu_mem_frac > 1) {
       stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", call. = FALSE)
     }
+  }
+  inference_mc_draws <- suppressWarnings(as.numeric(inference_mc_draws))
+  if (length(inference_mc_draws) != 1L || !is.finite(inference_mc_draws) ||
+      inference_mc_draws < 1 || inference_mc_draws > .Machine$integer.max ||
+      inference_mc_draws != floor(inference_mc_draws)) {
+    stop("`inference_mc_draws` must be one positive integer.", call. = FALSE)
+  }
+  inference_mc_draws <- as.integer(inference_mc_draws)
+  observation_scale_floor <- suppressWarnings(as.numeric(observation_scale_floor))
+  if (length(observation_scale_floor) != 1L ||
+      !is.finite(observation_scale_floor) || observation_scale_floor <= 0) {
+    stop("`observation_scale_floor` must be one finite positive numeric scalar.", call. = FALSE)
+  }
+  initial_observation_scale <- suppressWarnings(as.numeric(initial_observation_scale))
+  if (length(initial_observation_scale) != 1L ||
+      !is.finite(initial_observation_scale) || initial_observation_scale <= 0) {
+    stop("`initial_observation_scale` must be one finite positive numeric scalar.", call. = FALSE)
+  }
+  if (initial_observation_scale <= observation_scale_floor) {
+    stop(
+      "`initial_observation_scale` must be greater than `observation_scale_floor`.",
+      call. = FALSE
+    )
   }
   neuralode_kl_weight <- suppressWarnings(as.numeric(neuralode_kl_weight))
   if (length(neuralode_kl_weight) != 1L || !is.finite(neuralode_kl_weight) || neuralode_kl_weight < 0) {
@@ -292,7 +340,11 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     neuralode_optim_controller = neuralode_optim_controller,
     neuralode_optim_rtol = neuralode_optim_rtol,
     neuralode_optim_atol = neuralode_optim_atol,
-    neuralode_variational = isTRUE(neuralode_variational),
+    enable_kv_cache = enable_kv_cache,
+    inference_mc_draws = inference_mc_draws,
+    observation_scale_floor = observation_scale_floor,
+    initial_observation_scale = initial_observation_scale,
+    neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
     neuralode_mean_loss_weight = neuralode_mean_loss_weight
   )

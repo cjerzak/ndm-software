@@ -18,6 +18,11 @@ ndm_create_real_run_config(
   run_seed = NULL,
   force_to_gpu = TRUE,
   gpu_mem_frac = NULL,
+  enable_kv_cache = FALSE,
+  inference_mc_draws = 5L,
+  observation_scale_floor = 1e-05,
+  initial_observation_scale = 1,
+  neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
   n_checkpoints = 1L,
@@ -45,6 +50,11 @@ ndm_create_sim_run_config(
   run_seed = NULL,
   force_to_gpu = TRUE,
   gpu_mem_frac = NULL,
+  enable_kv_cache = FALSE,
+  inference_mc_draws = 5L,
+  observation_scale_floor = 1e-05,
+  initial_observation_scale = 1,
+  neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
   n_checkpoints = 1L,
@@ -69,6 +79,11 @@ ndm_create_multidisease_run_config(
   run_seed = NULL,
   force_to_gpu = TRUE,
   gpu_mem_frac = NULL,
+  enable_kv_cache = FALSE,
+  inference_mc_draws = 5L,
+  observation_scale_floor = 1e-05,
+  initial_observation_scale = 1,
+  neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
   n_checkpoints = 1L,
@@ -111,6 +126,25 @@ legacy outer-row-derived seed is retained.}
 \item{force_to_gpu}{Logical scalar requiring a CUDA-capable JAX GPU for fitting.}
 
 \item{gpu_mem_frac}{Optional finite GPU memory fraction in \code{(0, 1]}.}
+
+\item{enable_kv_cache}{Logical scalar controlling DecoderOnly KV caching. The
+corrected default is \code{FALSE}.}
+
+\item{inference_mc_draws}{Positive integer number of requested posterior
+inference draws. Deterministic NeuralODE and DecoderOnly paths use one
+effective draw downstream.}
+
+\item{observation_scale_floor}{Finite positive lower bound added to learned
+observation scales.}
+
+\item{initial_observation_scale}{Finite positive initial observation-scale
+value on the outcome scale. The default is \code{1}, matching the unit-scale
+initialization used before this control became configurable. It must be
+greater than
+\code{observation_scale_floor}.}
+
+\item{neuralode_variational}{Logical scalar controlling variational NeuralODE
+training and inference. It has no effect on DecoderOnly models.}
 
 \item{neuralode_kl_weight}{Finite non-negative NeuralODE KL multiplier. Zero
 disables KL evaluation while preserving variational sampling.}

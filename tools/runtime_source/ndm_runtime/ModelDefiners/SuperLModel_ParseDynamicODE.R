@@ -1,4 +1,77 @@
 # Content of SuperLModel_ParseDynamicODE.R
+.ndm_unwrap_pretransformed_observation_args <- function(
+    expressions,
+    argument_names,
+    transformation = "Sigmoid") {
+  expressions <- as.character(expressions)
+  argument_names <- unique(as.character(argument_names))
+  argument_names <- argument_names[!is.na(argument_names) & nzchar(argument_names)]
+
+  if (!grepl("^[[:alpha:]_][[:alnum:]_]*$", transformation)) {
+    stop("`transformation` must be a valid function name.", call. = FALSE)
+  }
+  if (length(argument_names) > 0L &&
+      any(!grepl("^[[:alpha:]_][[:alnum:]_]*$", argument_names))) {
+    stop("Observation argument names must be valid identifiers.", call. = FALSE)
+  }
+
+  for (argument_name in argument_names) {
+    sampled_argument <- sprintf(
+      "ODEParamsSampList_args$%s_samp",
+      argument_name
+    )
+    expressions <- gsub(
+      sprintf(
+        "%s\\(ODEParamsSampList_args\\$%s_samp\\)",
+        transformation,
+        argument_name
+      ),
+      sampled_argument,
+      expressions,
+      perl = TRUE
+    )
+  }
+
+  expressions
+}
+
+.ndm_validate_ode_pair_lengths <- function(lefthandside_vec,
+                                           righthandside_vec) {
+  n_left <- length(lefthandside_vec)
+  n_right <- length(righthandside_vec)
+  if (n_left != n_right) {
+    stop(
+      sprintf(
+        paste0(
+          "ODE parser produced %d state derivative name(s) but %d ",
+          "right-hand-side expression(s); refusing to recycle them."
+        ),
+        n_left,
+        n_right
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(NULL)
+}
+
+.ndm_require_parser_success <- function(value, context) {
+  if (!inherits(value, "try-error")) {
+    return(value)
+  }
+
+  condition <- attr(value, "condition", exact = TRUE)
+  detail <- if (inherits(condition, "condition")) {
+    conditionMessage(condition)
+  } else {
+    as.character(value)[[1L]]
+  }
+  stop(
+    sprintf("ODE parser failed while %s: %s", context, detail),
+    call. = FALSE
+  )
+}
+
 {
   print("Sarting SuperLModel_ParseDynamicODE.R")
   # Note: Neural1 -> Time evolving parameters like SD, beta_l
@@ -93,8 +166,10 @@
                                                         sd = zer2[2])$best_ex,
                         no = zer2[1])
     }
-    ret_ <- try(c(zer1, zer2, IsContext),T)
-    if("try-error" %in% class(ret_)){browser()}
+    ret_ <- .ndm_require_parser_success(
+      try(c(zer1, zer2, IsContext), silent = TRUE),
+      "assembling a prior definition"
+    )
     return( ret_ )
   })
 
@@ -541,7 +616,14 @@
    function(zer){
         if(length(Neural2_vec) > 0){
            for(ja in 1:length(Neural2_vec)){
-            zer <- gsub(zer,pattern =  sprintf('y\\$%s',Neural2_vec[ja]), replacement = sprintf('jnp$take(y$Neural2, ai(LocalNeuralEmbedDim+%s-1L))',ja))
+            zer <- gsub(
+              zer,
+              pattern = sprintf('y\\$%s', Neural2_vec[ja]),
+              replacement = sprintf(
+                'jnp$take(y$Neural2, ai(GlobalNeuralEmbedDim+%s-1L))',
+                ja
+              )
+            )
           } }
         return( zer )
    } )
@@ -557,7 +639,7 @@
 
   # define right side
   righthandside_vec <- transform_vec_final[!grepl(TexTransformationRules,pattern = "Observe")]
-  if(length(lefthandside_vec) != length(righthandside_vec)){ print("left right here"); browser() }
+  .ndm_validate_ode_pair_lengths(lefthandside_vec, righthandside_vec)
 
   # combine left and right
   ode_pairs <- data.frame(
@@ -599,11 +681,6 @@
                     "'=", righthandside_vec[lefthandside_vec=="Neural2"], sep = ""),collapse = ",") )))
   }
 
-  # adjust for different neural embedding dims in Neural2 (really is NeuralGlobal)
-  transform_vec_final <- gsub(transform_vec_final,
-                              pattern = "jnp\\$take\\(y\\$Neural2, ai\\(LocalNeuralEmbedDim",
-                              replace = "jnp$take(y$Neural2, ai(GlobalNeuralEmbedDim")
-
   # observed outcome transforms
   observed_name <- transform_vec_final
   observed_name <- observed_name[grepl(TexTransformationRules, pattern = "Observe")]
@@ -626,13 +703,25 @@
     perl = TRUE
   )
   observed_vec_final <- gsub(observed_vec_final,pattern=" ", replace = "")
-  observed_vec_final <- gsub(observed_vec_final,
-                             pattern = "(jnp\\$take\\(diff_eq_sol\\$ys\\$Neural1,)([^)]+)\\)",
-                             replace = "\\1\\2,axis=1L)") # expand dims for extraction
-  if(!"delta" %in% uq_globalneural_vec){ 
-    observed_vec_final <- gsub(observed_vec_final,pattern = "Sigmoid",
-                               replace="") # FIND MORE GENERAL WAY TO HANDLE CONSTRAINTS HANDLED IN MULTIPLE WAYS 
-  }
+  observed_vec_final <- gsub(
+    observed_vec_final,
+    pattern = paste0(
+      "(jnp\\$take\\(diff_eq_sol\\$ys\\$(?:Neural1|Neural2),)",
+      "(ai\\([^)]+\\)|[^)]+)\\)"
+    ),
+    replace = "\\1\\2,axis=1L)",
+    perl = TRUE
+  ) # take state coordinates across saved times
+  prior_sigmoid_args <- unique(
+    PriorDefinitions_jax[5, PriorDefinitions_jax[1,] == "InvSigmoid"]
+  )
+  prior_sigmoid_args <- intersect(prior_sigmoid_args, uq_args_vec)
+  prior_sigmoid_args <- setdiff(prior_sigmoid_args, uq_allneural_vec)
+  observed_vec_final <- .ndm_unwrap_pretransformed_observation_args(
+    expressions = observed_vec_final,
+    argument_names = prior_sigmoid_args,
+    transformation = "Sigmoid"
+  )
   transform_vec_final <- transform_vec_final[!grepl(TexTransformationRules,pattern = "Observe")]
 
   # define dependencies

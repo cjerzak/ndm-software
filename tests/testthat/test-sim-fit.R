@@ -21,6 +21,40 @@ test_that("canonical sim fixtures preserve legacy scaling workload", {
     n_batch_sim_grid_gen = 8L
   )
   expect_identical(grid$scaling_batches, 12L)
+
+  expect_identical(
+    ndm_test_sim_max_time_index(list(
+      n_time_steps = 36L,
+      context_length = 8L,
+      lookahead = 10L,
+      forward_shift_c = 0L
+    )),
+    18L
+  )
+  expect_error(
+    ndm_test_sim_max_time_index(list(
+      n_time_steps = 8L,
+      context_length = 8L,
+      lookahead = 1L,
+      forward_shift_c = 0L
+    )),
+    "leaves no valid initial time index"
+  )
+
+  observed_seed <- "not-called"
+  fake_runtime <- list(
+    tf = list(
+      random = list(
+        set_seed = function(value) {
+          observed_seed <<- list(value)
+          invisible(NULL)
+        }
+      )
+    )
+  )
+  ndm_test_clear_tensorflow_global_seed(fake_runtime)
+  expect_length(observed_seed, 1L)
+  expect_null(observed_seed[[1L]])
 })
 
 test_that("simulated pandemic fits improve across model families and endogeneity levels", {
@@ -66,30 +100,42 @@ test_that("safe log diagnostics plots tolerate non-finite loss histories", {
 test_that("decoder cache and non-cache predictions agree in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
-  details <- ndm_test_fit_sim_case(
+  cached_details <- ndm_test_fit_sim_case(
     model_type = "DecoderOnly",
     endogeneity = 0.0,
     n_sgd = 1L,
+    case_seed = 1201L,
+    enable_kv_cache = TRUE,
+    return_details = TRUE
+  )
+  uncached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    case_seed = 1201L,
+    enable_kv_cache = FALSE,
     return_details = TRUE
   )
 
-  details$runtime_env$EnableKVCaching <- FALSE
   pred_no_cache <- ndm_predict(
-    details$trained,
-    batch = details$batch,
+    uncached_details$trained,
+    batch = uncached_details$batch,
     seed = 123L,
     update_state = FALSE
   )
-  details$runtime_env$EnableKVCaching <- TRUE
   pred_cache <- ndm_predict(
-    details$trained,
-    batch = details$batch,
+    cached_details$trained,
+    batch = cached_details$batch,
     seed = 123L,
     update_state = FALSE
   )
 
-  pred_no_cache_mu <- details$runtime_env$np$asanyarray(pred_no_cache$y_mu)
-  pred_cache_mu <- details$runtime_env$np$asanyarray(pred_cache$y_mu)
+  pred_no_cache_mu <- ndm_test_py_numeric_array(
+    uncached_details$runtime_env$np$asanyarray(pred_no_cache$y_mu)
+  )
+  pred_cache_mu <- ndm_test_py_numeric_array(
+    cached_details$runtime_env$np$asanyarray(pred_cache$y_mu)
+  )
 
   expect_equal(dim(pred_cache_mu), dim(pred_no_cache_mu))
   expect_lt(max(abs(pred_cache_mu - pred_no_cache_mu)), 1e-4)
@@ -149,7 +195,11 @@ test_that("decoder transformer resolves GQA topology and KV cache shapes in jax_
     dtype = details$batch$XPred$dtype
   )
   cache_shape <- as.integer(unlist(reticulate::py_to_r(cache$d1$k$shape)))
+  cache_valid_shape <- as.integer(unlist(reticulate::py_to_r(cache$d1$valid$shape)))
+  cache_valid <- as.logical(reticulate::py_to_r(env$np$asanyarray(cache$d1$valid)))
   expect_equal(cache_shape, c(11L, 1L, 64L))
+  expect_equal(cache_valid_shape, 11L)
+  expect_false(any(cache_valid))
 
   topology_cases <- list(
     "8" = c(1L, 1L, 8L),
@@ -770,12 +820,22 @@ test_that("non-finite sim training fails fast and writes a debug artifact", {
                                                   GetPredSaveAtInfo,
                                                   seed,
                                                   opt_state) {
+        solver_diagnostics <- lapply(
+          runtime_env$ndm_runtime_empty_solver_diagnostics(),
+          function(value) {
+            runtime_env$jnp$broadcast_to(
+              value,
+              list(as.integer(runtime_env$nBatch))
+            )
+          }
+        )
         list(
           loss = runtime_env$jnp$array(Inf),
           state = state,
           grad_norm = runtime_env$jnp$array(Inf),
           model = ModelList,
-          opt_state = opt_state
+          opt_state = opt_state,
+          solver_diagnostics = solver_diagnostics
         )
       }
     },

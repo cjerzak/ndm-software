@@ -594,10 +594,10 @@
     replicate(length(states), .ndm_state_init_prior_spec(), simplify = FALSE),
     states
   )
-  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "balanced_initial_incidence_mean", 0.08, positive = FALSE)
+  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "balanced_initial_incidence_mean", 0.0008, positive = FALSE)
   mu <- .ndm_tb_family_numeric_arg(family_args, "balanced_mu_mean", 0.02)
   gamma_i <- .ndm_tb_family_numeric_arg(family_args, "balanced_gamma_i_mean", 1.0)
-  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "balanced_i0_prior_sd", 0.1)
+  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "balanced_i0_prior_sd", 0.001)
   if ("i_l" %in% names(priors)) {
     priors[["i_l"]] <- .ndm_state_init_prior_spec(
       prior_mean = initial_incidence / (gamma_i + mu),
@@ -678,10 +678,10 @@
     replicate(length(states), .ndm_state_init_prior_spec(), simplify = FALSE),
     states
   )
-  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "seir_initial_incidence_mean", 0.08, positive = FALSE)
+  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "seir_initial_incidence_mean", 0.0008, positive = FALSE)
   gamma <- .ndm_tb_family_numeric_arg(family_args, "seir_gamma_mean", 1.0)
   mu <- .ndm_tb_family_numeric_arg(family_args, "seir_mu_mean", 0.02)
-  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "seir_i0_prior_sd", 0.1)
+  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "seir_i0_prior_sd", 0.001)
   if ("i_l" %in% names(priors)) {
     priors[["i_l"]] <- .ndm_state_init_prior_spec(
       prior_mean = initial_incidence / (gamma + mu),

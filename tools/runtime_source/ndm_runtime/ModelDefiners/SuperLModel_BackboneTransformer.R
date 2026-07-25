@@ -1,12 +1,26 @@
 # Content of SuperLModel_BackboneTransformer.R
 print("Done with SuperLModel_BackboneTransformer.R")
+ndm_transformer_initialization_keys <- function(key) {
+  split_keys <- jax$random$split(key, 5L)
+  # reticulate forwards integer subscripts on JAX arrays as Python indices.
+  # Keep these explicitly zero-based: four projection keys and one key that
+  # advances initialization to the next layer.
+  list(
+    "W_q" = split_keys[0L],
+    "W_k" = split_keys[1L],
+    "W_v" = split_keys[2L],
+    "W_o" = split_keys[3L],
+    "next_layer" = split_keys[4L]
+  )
+}
+
 if(backbonePath == "initialize"){
   backbone_runtime_lookup_env <- environment()
   backbone_runtime_get0 <- function(name, ifnotfound = NULL) {
     get0(name, envir = backbone_runtime_lookup_env, inherits = FALSE, ifnotfound = ifnotfound)
   }
   TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), function(d) d$device_kind))), error = function(e) FALSE)
-  EnableKVCaching <- backbone_runtime_get0("EnableKVCaching", ifnotfound = (ModelType == "DecoderOnly"))
+  EnableKVCaching <- backbone_runtime_get0("EnableKVCaching", ifnotfound = FALSE)
   EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType == "DecoderOnly")
   # Full attention residuals are now the default transformer residual path.
   # Set UseFullAttentionResiduals = FALSE in runtime globals to opt back into
@@ -343,13 +357,19 @@ if(backbonePath == "initialize"){
         jnp$concatenate(list(x_rot_even, x_rot_odd), axis = 2L)
       }
       
-      # Allocate KV cache: per layer, K/V are [max_len, num_kv_heads, head_dim]
+      # Allocate KV cache: per layer, K/V are [max_len, num_kv_heads, head_dim].
+      # `valid` records the physical sequence positions that contain tokens. It
+      # must not be replaced by a token count because decoder inputs are
+      # left-padded and therefore need not start at position zero.
       kv_cache_allocate <- function(max_len, num_layers, num_kv_heads, head_dim, dtype) {
         make_one <- function() {
           list(
-            "k"   = jnp$zeros(list(max_len, num_kv_heads, head_dim), dtype = dtype),
-            "v"   = jnp$zeros(list(max_len, num_kv_heads, head_dim), dtype = dtype),
-            "len" = jnp$array(0L, dtype = jnp$int32)
+            "k" = jnp$zeros(list(max_len, num_kv_heads, head_dim), dtype = dtype),
+            "v" = jnp$zeros(list(max_len, num_kv_heads, head_dim), dtype = dtype),
+            "valid" = jnp$greater(
+              jnp$zeros(list(max_len), dtype = jnp$int32),
+              jnp$array(0L, dtype = jnp$int32)
+            )
           )
         }
         out <- replicate(num_layers, make_one(), simplify = FALSE)
@@ -357,9 +377,10 @@ if(backbonePath == "initialize"){
         out
       }
       
-      # Prefill K/V for the known prefix (length = prefix_len)
-      # Returns: list("xt_last"=[D], "cache"=cache_updated, "prefix_len"=prefix_len)
-      transformer_prefill_kv <- function(xt, x_mask, TransformerList, prefix_len) {
+      # Prefill K/V at their physical sequence positions. The actual input mask
+      # defines cache validity; this preserves left padding and any masked holes.
+      # Returns the last valid physical position and the next writable position.
+      transformer_prefill_kv <- function(xt, x_mask, TransformerList) {
         T_full <- xt$shape[[1]]
         D <- xt$shape[[2]]
         dtype <- xt$dtype
@@ -374,14 +395,22 @@ if(backbonePath == "initialize"){
           dtype = dtype
         )
 
-        pm <- make_prefix_index_mask(prefix_len, T_full)
-        x_mask_pref <- mask_prefix_rows(x_mask, pm$mask)
-        xt <- mask_prefix_rows(xt, pm$mask)
-        keys_mask_bool <- jnp$greater(jnp$squeeze(x_mask_pref, 1L), 0)
-        mask_keys_prefill <- jnp$expand_dims(keys_mask_bool, 0L)
+        cache_valid <- jnp$greater(jnp$squeeze(x_mask, 1L), 0)
+        last_valid <- jnp$max(jnp$where(
+          cache_valid,
+          pos_ids,
+          jnp$array(-1L, dtype = jnp$int32)
+        ))
+        safe_last_valid <- jnp$maximum(
+          last_valid,
+          jnp$array(0L, dtype = jnp$int32)
+        )
+        next_pos <- jnp$add(last_valid, jnp$array(1L, dtype = jnp$int32))
+        xt <- mask_prefix_rows(xt, cache_valid)
+        mask_keys_prefill <- jnp$expand_dims(cache_valid, 0L)
         mask_keys_prefill <- jnp$expand_dims(mask_keys_prefill, 0L)
         mask_keys_prefill <- jnp$broadcast_to(mask_keys_prefill, list(num_heads, T_full, T_full))
-        q_mask_T11 <- jnp$expand_dims(jnp$expand_dims(pm$mask, 1L), 2L)
+        q_mask_T11 <- jnp$expand_dims(jnp$expand_dims(cache_valid, 1L), 2L)
         is_causal_flag <- (ModelType == "DecoderOnly")
 
         if (!isTRUE(UseFullAttentionResiduals)) {
@@ -408,7 +437,7 @@ if(backbonePath == "initialize"){
               vh_kv,
               jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
             )
-            cache[[l_]]$len <- pm$len
+            cache[[l_]]$valid <- cache_valid
             kh <- repeat_kv_heads(kh_kv, kv_group_size)
             vh <- repeat_kv_heads(vh_kv, kv_group_size)
             attn_out <- dot_product_attention_unified(
@@ -430,15 +459,16 @@ if(backbonePath == "initialize"){
             xt <- ffmap(L$FFN$OutProj1, xt)
             xt <- (xtminu1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
               (xt * jax$nn$softplus(L$ResidCon2$WtResidPath))
-            xt <- mask_prefix_rows(xt, pm$mask)
+            xt <- mask_prefix_rows(xt, cache_valid)
           }
 
-          last_nonmasked_i <- jnp$maximum(
-            pm$len - jnp$array(1L, dtype = jnp$int32),
-            jnp$array(0L, dtype = jnp$int32)
-          )
-          xt_last <- jnp$take(xt, last_nonmasked_i, axis = 0L)
-          return(list("xt_last" = xt_last, "cache" = cache, "prefix_len" = pm$len))
+          xt_last <- jnp$take(xt, safe_last_valid, axis = 0L)
+          return(list(
+            "xt_last" = xt_last,
+            "cache" = cache,
+            "last_valid" = last_valid,
+            "next_pos" = next_pos
+          ))
         }
 
         initial_append <- attnres_append(
@@ -483,7 +513,7 @@ if(backbonePath == "initialize"){
               vh_kv,
               jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
             )
-            cache_in[[branch_idx]]$len <- pm$len
+            cache_in[[branch_idx]]$valid <- cache_valid
 
             kh <- repeat_kv_heads(kh_kv, kv_group_size)
             vh <- repeat_kv_heads(vh_kv, kv_group_size)
@@ -500,7 +530,7 @@ if(backbonePath == "initialize"){
               jnp$reshape(attn_out, list(T_full, num_heads * head_dim)),
               L$Multihead$W_o
             )
-            attn_proj <- mask_prefix_rows(attn_proj, pm$mask)
+            attn_proj <- mask_prefix_rows(attn_proj, cache_valid)
             attn_append <- attnres_append(source_buffer, source_count, attn_proj)
 
             mlp_source <- full_attnres_reduce_buffer(
@@ -513,7 +543,7 @@ if(backbonePath == "initialize"){
             xt_out <- jax$nn$swish(ffmap(L$FFN$WideProj1, xt_out)) *
               ffmap(L$FFN$WideProj2, xt_out)
             xt_out <- ffmap(L$FFN$OutProj1, xt_out)
-            xt_out <- mask_prefix_rows(xt_out, pm$mask)
+            xt_out <- mask_prefix_rows(xt_out, cache_valid)
             ffn_append <- attnres_append(attn_append$buffer, attn_append$count, xt_out)
 
             list(xt_out, ffn_append$buffer, ffn_append$count, cache_in)
@@ -531,12 +561,13 @@ if(backbonePath == "initialize"){
         final_carry <- scan_result[[1]]
         xt_final <- final_carry[[1]]
         cache_final <- final_carry[[4]]
-        last_nonmasked_i <- jnp$maximum(
-          pm$len - jnp$array(1L, dtype = jnp$int32),
-          jnp$array(0L, dtype = jnp$int32)
+        xt_last <- jnp$take(xt_final, safe_last_valid, axis = 0L)
+        list(
+          "xt_last" = xt_last,
+          "cache" = cache_final,
+          "last_valid" = last_valid,
+          "next_pos" = next_pos
         )
-        xt_last <- jnp$take(xt_final, last_nonmasked_i, axis = 0L)
-        list("xt_last" = xt_last, "cache" = cache_final, "prefix_len" = pm$len)
       }
       
       # Single decode step with KV cache update for position `pos`
@@ -595,9 +626,13 @@ if(backbonePath == "initialize"){
               jnp$expand_dims(v_KH, 0L),
               write_idx
             )
-            cache[[l_]]$len <- jnp$maximum(
-              cache[[l_]]$len,
-              jnp$array(pos_layer + 1L, dtype = jnp$int32)
+            cache[[l_]]$valid <- jax$lax$dynamic_update_slice(
+              cache[[l_]]$valid,
+              jnp$greater(
+                jnp$ones(list(1L), dtype = jnp$int32),
+                jnp$array(0L, dtype = jnp$int32)
+              ),
+              jnp$reshape(pos_layer, list(1L))
             )
 
             q_TNH <- jnp$expand_dims(q_NH, 0L)
@@ -605,7 +640,7 @@ if(backbonePath == "initialize"){
             V_SNH <- repeat_kv_heads(cache[[l_]]$v, kv_group_size)
             idx_full <- jnp$arange(max_len, dtype = jnp$int32)
             keys_mask_1d <- jnp$logical_and(
-              jnp$less(idx_full, cache[[l_]]$len),
+              cache[[l_]]$valid,
               jnp$less_equal(idx_full, pos_layer)
             )
             mask_keys_decode <- jnp$expand_dims(keys_mask_1d, 0L)
@@ -684,16 +719,20 @@ if(backbonePath == "initialize"){
               v_KH,
               write_idx
             )
-            cache_in[[branch_idx]]$len <- jnp$maximum(
-              cache_in[[branch_idx]]$len,
-              jnp$array(pos_layer + 1L, dtype = jnp$int32)
+            cache_in[[branch_idx]]$valid <- jax$lax$dynamic_update_slice(
+              cache_in[[branch_idx]]$valid,
+              jnp$greater(
+                jnp$ones(list(1L), dtype = jnp$int32),
+                jnp$array(0L, dtype = jnp$int32)
+              ),
+              jnp$reshape(pos_layer, list(1L))
             )
 
             K_SNH <- repeat_kv_heads(cache_in[[branch_idx]]$k, kv_group_size)
             V_SNH <- repeat_kv_heads(cache_in[[branch_idx]]$v, kv_group_size)
             idx_full <- jnp$arange(max_len, dtype = jnp$int32)
             keys_mask_1d <- jnp$logical_and(
-              jnp$less(idx_full, cache_in[[branch_idx]]$len),
+              cache_in[[branch_idx]]$valid,
               jnp$less_equal(idx_full, pos_layer)
             )
             mask_keys_decode <- jnp$expand_dims(keys_mask_1d, 0L)
@@ -741,15 +780,7 @@ if(backbonePath == "initialize"){
         list("token_out" = jnp$squeeze(final_carry[[1]], 0L), "cache" = final_carry[[4]])
       }
       
-      # Returns a full static index [0, 1, ..., max_len-1] and a boolean mask (idx < prefix_len).
-      # Shapes are static; only *values* depend on traced prefix_len.
-      make_prefix_index_mask <- function(prefix_len, max_len){
-        idx_full  <- jnp$arange(max_len, dtype = jnp$int32)                         # [max_len]
-        mask_full <- jnp$less(idx_full, jnp$astype(prefix_len, jnp$int32))          # [max_len] bool
-        list("idx" = idx_full, "mask" = mask_full, "len" = jnp$astype(prefix_len, jnp$int32))
-      }
-      
-      # Utility: mask rows of a [T, ...] tensor keeping static T, zeroing out rows >= prefix_len
+      # Utility: mask rows of a [T, ...] tensor while keeping static T.
       mask_prefix_rows <- function(x_T_any, mask_rows_bool){
         # x_T_any: [T, ...], mask_rows_bool: [T] bool
         jnp$where(
@@ -963,13 +994,12 @@ if(backbonePath == "initialize"){
         }
         
         print("Generating Multihead objects...")
-        # Properly split keys for reproducible random initialization
-        multihead_keys <- jax$random$split(key, 4L)
+        multihead_keys <- ndm_transformer_initialization_keys(key)
         TransformerList[[l_]]$Multihead <- list(
-          "W_q" = make_w(list(ModelDims, q_proj_dim), multihead_keys[1]),
-          "W_k" = make_w(list(ModelDims, kv_proj_dim), multihead_keys[2]),
-          "W_v" = make_w(list(ModelDims, kv_proj_dim), multihead_keys[3]),
-          "W_o" = make_w(list(q_proj_dim, ModelDims), multihead_keys[4]),
+          "W_q" = make_w(list(ModelDims, q_proj_dim), multihead_keys$W_q),
+          "W_k" = make_w(list(ModelDims, kv_proj_dim), multihead_keys$W_k),
+          "W_v" = make_w(list(ModelDims, kv_proj_dim), multihead_keys$W_v),
+          "W_o" = make_w(list(q_proj_dim, ModelDims), multihead_keys$W_o),
           "QNormScale" = jnp$ones(list(num_heads, 1L), dtype = jaxFloatType),
           "KNormScale" = jnp$ones(list(num_kv_heads, 1L), dtype = jaxFloatType)
         )
@@ -983,7 +1013,7 @@ if(backbonePath == "initialize"){
             "NormScale" = jnp$ones(list(ModelDims), dtype = jaxFloatType)
           )
         }
-        key <- jax$random$split(key)[[1]]  # advance key for next use
+        key <- multihead_keys$next_layer
       }
     }
     TransformerList[[l_]]$NormScalerInput <- oryx$Normal(loc = 1.,scale =  0.0001)$sample( list(1L,ModelDims), seed = key*21134L*l_)$astype(jaxFloatType)

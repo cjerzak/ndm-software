@@ -15,6 +15,7 @@ Description: Provides an R-first interface for neural disease modeling with a
     orchestration helpers for model execution.
 Depends: R (>= 4.1.0)
 Imports:
+    bestNormalize,
     data.table,
     digest,
     ndmdatasets (>= 0.2.0),

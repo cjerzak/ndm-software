@@ -72,6 +72,7 @@ test_that("multidisease row mapping separates tensor and scoring horizons", {
     )
   )
   row <- ndm_test_multidisease_bootstrap_grid()[1L, , drop = FALSE]
+  row$training_target_horizon <- 4L
   captured <- NULL
   dataset_call <- function(name, ...) {
     expect_identical(name, "ndm_datasets_dataset_spec")
@@ -89,6 +90,7 @@ test_that("multidisease row mapping separates tensor and scoring horizons", {
   )
 
   expect_identical(spec$lookahead, 12L)
+  expect_identical(spec$training_target_horizon, 4L)
   expect_identical(spec$evaluation_horizon, 4L)
   expect_identical(spec$evaluation_sequence, 1L:4L)
   expect_identical(spec$evaluation_origin_time_id, 7L)
@@ -118,6 +120,227 @@ test_that("multidisease row mapping separates tensor and scoring horizons", {
   )
 })
 
+test_that("canonical multidisease preparation binds the explicit rolling origin", {
+  time_ids <- 0:29
+  truth_df <- do.call(
+    rbind,
+    lapply(c("AAA", "BBB"), function(location) {
+      data.frame(
+        location_id = location,
+        location_id_numeric = match(location, c("AAA", "BBB")) - 1L,
+        location_name = location,
+        time_id = time_ids,
+        targetTime_id = time_ids,
+        CountValue = (time_ids + if (location == "AAA") 1 else 2) / 100,
+        Covariate1 = (time_ids + if (location == "AAA") 2 else 4) / 100,
+        stringsAsFactors = FALSE
+      )
+    })
+  )
+  bundle <- ndm:::.ndm_multidisease_make_bundle(
+    data_format = "IHME",
+    resolved_diseases = "Disease A",
+    truth_df_red = truth_df,
+    input_df_red = truth_df,
+    data_inputs_past = c("CountValue", "Covariate1"),
+    true_value_names = "CountValue",
+    outcome_metric = "CountValue"
+  )
+  row <- ndm_test_multidisease_bootstrap_grid()[1L, , drop = FALSE]
+  row$evaluationTime <- 1L
+
+  prepare_at <- function(origin) {
+    row$evaluationOriginTimeID <- as.integer(origin)
+    contract <- ndm:::.ndm_multidisease_artifact_contract(
+      row_values = row,
+      bundle = bundle
+    )
+    prepared <- ndmdatasets::ndm_real_prepare_tables(
+      contract$table_bundle,
+      contract$dataset_spec
+    )
+    list(contract = contract, prepared = prepared)
+  }
+  origin_10 <- prepare_at(10L)
+  origin_20 <- prepare_at(20L)
+
+  expect_identical(origin_10$prepared$times_in, 0:9)
+  expect_identical(origin_10$prepared$times_out, 10:29)
+  expect_identical(origin_20$prepared$times_in, 0:19)
+  expect_identical(origin_20$prepared$times_out, 20:29)
+  expect_true(all(origin_10$prepared$train_df$time_id < 10L))
+  expect_true(all(origin_10$prepared$out_df$time_id >= 10L))
+  expect_true(all(origin_20$prepared$train_df$time_id < 20L))
+  expect_true(all(origin_20$prepared$out_df$time_id >= 20L))
+  expect_identical(
+    origin_10$contract$dataset_spec$ndm_requested_evaluation_time,
+    1L
+  )
+  expect_identical(
+    origin_20$contract$dataset_spec$ndm_requested_evaluation_time,
+    1L
+  )
+  expect_false(identical(
+    origin_10$contract$dataset_spec$evaluation_time,
+    origin_20$contract$dataset_spec$evaluation_time
+  ))
+  expect_identical(
+    origin_10$contract$dataset_spec$ndm_origin_compatibility,
+    "explicit-origin-v1"
+  )
+})
+
+test_that("multidisease Yeo-Johnson fitting excludes producer holdout rows", {
+  time_ids <- 0:19
+  locations <- c("AAA", "BBB", "CCC", "DDD")
+  truth_df <- do.call(
+    rbind,
+    lapply(seq_along(locations), function(location_index) {
+      location <- locations[[location_index]]
+      values <- exp((time_ids + 1) / 7) + location_index / 10
+      data.frame(
+        location_id = location,
+        location_id_numeric = location_index - 1L,
+        location_name = location,
+        time_id = time_ids,
+        targetTime_id = time_ids,
+        CountValue = values,
+        Covariate1 = values * 1.5,
+        stringsAsFactors = FALSE
+      )
+    })
+  )
+  bundle <- ndm:::.ndm_multidisease_make_bundle(
+    data_format = "IHME",
+    resolved_diseases = "Disease A",
+    truth_df_red = truth_df,
+    input_df_red = truth_df,
+    data_inputs_past = c("CountValue", "Covariate1"),
+    true_value_names = "CountValue",
+    outcome_metric = "CountValue"
+  )
+
+  for (split_type in c("OutOfTime", "OutOfPlace", "OutOfPlacetime")) {
+    row <- ndm_test_multidisease_bootstrap_grid()[1L, , drop = FALSE]
+    row$BaseID <- 1L
+    row$ContextLength <- 2L
+    row$evaluationTime <- 1L
+    row$evaluationHorizon <- 1L
+    row$nObsInference <- 2L
+    row$OSSType <- split_type
+    row$initialTransform <- "none"
+    if (identical(split_type, "OutOfPlace")) {
+      row$evaluationOriginTimeID <- NULL
+    } else {
+      row$evaluationOriginTimeID <- 10L
+    }
+
+    raw_contract <- ndm:::.ndm_multidisease_artifact_contract(
+      row_values = row,
+      bundle = bundle,
+      lookahead = 2L,
+      min_anchoring_time = 0L
+    )
+    raw_prepared <- ndmdatasets::ndm_real_prepare_tables(
+      raw_contract$table_bundle,
+      raw_contract$dataset_spec
+    )
+    training_keys <- paste(
+      raw_prepared$train_df$location_id,
+      raw_prepared$train_df$time_id,
+      sep = "::"
+    )
+    source_keys <- paste(
+      bundle$truth_df_red$location_id,
+      bundle$truth_df_red$time_id,
+      sep = "::"
+    )
+    training_source_rows <- source_keys %in% training_keys
+    holdout_rows <- if (identical(split_type, "OutOfPlace")) {
+      !training_source_rows
+    } else {
+      bundle$truth_df_red$time_id >= 10L
+    }
+    expect_true(any(holdout_rows), info = split_type)
+    expect_false(any(training_source_rows & holdout_rows), info = split_type)
+
+    perturbed_bundle <- bundle
+    perturbed_bundle$truth_df_red$Covariate1[holdout_rows] <-
+      perturbed_bundle$truth_df_red$Covariate1[holdout_rows] + 1e5
+    perturbed_bundle$input_df_red <- perturbed_bundle$truth_df_red
+    row$initialTransform <- "yeoJohnson"
+
+    prepare <- function(candidate_bundle) {
+      contract <- ndm:::.ndm_multidisease_artifact_contract(
+        row_values = row,
+        bundle = candidate_bundle,
+        lookahead = 2L,
+        min_anchoring_time = 0L
+      )
+      prepared <- ndmdatasets::ndm_real_prepare_tables(
+        contract$table_bundle,
+        contract$dataset_spec
+      )
+      ordering <- order(prepared$train_df$location_id, prepared$train_df$time_id)
+      list(
+        contract = contract,
+        training = prepared$train_df[ordering, , drop = FALSE],
+        transformed_training = contract$table_bundle$truth_df$Covariate1[
+          training_source_rows
+        ]
+      )
+    }
+    original <- prepare(bundle)
+    perturbed <- prepare(perturbed_bundle)
+    metadata <- original$contract$dataset_spec$ndm_preapplied_initial_transform
+
+    expect_identical(
+      original$contract$dataset_spec$initial_transform,
+      "none",
+      info = split_type
+    )
+    expect_identical(metadata$method, "yeoJohnson", info = split_type)
+    expect_identical(
+      metadata$fit_partition,
+      "producer_train_rows",
+      info = split_type
+    )
+    expect_identical(
+      metadata$n_fit_rows,
+      nrow(raw_prepared$train_df),
+      info = split_type
+    )
+    expect_equal(
+      metadata$parameters$Covariate1$lambda,
+      perturbed$contract$dataset_spec$
+        ndm_preapplied_initial_transform$parameters$Covariate1$lambda,
+      tolerance = 1e-12,
+      info = split_type
+    )
+    expect_equal(
+      original$transformed_training,
+      perturbed$transformed_training,
+      tolerance = 1e-12,
+      info = split_type
+    )
+    if (!identical(split_type, "OutOfPlace")) {
+      expect_equal(
+        original$training$Covariate1,
+        perturbed$training$Covariate1,
+        tolerance = 1e-12,
+        info = split_type
+      )
+    }
+    expect_false(
+      identical(
+        original$contract$source_sha256,
+        perturbed$contract$source_sha256
+      ),
+      info = split_type
+    )
+  }
+})
+
 test_that("multidisease bootstrap delegates serial publication with dataSeed", {
   project_root <- tempfile("ndm-multidisease-write-")
   dir.create(project_root)
@@ -125,11 +348,13 @@ test_that("multidisease bootstrap delegates serial publication with dataSeed", {
   grid <- ndm_test_multidisease_bootstrap_grid()[1:2, , drop = FALSE]
   grid$nSamplesTrain <- c(10L, 20L)
   publication <- NULL
+  contract_args <- NULL
   publication_count <- 0L
 
   local_mocked_bindings(
     .ndm_prepare_multidisease_bundle = function(...) list(fake = TRUE),
     .ndm_multidisease_artifact_contract = function(row_values, ...) {
+      contract_args <<- list(...)
       list(
         table_bundle = structure(list(), class = "fake_bundle"),
         dataset_spec = list(
@@ -157,6 +382,7 @@ test_that("multidisease bootstrap delegates serial publication with dataSeed", {
     project_root = project_root,
     grid = grid,
     disease_names = "TB",
+    training_target_horizon = 4L,
     producer = list(contract = "test-v1")
   )
 
@@ -164,6 +390,7 @@ test_that("multidisease bootstrap delegates serial publication with dataSeed", {
   expect_identical(result$artifact_n_samples_train, 20L)
   expect_identical(publication$training_spec$n_samples_train, 20L)
   expect_identical(publication$seed, 20260709L)
+  expect_identical(contract_args$training_target_horizon, 4L)
   expect_true(publication$verify_readable)
   expect_false(publication$overwrite)
   expect_identical(result$status, "written")
@@ -172,9 +399,40 @@ test_that("multidisease bootstrap delegates serial publication with dataSeed", {
     project_root = project_root,
     grid = grid,
     disease_names = "TB",
+    training_target_horizon = 4L,
     producer = list(contract = "test-v1")
   )
   expect_identical(reused$status, "skipped_existing")
+})
+
+test_that("multidisease bootstrap validates the training target horizon", {
+  project_root <- tempfile("ndm-multidisease-horizon-")
+  dir.create(project_root)
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  grid <- ndm_test_multidisease_bootstrap_grid()[1L, , drop = FALSE]
+
+  expect_error(
+    ndm_bootstrap_multidisease_tfrecords(
+      project_root = project_root,
+      grid = grid,
+      disease_names = "TB",
+      lookahead = 4L,
+      training_target_horizon = 0L,
+      dry_run = TRUE
+    ),
+    "positive"
+  )
+  expect_error(
+    ndm_bootstrap_multidisease_tfrecords(
+      project_root = project_root,
+      grid = grid,
+      disease_names = "TB",
+      lookahead = 4L,
+      training_target_horizon = 5L,
+      dry_run = TRUE
+    ),
+    "no greater than"
+  )
 })
 
 test_that("multidisease training preflight binds the complete row contract", {

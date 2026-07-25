@@ -132,8 +132,8 @@
     res_mat$DataParamRatio             <- res_mat$nSamplesTrain / res_mat$nParamsModel
     res_mat$DataParamRatio_log10       <- log10(res_mat$DataParamRatio)
     
-    Map2ConstrainedSkill <- function(x){ 1 - exp(x) }
-    InvMap2ConstrainedSkill <- function(x){ -log( (1 - x)+0.001  ) }
+    Map2ConstrainedSkill <- ndm_skill_from_unconstrained
+    InvMap2ConstrainedSkill <- ndm_skill_to_unconstrained
     InvMap2ConstrainedSkill( 1)
     
     # plot(InvMap2ConstrainedSkill(x<-rnorm(100)),x)
@@ -821,8 +821,8 @@
       aggregated_data_mean <- res_mat_ %>% group_by(c_endogeneous, policy_effectiveness) %>% summarise(Ave = mean(eval(parse(text=theOutcome))))
       aggregated_data_mean <- reshape2::acast(aggregated_data_mean, c_endogeneous ~ policy_effectiveness, value.var="Ave")
       
-      aggregated_data_mean_clip <- res_mat_ %>% group_by(c_endogeneous, policy_effectiveness) %>% summarise(Ave = clippedMean(eval(parse(text=theOutcome))))
-      aggregated_data_mean_clip <- reshape2::acast(aggregated_data_mean_clip, c_endogeneous ~ policy_effectiveness, value.var="Ave")
+      aggregated_data_mean_untrimmed <- res_mat_ %>% group_by(c_endogeneous, policy_effectiveness) %>% summarise(Ave = mean2(eval(parse(text=theOutcome))))
+      aggregated_data_mean_untrimmed <- reshape2::acast(aggregated_data_mean_untrimmed, c_endogeneous ~ policy_effectiveness, value.var="Ave")
       
       aggregated_data_var <- res_mat_ %>% group_by(c_endogeneous, policy_effectiveness) %>% summarise(Ave = var(eval(parse(text=theOutcome))))
       aggregated_data_var <- reshape2::acast(aggregated_data_var, c_endogeneous ~ policy_effectiveness, value.var="Ave")
@@ -1385,7 +1385,7 @@
     }
   
     y_summary_mat <- tapply(1:nrow(res_mat),res_mat$i_in_sgd, function(i_){
-                       apply(res_mat[i_,paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2, clippedMean  ) })
+                       apply(res_mat[i_,paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2, mean2  ) })
     names(y_summary_mat)
     grayCols <- gray.colors(length(y_summary_mat), start = 0.2, end = 0.9)
     plot(y_summary_mat[[1]], pch = "1", ylim = c(-2,1),col = grayCols[4], cex = 2)
@@ -1397,31 +1397,31 @@
     res_mat_MaxIters <- res_mat[res_mat$i_in_sgd==max(res_mat$i_in_sgd),]
     if(SimMode){ for(j_ in c(0:4)){
       if(j_ == 0){ 
-        y_summary0 <- y_summary <- apply(  res_mat_MaxIters[,paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  clippedMean  )
+        y_summary0 <- y_summary <- apply(  res_mat_MaxIters[,paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  mean2  )
         tag0_ <- tag_ <- "All"
       }
       if(j_ == 1){ 
         y_summary1 <- y_summary <- apply(  res_mat_MaxIters[res_mat_MaxIters$c_endogeneous==0 & 
                                                 res_mat_MaxIters$policy_effectiveness==0,
-                                     paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  clippedMean  ) 
+                                     paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  mean2  )
         tag1_ <- tag_ <- "No Endogeneity; \n No Policy Effectiveness "
       }
       if(j_ == 2){ 
         y_summary2 <- y_summary <- apply(  res_mat_MaxIters[res_mat_MaxIters$c_endogeneous==0 & 
                                                 res_mat_MaxIters$policy_effectiveness==max(res_mat_MaxIters$policy_effectiveness),
-                                     paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  clippedMean  ) 
+                                     paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  mean2  )
         tag2_ <- tag_ <- "No Endogeneity; \n Max Policy Effectiveness "
       }
       if(j_ == 3){ 
         y_summary3 <- y_summary <- apply(  res_mat_MaxIters[res_mat_MaxIters$c_endogeneous==max(res_mat_MaxIters$c_endogeneous) & 
                                                 res_mat_MaxIters$policy_effectiveness==0,
-                                     paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  clippedMean  ) 
+                                     paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  mean2  )
         tag3_ <- tag_ <- "Max Endogeneity; \n No Policy Effectiveness "
       }
       if(j_ == 4){ 
         y_summary4 <- y_summary <- apply(  res_mat_MaxIters[res_mat_MaxIters$c_endogeneous==max(res_mat_MaxIters$c_endogeneous) & 
                                                 res_mat_MaxIters$policy_effectiveness==max(res_mat$policy_effectiveness),
-                                              paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  clippedMean  ) 
+                                              paste("SkillTime",1:nTimesLookValidationInference,sep = '')], 2,  mean2  )
         tag4_ <- tag_ <- "Max Endogeneity; \n Max Policy Effectiveness "
       }
       
@@ -1457,8 +1457,8 @@
     # counterfactual policy analyses 
     if(SimMode & FALSE){ 
     print2("Counterfactual policies...")
-    y_summary_PolicySkill <- apply(  res_mat[,paste("PolicySkill",1:nTimesLookValidationInference,sep = '')],2 , clippedMean  )
-    y_summary_PolicyBaseline <- apply(  res_mat[,paste("PolicySkillBaseline",1:nTimesLookValidationInference,sep = '')],2 , clippedMean  )
+    y_summary_PolicySkill <- apply(  res_mat[,paste("PolicySkill",1:nTimesLookValidationInference,sep = '')],2 , mean2  )
+    y_summary_PolicyBaseline <- apply(  res_mat[,paste("PolicySkillBaseline",1:nTimesLookValidationInference,sep = '')],2 , mean2  )
   
     plot( y_summary )
     plot( y_summary_PolicySkill )

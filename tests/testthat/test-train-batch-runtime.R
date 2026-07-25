@@ -1,13 +1,7 @@
 ndm_test_train_batch_functions <- function() {
-  source_path <- testthat::test_path(
-    "..", "..", "tools", "runtime_source", "ndm_runtime",
-    "ModelTrainers", "SuperLModel_TrainDo.R"
+  expressions <- ndm_test_runtime_source_expressions(
+    "ModelTrainers/SuperLModel_TrainDo.R"
   )
-  if (!file.exists(source_path)) {
-    testthat::skip("runtime source tree is not available in this installed-package context")
-  }
-
-  expressions <- parse(file = source_path, keep.source = FALSE)
   assignment_name <- function(expr) {
     if (!is.call(expr) || !identical(expr[[1L]], as.name("<-"))) {
       return(NA_character_)

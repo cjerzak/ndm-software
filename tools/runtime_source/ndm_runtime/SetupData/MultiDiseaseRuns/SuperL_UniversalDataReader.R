@@ -163,7 +163,7 @@ if(dataFormat == "WHO"){
       time_id      = (year - min(my_data$Year)), # 0 indexed 
       targetTime_id = time_id,
       # Convert WHO incidence (per pop size) to a population fraction to match Tycho
-      CountFraction = CasesPerPop / 1e3
+      CountFraction = CasesPerPop / 1e5
     ) %>%
     mutate(
       location_id_numeric =
@@ -230,10 +230,26 @@ if(dataFormat == "IHME"){
   my_data <- read.csv(ihme_file)
   table(my_data$year); table(my_data$metric_name)
   table(my_data$cause_name)
-  my_data <- my_data[which(my_data$sex_name=="Both" & 
-                             my_data$metric_name == "Rate" & 
-                             my_data$cause_name == "HIV/AIDS and sexually transmitted infections" & 
-                             my_data$age_name == "All ages"),]
+  my_data <- my_data[which(
+    my_data$sex_name == "Both" &
+      my_data$age_name == "All ages"
+  ),]
+  requested_diseases <- if (exists("DiseaseNameVec", inherits = TRUE)) {
+    get("DiseaseNameVec", inherits = TRUE)
+  } else if (exists("disease_names", inherits = TRUE)) {
+    get("disease_names", inherits = TRUE)
+  } else {
+    "HIV/AIDS and sexually transmitted infections"
+  }
+  resolved_diseases <- utils::getFromNamespace(
+    ".ndm_multidisease_resolve_diseases",
+    "ndm"
+  )(
+    disease_names = requested_diseases,
+    data_format = "IHME",
+    available = unique(my_data$cause_name)
+  )
+  my_data <- my_data[my_data$cause_name %in% resolved_diseases, ]
   #View(my_data)
   #head(my_data)
   #hist(my_data$val)
@@ -242,18 +258,40 @@ if(dataFormat == "IHME"){
   library(dplyr); library(lubridate); library(tidyr)
   
   ## ---- IHME → universal format ---------------------------------------------
-    # Choose a single measure: prefer Prevalence, else Incidence, else first available.
-  if (exists("desired_measure")) {
-    my_data <- dplyr::filter(my_data, measure_name == desired_measure)
+  # Choose one comparable measure shared by every requested disease.
+  measures_by_disease <- lapply(
+    resolved_diseases,
+    function(disease) unique(my_data$measure_name[my_data$cause_name == disease])
+  )
+  common_measures <- Reduce(intersect, measures_by_disease)
+  if (exists("desired_measure") &&
+      !is.null(desired_measure) &&
+      length(desired_measure) == 1L &&
+      nzchar(desired_measure)) {
+    if (!desired_measure %in% common_measures) {
+      stop(
+        "The requested IHME measure is not available for every requested disease.",
+        call. = FALSE
+      )
+    }
+    chosen_measure <- desired_measure
   } else {
-    preferred_measures <- c("Prevalence")
-    chosen_measure <- intersect(preferred_measures, unique(my_data$measure_name))
-    if (length(chosen_measure) == 0) chosen_measure <- unique(my_data$measure_name)[1]
-    my_data <- dplyr::filter(my_data, measure_name == chosen_measure[1])
+    if (length(common_measures) == 0L) {
+      stop(
+        "Requested IHME diseases do not share a common measure.",
+        call. = FALSE
+      )
+    }
+    chosen_measure <- if ("Prevalence" %in% common_measures) {
+      "Prevalence"
+    } else {
+      common_measures[[1L]]
+    }
   }
+  my_data <- dplyr::filter(my_data, measure_name == chosen_measure)
   
   # Convert IHME metrics to a population fraction suitable for downstream use.
-  ihme_df <- my_data %>%
+  ihme_long <- my_data %>%
     mutate(
       year       = as.integer(year),
       date_start = as.Date(paste0(year, "-01-01")),
@@ -274,12 +312,52 @@ if(dataFormat == "IHME"){
       )
     ) %>%
     filter(!is.na(CountFraction_tmp)) %>%
-    arrange(location_id, year, metric_rank) %>%
-    group_by(location_id, location_name, year) %>%
+    arrange(location_id, cause_name, year, metric_rank) %>%
+    group_by(location_id, location_name, cause_name, year) %>%
     slice(1L) %>%
-    ungroup() %>%
+    ungroup()
+
+  missing_diseases <- setdiff(
+    resolved_diseases,
+    unique(ihme_long$cause_name)
+  )
+  if (length(missing_diseases) > 0L) {
+    stop(
+      "No usable IHME observations remain for: ",
+      paste(missing_diseases, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  outcome_metric_base <- get0(
+    "outcome_metric",
+    inherits = TRUE,
+    ifnotfound = "CountValue"
+  )
+  outcome_names <- utils::getFromNamespace(
+    ".ndm_multidisease_outcome_names",
+    "ndm"
+  )(
+    resolved_diseases,
+    outcome_metric = outcome_metric_base
+  )
+  outcome_disease_map <- data.frame(
+    disease = resolved_diseases,
+    outcome = outcome_names,
+    stringsAsFactors = FALSE
+  )
+  ihme_long <- ihme_long %>%
     mutate(
-      CountFraction = CountFraction_tmp,
+      outcome_name = outcome_disease_map$outcome[
+        match(cause_name, outcome_disease_map$disease)
+      ]
+    )
+  ihme_df <- ihme_long %>%
+    select(location_id, location_name, year, outcome_name, CountFraction_tmp) %>%
+    tidyr::pivot_wider(
+      names_from = outcome_name,
+      values_from = CountFraction_tmp
+    ) %>%
+    mutate(
       time_id       = year - min(year, na.rm = TRUE),  # 0-indexed
       targetTime_id = time_id,
       location_id   = as.character(location_id),
@@ -288,27 +366,25 @@ if(dataFormat == "IHME"){
     ) %>%
     arrange(location_id, time_id)
   
-  # Hand off in the same shape as the other branches
+  # Hand off one named target column per disease.
   truth_df_red <- ihme_df %>%
     select(location_id, location_id_numeric, location_name,
-           time_id, targetTime_id, CountFraction) %>%
-    rename(CountValue = CountFraction) %>%
-    group_by(location_id, location_id_numeric, location_name,
-             time_id, targetTime_id) %>%
-    summarise(CountValue = sum(CountValue, na.rm = TRUE), .groups = "drop")
+           time_id, targetTime_id, dplyr::all_of(outcome_names))
   
-  # Drop any remaining missing rows
-  truth_df_red <- truth_df_red[!is.na(truth_df_red$CountValue), ]
+  # Drop rows with no observed requested outcome.
+  truth_df_red <- truth_df_red[
+    rowSums(!is.na(truth_df_red[, outcome_names, drop = FALSE])) > 0L,
+  ]
   
   # 3. Expose universally‑named objects expected by the downstream scripts -----
-  input_df_red             <- truth_df_red
-  truth_df_red$Covariate1  <- truth_df_red$CountValue
-  true_value_names         <- "CountValue"
+  true_value_names         <- outcome_names
   all_true_value_names     <- true_value_names
+  outcome_metric           <- true_value_names[[1L]]
+  truth_df_red$Covariate1  <- truth_df_red[[outcome_metric]]
+  input_df_red             <- truth_df_red
   dataInputs_colnames_future <- NULL
-  dataInputs_colnames_past   <- c("CountValue","Covariate1")
+  dataInputs_colnames_past   <- c(true_value_names, "Covariate1")
   dataInputs_colnames        <- c(dataInputs_colnames_past, dataInputs_colnames_future)
-  outcome_metric             <- "CountValue"
   
   # How many outcomes/places?
   nOutcomes <- length(true_value_names)

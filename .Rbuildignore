@@ -6,8 +6,9 @@
 ^tmp$
 ^SavedModels$
 ^reports$
+^tools/runtime_source/ndm_runtime/ModelStructureTex/bayes_ode_SEIRS_DynamicBeta_DynamicGlobal_MultiOutcome\.tex$
+^tools/runtime_source/ndm_runtime/ModelStructureTex/bayes_ode_SEIRS_DynamicBeta_FixedGlobal_MultiOutcome\.tex$
 ^tests/fixtures/analysis_runtime$
-^tools/runtime_source$
 ^\.DS_Store$
 (^|/)\.DS_Store$
 ^\.{2}Rcheck$

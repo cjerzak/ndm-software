@@ -145,6 +145,7 @@
       seed
     )
     loss_and_state <- loss_and_grads[[1]]
+    loss_aux <- loss_and_state[[2]]
     grads <- loss_and_grads[[2]]
     model_arrays <- eq$partition(ModelList, eq$is_array)
     model_array_tree <- model_arrays[[1]]
@@ -181,7 +182,8 @@
     )
     list(
       "loss" = loss_and_state[[1]],
-      "state" = loss_and_state[[2]],
+      "state" = loss_aux$model_state,
+      "solver_diagnostics" = loss_aux$solver_diagnostics,
       "grad_norm" = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)),
       "model" = updated_model,
       "opt_state" = updates_and_state[[2]],

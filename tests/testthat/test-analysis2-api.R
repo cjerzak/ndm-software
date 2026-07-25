@@ -436,7 +436,7 @@ test_that("training run configs reject inline TFRecord regeneration", {
 
   runtime <- ndm:::.ndm_new_run_impl_env()
   for (mode in names(constructors)) {
-    for (invalid_value in list(TRUE, 1L, "TRUE")) {
+    for (invalid_value in list(TRUE, "TRUE")) {
       spec <- runtime$analysis2_mode_defaults(mode)
       spec$project_root <- tempdir()
       spec$resave_tfrecords <- invalid_value
@@ -450,6 +450,20 @@ test_that("training run configs reject inline TFRecord regeneration", {
         info = paste("runtime", mode, deparse(invalid_value))
       )
     }
+
+    spec <- runtime$analysis2_mode_defaults(mode)
+    spec$project_root <- tempdir()
+    spec$resave_tfrecords <- 1L
+    expect_error(
+      runtime$analysis2_normalize_run_spec(
+        spec,
+        mode = mode,
+        paths = list(project_root = tempdir())
+      ),
+      "`resave_tfrecords` must be one non-missing logical value",
+      fixed = TRUE,
+      info = paste("runtime", mode, "numeric boolean")
+    )
   }
 })
 
@@ -635,13 +649,16 @@ test_that("package-native multidisease dry runs anchor nSGD to sibling multidise
       outer = 1L,
       disease_names = "hiv",
       data_format = "IHME",
+      max_sgd_steps = 1L,
       dry_run = TRUE
     )
   )
 
   expect_equal(dry_run$training_schedule$anchor_scope, "mode_folder_multidisease")
   expect_equal(dry_run$training_schedule$anchor_max_n_samples_train, 800L)
-  expect_equal(dry_run$training_schedule$resolved_n_sgd, as.integer(round(9 * (800 / 32))))
+  expect_equal(dry_run$training_schedule$unbounded_resolved_n_sgd, as.integer(round(9 * (800 / 32))))
+  expect_equal(dry_run$training_schedule$resolved_n_sgd, 1L)
+  expect_match(dry_run$training_schedule$policy, "\\+pilot_cap$")
 })
 
 test_that("legacy Analysis2-branded entrypoints are not exported", {
@@ -727,6 +744,11 @@ test_that("run configs expose production checkpoint and preregistered sensitivit
     max_sgd_steps = 100L,
     prior_sd_multiplier = 2,
     solver_profile = "tight",
+    enable_kv_cache = TRUE,
+    inference_mc_draws = 7L,
+    observation_scale_floor = 2e-5,
+    initial_observation_scale = 0.02,
+    neuralode_variational = FALSE,
     neuralode_mean_loss_weight = 0.3,
     dry_run = TRUE
   )
@@ -735,6 +757,11 @@ test_that("run configs expose production checkpoint and preregistered sensitivit
   expect_equal(config$max_sgd_steps, 100L)
   expect_equal(config$prior_sd_multiplier, 2)
   expect_equal(config$solver_profile, "tight")
+  expect_true(config$enable_kv_cache)
+  expect_identical(config$inference_mc_draws, 7L)
+  expect_equal(config$observation_scale_floor, 2e-5)
+  expect_equal(config$initial_observation_scale, 0.02)
+  expect_false(config$neuralode_variational)
   expect_equal(config$neuralode_mean_loss_weight, 0.3)
   expect_false(config$resave_tfrecords)
   expect_error(
@@ -753,10 +780,297 @@ test_that("run configs expose production checkpoint and preregistered sensitivit
     ndm_create_sim_run_config(project_root = tempdir(), neuralode_mean_loss_weight = -1),
     "non-negative"
   )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), enable_kv_cache = NA),
+    "non-missing logical"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), neuralode_variational = NA),
+    "non-missing logical"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), inference_mc_draws = 0L),
+    "positive integer"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), observation_scale_floor = 0),
+    "finite positive"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), initial_observation_scale = Inf),
+    "finite positive"
+  )
+  expect_error(
+    ndm_create_sim_run_config(
+      project_root = tempdir(),
+      observation_scale_floor = 0.01,
+      initial_observation_scale = 0.01
+    ),
+    "greater than `observation_scale_floor`"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), respect_grid_model_type = 1L),
+    "`respect_grid_model_type` must be one non-missing logical"
+  )
+  expect_error(
+    ndm_create_sim_run_config(project_root = tempdir(), dry_run = 1L),
+    "`dry_run` must be one non-missing logical"
+  )
+
+  mutated <- ndm_create_sim_run_config(project_root = tempdir(), dry_run = TRUE)
+  mutated$force_to_gpu <- 1L
+  expect_error(
+    ndm:::.ndm_run_config_to_args(mutated),
+    "`force_to_gpu` must be one non-missing logical"
+  )
 
   runtime_env <- ndm:::.ndm_new_run_impl_env()
   expect_equal(runtime_env$analysis2_small_run_n_checkpoints(8L, 100L, default = 1L), 1L)
   expect_equal(runtime_env$analysis2_small_run_n_checkpoints(8L, 100L, default = 10L), 10L)
+})
+
+test_that("Analysis2 YAML flags reject numeric scalars instead of silently disabling", {
+  api <- ndm:::.ndm_new_run_impl_env()
+  numeric_manifest <- tempfile(fileext = ".yaml")
+  canonical_manifest <- tempfile(fileext = ".yaml")
+  on.exit(unlink(c(numeric_manifest, canonical_manifest)), add = TRUE)
+  writeLines("force_to_gpu: 1", numeric_manifest)
+  writeLines(c("force_to_gpu: yes", "dry_run: \"false\""), canonical_manifest)
+
+  numeric_config <- api$analysis2_load_yaml_config(numeric_manifest)
+  expect_identical(numeric_config$force_to_gpu, 1L)
+  expect_error(
+    api$analysis2_validate_manifest(numeric_config, "real"),
+    "`force_to_gpu` must be one non-missing logical value"
+  )
+
+  canonical_config <- api$analysis2_load_yaml_config(canonical_manifest)
+  expect_silent(api$analysis2_validate_manifest(canonical_config, "real"))
+  spec <- utils::modifyList(api$analysis2_mode_defaults("real"), canonical_config)
+  spec$project_root <- tempdir()
+  normalized <- api$analysis2_normalize_run_spec(
+    spec,
+    mode = "real",
+    paths = list(project_root = tempdir())
+  )
+  expect_true(normalized$force_to_gpu)
+  expect_false(normalized$dry_run)
+
+  for (field in c(
+    "respect_grid_model_type",
+    "run_figures",
+    "force_to_gpu",
+    "dry_run",
+    "help"
+  )) {
+    invalid <- api$analysis2_mode_defaults("real")
+    invalid$project_root <- tempdir()
+    invalid[[field]] <- 1L
+    expect_error(
+      api$analysis2_normalize_run_spec(
+        invalid,
+        mode = "real",
+        paths = list(project_root = tempdir())
+      ),
+      paste0("`", field, "` must be one non-missing logical value"),
+      info = field
+    )
+  }
+})
+
+test_that("multidisease driver consumes all normalized sensitivity controls", {
+  runtime_env <- ndm:::.ndm_new_run_impl_env()
+  grid_globals <- list2env(
+    list(
+      nCheckpointsDefault = 99L,
+      nCheckpoints = 99L,
+      PriorSDMultiplier = 0.25,
+      force2GPU = FALSE,
+      GPU_MEM_FRAC = 0.9,
+      nSGD_DefiningLRSeq = 999L,
+      nSGD_model = 999L,
+      nSGD_posttrain = 999L
+    ),
+    parent = emptyenv()
+  )
+  structured_globals <- runtime_env$analysis2_multidisease_structured_control_globals(
+    spec = list(
+      n_checkpoints = 7L,
+      prior_sd_multiplier = 2.5,
+      force_to_gpu = TRUE,
+      gpu_mem_frac = 0.4
+    ),
+    n_samples_train = 64L,
+    n_sgd = 5L
+  )
+  list2env(structured_globals, envir = grid_globals)
+
+  expect_identical(grid_globals$nCheckpointsDefault, 7L)
+  expect_identical(grid_globals$nCheckpoints, 5L)
+  expect_equal(grid_globals$PriorSDMultiplier, 2.5)
+  expect_true(grid_globals$force2GPU)
+  expect_equal(grid_globals$GPU_MEM_FRAC, 0.4)
+  expect_identical(grid_globals$nSGD_DefiningLRSeq, 5L)
+  expect_identical(grid_globals$nSGD_model, 5L)
+  expect_identical(grid_globals$nSGD_posttrain, 5L)
+
+  solver_runtime <- list(
+    diffrax = list(
+      Tsit5 = function() structure("tsit5", class = "ndm_test_solver"),
+      Dopri8 = function() structure("dopri8", class = "ndm_test_solver"),
+      PIDController = function(rtol, atol) {
+        list(rtol = rtol, atol = atol)
+      }
+    )
+  )
+  tight_solver <- runtime_env$analysis2_solver_profile(
+    solver_runtime,
+    "tight"
+  )
+  alternative_solver <- runtime_env$analysis2_solver_profile(
+    solver_runtime,
+    "alternative"
+  )
+
+  expect_identical(tight_solver$name, "tight")
+  expect_identical(unclass(tight_solver$solver), "tsit5")
+  expect_equal(tight_solver$rtol, 1e-6)
+  expect_equal(tight_solver$atol, 1e-8)
+  expect_equal(tight_solver$controller$rtol, tight_solver$rtol)
+  expect_equal(tight_solver$controller$atol, tight_solver$atol)
+  expect_identical(alternative_solver$name, "alternative")
+  expect_identical(unclass(alternative_solver$solver), "dopri8")
+
+  list2env(
+    list(
+      SolverProfile = tight_solver$name,
+      SolverRtol = tight_solver$rtol,
+      SolverAtol = tight_solver$atol,
+      VI_diff_eq_solver_optim = tight_solver$solver,
+      dt0_init_optim = tight_solver$dt0,
+      stepsize_controller_optim = tight_solver$controller
+    ),
+    envir = grid_globals
+  )
+  expect_identical(grid_globals$SolverProfile, "tight")
+  expect_equal(grid_globals$SolverRtol, 1e-6)
+  expect_equal(grid_globals$SolverAtol, 1e-8)
+  expect_identical(unclass(grid_globals$VI_diff_eq_solver_optim), "tsit5")
+  expect_equal(grid_globals$dt0_init_optim, 1e-3)
+  expect_equal(grid_globals$stepsize_controller_optim$rtol, 1e-6)
+  expect_equal(grid_globals$stepsize_controller_optim$atol, 1e-8)
+
+  driver_source <- ndm_test_runtime_source_text(
+    "SetupEnv/Analysis2_legacy_multidisease_driver.R"
+  )
+
+  expect_match(
+    driver_source,
+    "nCheckpointsDefault <- analysis2_as_int(analysis2_multidisease_spec$n_checkpoints)",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    "analysis2_multidisease_structured_control_globals(",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    "analysis2_multidisease_spec$solver_profile",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    "nsgd_calibration <- analysis2_resolve_nsgd_calibration(",
+    fixed = TRUE
+  )
+})
+
+test_that("Analysis2 normalizes corrected inference controls", {
+  api <- ndm:::.ndm_new_run_impl_env()
+  spec <- api$analysis2_mode_defaults("real")
+
+  expect_false(spec$enable_kv_cache)
+  expect_identical(spec$inference_mc_draws, 5L)
+  expect_equal(spec$observation_scale_floor, 1e-5)
+  expect_equal(spec$initial_observation_scale, 1)
+  expect_true(spec$neuralode_variational)
+
+  opts <- api$analysis2_parse_args(c(
+    "--enable_kv_cache=TRUE",
+    "--inference_mc_draws=7",
+    "--observation_scale_floor=2e-5",
+    "--initial_observation_scale=0.02",
+    "--neuralode_variational=FALSE"
+  ))
+  overrides <- api$analysis2_cli_overrides(opts, "real")
+  expect_true(overrides$enable_kv_cache)
+  expect_identical(overrides$inference_mc_draws, "7")
+  expect_false(overrides$neuralode_variational)
+
+  spec <- utils::modifyList(spec, overrides)
+  spec$project_root <- tempdir()
+  normalized <- api$analysis2_normalize_run_spec(
+    spec,
+    mode = "real",
+    paths = list(project_root = tempdir())
+  )
+  expect_true(normalized$enable_kv_cache)
+  expect_identical(normalized$inference_mc_draws, 7L)
+  expect_equal(normalized$observation_scale_floor, 2e-5)
+  expect_equal(normalized$initial_observation_scale, 0.02)
+  expect_false(normalized$neuralode_variational)
+
+  spec$inference_mc_draws <- 0L
+  expect_error(
+    api$analysis2_normalize_run_spec(
+      spec,
+      mode = "real",
+      paths = list(project_root = tempdir())
+    ),
+    "positive integer"
+  )
+
+  spec <- api$analysis2_mode_defaults("real")
+  spec$project_root <- tempdir()
+  spec$observation_scale_floor <- 0.01
+  spec$initial_observation_scale <- 0.01
+  expect_error(
+    api$analysis2_normalize_run_spec(
+      spec,
+      mode = "real",
+      paths = list(project_root = tempdir())
+    ),
+    "greater than `observation_scale_floor`"
+  )
+})
+
+test_that("Analysis2 reconstructs the real training target horizon from the grid", {
+  api <- ndm:::.ndm_new_run_impl_env()
+  captured <- NULL
+  api$analysis2_call <- function(pkg, name, ...) {
+    captured <<- list(...)
+    captured
+  }
+  row <- list(
+    ContextLength = 8L,
+    evaluationTime = 4L,
+    initialTransform = "none",
+    initialNormType = "all",
+    paddingMethod = "left",
+    OSSType = "OutOfTime",
+    dataInputs = "all",
+    BaseID = 2014L,
+    training_target_horizon = 4L
+  )
+
+  spec <- api$analysis2_real_dataset_spec("fake", row)
+
+  expect_identical(spec$training_target_horizon, 4L)
+
+  row$training_target_horizon <- NA_integer_
+  spec <- api$analysis2_real_dataset_spec("fake", row)
+  expect_null(spec$training_target_horizon)
 })
 
 test_that("path helpers recognize POSIX, Windows, UNC, and relative paths", {
@@ -806,7 +1120,19 @@ ndm_test_fake_multidisease_env <- function(driver_text, project_root = tempfile(
   env$analysis2_dir_create <- function(path) dir.create(path, recursive = TRUE, showWarnings = FALSE)
   env$analysis2_as_int <- as.integer
   env$analysis2_small_run_n_checkpoints <- function(...) 1L
+  env$analysis2_multidisease_structured_control_globals <- function(...) list()
   env$analysis2_small_run_n_obs_inference <- function(...) 1L
+  env$analysis2_resolve_nsgd_calibration <- function(...) {
+    list(
+      resolved_n_sgd = 1L,
+      anchor_max_n_samples_train = 32L,
+      anchor_n_batch = 32L,
+      anchor_scope = "test",
+      policy = "test"
+    )
+  }
+  env$analysis2_log_nsgd_calibration <- function(...) invisible(NULL)
+  env$analysis2_solver_profile <- function(...) list()
   env$analysis2_model_type <- function(...) "NeuralODE"
   ndm:::.ndm_override_legacy_multidisease_runner(env)
   env

@@ -17,90 +17,29 @@
 #' }
 #'
 #' @noRd
-.ndm_runtime_manifest_sources <- list(
-  "config/real.yaml" = paste(
-    c(
-      "# Default manifest for package-backed real-data runs.",
-      "mode: real",
-      "analysis_name: RealApril15",
-      "grid_file: Data/RunGrids/RealGrids/RealGrid_RealApril15.csv",
-      "outer:",
-      "  - 3",
-      "model_type: null",
-      "respect_grid_model_type: true",
-      "run_seed: null",
-      "force_to_gpu: true",
-      "gpu_mem_frac: null",
-      "neuralode_kl_weight: 1.0",
-      "neuralode_mean_loss_weight: 0.0",
-      "resave_tfrecords: false",
-      "run_figures: false",
-      "raw_data_dir: Data/MainData",
-      "tfrecord_dir: Data/RunTFRecords/RealTFRecords/RealApril15",
-      "outcome_metric: inc_death",
-      "data_subset: high_income",
-      "dry_run: false"
-    ),
-    collapse = "\n"
-  ),
-  "config/sim.yaml" = paste(
-    c(
-      "# Default manifest for package-backed simulation runs.",
-      "mode: sim",
-      "analysis_name: BigSimsLatest",
-      "grid_file: Data/RunGrids/SimGrids/SimGrid_BigSimsLatest.csv",
-      "outer:",
-      "  - 1",
-      "model_type: null",
-      "respect_grid_model_type: true",
-      "run_seed: null",
-      "force_to_gpu: true",
-      "gpu_mem_frac: null",
-      "neuralode_kl_weight: 1.0",
-      "neuralode_mean_loss_weight: 0.0",
-      "resave_tfrecords: false",
-      "run_figures: false",
-      "tfrecord_dir: Data/RunTFRecords/SimTFRecords/BigSimsLatest",
-      "dry_run: false"
-    ),
-    collapse = "\n"
-  ),
-  "config/real_multidisease.yaml" = paste(
-    c(
-      "# Default manifest for the package-backed multidisease real-data driver.",
-      "mode: multidisease",
-      "analysis_name: RealLatest",
-      "grid_file: Data/RunGrids/RealGrids/RealGrid_RealLatest.csv",
-      "outer:",
-      "  - 1",
-      "model_type: null",
-      "respect_grid_model_type: true",
-      "run_seed: null",
-      "force_to_gpu: true",
-      "gpu_mem_frac: null",
-      "neuralode_kl_weight: 1.0",
-      "neuralode_mean_loss_weight: 0.0",
-      "resave_tfrecords: false",
-      "run_figures: false",
-      "tfrecord_dir: Data/RunTFRecords/RealTFRecords/RealLatest",
-      "outcome_metric: CountValue",
-      "data_subset: all",
-      "data_format: IHME",
-      "disease_names:",
-      "  - Covid",
-      "  - Flu",
-      "dry_run: false"
-    ),
-    collapse = "\n"
-  )
-)
-
 .ndm_runtime_source_root <- function() {
-  candidate <- file.path(.ndm_package_root(), "tools", "runtime_source", "ndm_runtime")
-  if (!dir.exists(candidate)) {
-    return(NULL)
+  package_root <- .ndm_package_root()
+  package_roots <- package_root
+
+  # pkgload implements system.file() relative to the checkout's inst/
+  # directory. Resolve that layout explicitly so development runs use the
+  # maintained source tree, while installed packages reliably fall back to
+  # their generated package-owned sources.
+  if (identical(basename(package_root), "inst")) {
+    checkout_root <- dirname(package_root)
+    if (file.exists(file.path(checkout_root, "DESCRIPTION"))) {
+      package_roots <- c(package_roots, checkout_root)
+    }
   }
-  .ndm_normalize_path(candidate, must_work = TRUE)
+
+  for (root in unique(package_roots)) {
+    candidate <- file.path(root, "tools", "runtime_source", "ndm_runtime")
+    if (dir.exists(candidate)) {
+      return(.ndm_normalize_path(candidate, must_work = TRUE))
+    }
+  }
+
+  NULL
 }
 
 .ndm_runtime_special_exprs <- function() {
@@ -138,12 +77,11 @@
   get(.ndm_runtime_expr_name(key), envir = asNamespace("ndm"), inherits = FALSE)
 }
 
-.ndm_runtime_deparse_lines <- function(expr) {
-  unlist(
-    lapply(as.list(expr), function(node) {
-      deparse(node, width.cutoff = 500L)
-    }),
-    use.names = FALSE
+.ndm_embedded_runtime_source_key <- function(path) {
+  .ndm_embedded_match_key(
+    path = .ndm_normalize_runtime_relative(path),
+    keys = names(.ndm_embedded_runtime_sources),
+    label = "runtime source"
   )
 }
 
@@ -152,7 +90,7 @@
 }
 
 .ndm_embedded_runtime_lines <- function(path) {
-  key <- .ndm_embedded_runtime_key(path)
+  key <- .ndm_embedded_runtime_source_key(path)
   source_root <- .ndm_runtime_source_root()
   if (!is.null(source_root)) {
     candidate <- file.path(source_root, key)
@@ -160,7 +98,7 @@
       return(readLines(candidate, warn = FALSE))
     }
   }
-  .ndm_runtime_deparse_lines(.ndm_runtime_expression(key))
+  strsplit(.ndm_embedded_runtime_sources[[key]], "\n", fixed = TRUE)[[1L]]
 }
 
 .ndm_runtime_tree_write_file <- function(root, relative_path, lines) {
@@ -175,27 +113,11 @@
 
   dir.create(root, recursive = TRUE, showWarnings = FALSE)
 
-  for (relative_path in .ndm_runtime_relative_catalog()) {
+  for (relative_path in names(.ndm_embedded_runtime_sources)) {
     .ndm_runtime_tree_write_file(
       root,
       relative_path,
       .ndm_embedded_runtime_lines(relative_path)
-    )
-  }
-
-  for (relative_path in names(.ndm_runtime_manifest_sources)) {
-    .ndm_runtime_tree_write_file(
-      root,
-      relative_path,
-      strsplit(.ndm_runtime_manifest_sources[[relative_path]], "\n", fixed = TRUE)[[1L]]
-    )
-  }
-
-  for (relative_path in names(.ndm_embedded_model_spec_sources)) {
-    .ndm_runtime_tree_write_file(
-      root,
-      file.path("ModelStructureTex", basename(relative_path)),
-      strsplit(.ndm_embedded_model_spec_sources[[relative_path]], "\n", fixed = TRUE)[[1L]]
     )
   }
 

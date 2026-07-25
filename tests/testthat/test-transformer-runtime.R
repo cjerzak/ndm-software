@@ -1,48 +1,29 @@
 # Shared transformer regression tests that are narrower than the heavier
 # end-to-end sim-fit suite.
 
-ndm_test_transformer_source_root <- function() {
-  source_root <- try(ndm:::.ndm_runtime_source_root(), silent = TRUE)
-  if (inherits(source_root, "try-error") || is.null(source_root) || !dir.exists(source_root)) {
-    start_paths <- unique(c(
-      getwd(),
-      tryCatch(testthat::test_path("..", ".."), error = function(...) ""),
-      system.file(package = "ndm")
-    ))
-    candidate_roots <- unique(unlist(lapply(start_paths[nzchar(start_paths)], function(path) {
-      path <- normalizePath(path, winslash = "/", mustWork = FALSE)
-      parents <- character(7L)
-      parents[[1L]] <- path
-      for (i in 1:6) {
-        parents[[i + 1L]] <- normalizePath(
-          file.path(parents[[i]], ".."),
-          winslash = "/",
-          mustWork = FALSE
-        )
-      }
-      unique(parents[nzchar(parents)])
-    })))
-
-    for (root in candidate_roots) {
-      candidate <- file.path(root, "tools", "runtime_source", "ndm_runtime")
-      if (dir.exists(candidate)) {
-        source_root <- candidate
-        break
-      }
-    }
-  }
-  if (inherits(source_root, "try-error") || is.null(source_root) || !dir.exists(source_root)) {
-    skip("runtime source tree is not available in this installed-package context")
-  }
-  normalizePath(source_root, winslash = "/", mustWork = TRUE)
-}
-
 ndm_test_py_numeric <- function(x) {
   as.numeric(reticulate::py_to_r(x))
 }
 
 ndm_test_max_abs_diff <- function(lhs, rhs) {
   max(abs(lhs - rhs))
+}
+
+ndm_test_decoder_batch_mask <- function(batch, runtime_env, left_pad = 0L) {
+  left_pad <- as.integer(left_pad)
+  mask <- ndm_test_py_numeric_array(runtime_env$np$asanyarray(batch$XPred_mask))
+  if (length(dim(mask)) != 3L) {
+    stop("Expected decoder XPred_mask to have shape [batch, time, 1].")
+  }
+  mask[] <- 1
+  if (left_pad > 0L) {
+    mask[, seq_len(left_pad), ] <- 0
+  }
+  batch$XPred_mask <- runtime_env$jnp$array(
+    mask,
+    dtype = batch$XPred_mask$dtype
+  )
+  batch
 }
 
 ndm_test_capture_model_prediction <- function(x, batch, seed = 1L, inference = FALSE) {
@@ -175,7 +156,7 @@ test_that("decoder-only transformer preserves requested kv cache setting in jax_
 test_that("cached and uncached full attention residual decoder predictions stay aligned in jax_cpu", {
   ndm_skip_if_no_sim_backend()
 
-  details <- ndm_test_fit_sim_case(
+  cached_details <- ndm_test_fit_sim_case(
     model_type = "DecoderOnly",
     endogeneity = 0.0,
     n_sgd = 1L,
@@ -183,20 +164,27 @@ test_that("cached and uncached full attention residual decoder predictions stay 
     enable_kv_cache = TRUE,
     return_details = TRUE
   )
+  uncached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    case_seed = 314L,
+    enable_kv_cache = FALSE,
+    return_details = TRUE
+  )
 
-  expect_true(isTRUE(details$runtime_env$EnableKVCaching))
+  expect_true(isTRUE(cached_details$runtime_env$EnableKVCaching))
+  expect_false(isTRUE(uncached_details$runtime_env$EnableKVCaching))
 
   cached_capture <- ndm_test_capture_model_prediction(
-    details$trained,
-    batch = details$batch,
+    cached_details$trained,
+    batch = cached_details$batch,
     seed = 17L,
     inference = FALSE
   )
-
-  details$runtime_env$EnableKVCaching <- FALSE
   uncached_capture <- ndm_test_capture_model_prediction(
-    details$trained,
-    batch = details$batch,
+    uncached_details$trained,
+    batch = uncached_details$batch,
     seed = 17L,
     inference = FALSE
   )
@@ -207,6 +195,222 @@ test_that("cached and uncached full attention residual decoder predictions stay 
   )
   expect_lt(
     ndm_test_max_abs_diff(cached_capture$center_param, uncached_capture$center_param),
+    1e-4
+  )
+})
+
+test_that("decoder KV cache preserves physical positions and agrees with no-cache under left padding in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  scale_capture <- new.env(parent = emptyenv())
+  cached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    case_seed = 2718L,
+    enable_kv_cache = TRUE,
+    before_train = function(runtime_env, model) {
+      scale_list <- model$env$ModelList$ScaleList$ScaleBayes
+      scale_capture$var_learned <- ndm_test_py_numeric(
+        runtime_env$np$asanyarray(runtime_env$SoftPlus(scale_list$VarInit))
+      )
+      scale_capture$decoder_learned <- ndm_test_py_numeric(
+        runtime_env$np$asanyarray(runtime_env$SoftPlus(scale_list$DecoderObservationScale))
+      )
+      scale_capture$floor <- as.numeric(runtime_env$ObservationScaleFloor)
+    },
+    return_details = TRUE
+  )
+  uncached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    case_seed = 2718L,
+    enable_kv_cache = FALSE,
+    return_details = TRUE
+  )
+  env <- cached_details$runtime_env
+  uncached_env <- uncached_details$runtime_env
+  expect_true(all(is.finite(scale_capture$var_learned)))
+  expect_true(all(is.finite(scale_capture$decoder_learned)))
+  expect_equal(
+    scale_capture$var_learned,
+    rep(1 - scale_capture$floor, length(scale_capture$var_learned)),
+    tolerance = 1e-7
+  )
+  expect_equal(
+    scale_capture$decoder_learned,
+    rep(1 - scale_capture$floor, length(scale_capture$decoder_learned)),
+    tolerance = 1e-7
+  )
+  expect_equal(
+    scale_capture$floor + scale_capture$var_learned,
+    rep(1, length(scale_capture$var_learned)),
+    tolerance = 1e-7
+  )
+  expect_equal(
+    scale_capture$floor + scale_capture$decoder_learned,
+    rep(1, length(scale_capture$decoder_learned)),
+    tolerance = 1e-7
+  )
+
+  for (left_pad in c(0L, 3L)) {
+    cached_batch <- ndm_test_decoder_batch_mask(
+      cached_details$batch,
+      runtime_env = env,
+      left_pad = left_pad
+    )
+    uncached_batch <- ndm_test_decoder_batch_mask(
+      uncached_details$batch,
+      runtime_env = uncached_env,
+      left_pad = left_pad
+    )
+    cached_capture <- ndm_test_capture_model_prediction(
+      cached_details$trained,
+      batch = cached_batch,
+      seed = 23L,
+      inference = FALSE
+    )
+    uncached_capture <- ndm_test_capture_model_prediction(
+      uncached_details$trained,
+      batch = uncached_batch,
+      seed = 23L,
+      inference = FALSE
+    )
+
+    expect_lt(
+      ndm_test_max_abs_diff(cached_capture$y_mu, uncached_capture$y_mu),
+      1e-4,
+      label = sprintf("cache/no-cache y_mu difference with left_pad=%s", left_pad)
+    )
+    expect_lt(
+      ndm_test_max_abs_diff(cached_capture$center_param, uncached_capture$center_param),
+      1e-4,
+      label = sprintf("cache/no-cache center_param difference with left_pad=%s", left_pad)
+    )
+  }
+
+  left_batch <- ndm_test_decoder_batch_mask(
+    cached_details$batch,
+    runtime_env = env,
+    left_pad = 3L
+  )
+  model_list <- cached_details$trained$env$ModelList
+  x_sample <- list(
+    env$jnp$take(left_batch$XPred, 0L, axis = 0L),
+    env$jnp$take(left_batch$XPred_mask, 0L, axis = 0L)
+  )
+  place_idx <- env$jnp$squeeze(
+    env$jnp$take(left_batch$location_id_numeric, 0L, axis = 0L)$astype(env$jnp$int32)
+  )
+  time_idx <- env$jnp$squeeze(
+    env$jnp$take(left_batch$time_id_numeric, 0L, axis = 0L)$astype(env$jnp$int32)
+  )
+  processed <- env$ProcessEncoderInput(
+    InitProcessList = model_list$InitProcessList,
+    TSList = model_list$TSList,
+    xt = x_sample,
+    time = time_idx,
+    place = place_idx,
+    BNList = model_list$BNList,
+    state = env$jnp$array(1.),
+    inference = TRUE
+  )
+  gen_cap <- as.integer(env$nTimesLookahead)
+  xt_running <- list(
+    env$jnp$concatenate(
+      list(processed[[1]], env$jnp$zeros(list(gen_cap, processed[[1]]$shape[[2]]))),
+      0L
+    ),
+    env$jnp$concatenate(
+      list(processed[[2]], env$jnp$zeros(list(gen_cap, 1L))),
+      0L
+    )
+  )
+  prefill <- env$transformer_prefill_kv(
+    xt = xt_running[[1]],
+    x_mask = xt_running[[2]],
+    TransformerList = model_list$TSList$TSBackbone
+  )
+  expected_valid <- ndm_test_py_numeric(
+    env$np$asanyarray(env$jnp$squeeze(xt_running[[2]], 1L))
+  ) > 0
+  cache_valid <- ndm_test_py_numeric(
+    env$np$asanyarray(prefill$cache$d1$valid)
+  ) > 0
+  expected_last <- max(which(expected_valid)) - 1L
+
+  expect_identical(cache_valid, expected_valid)
+  expect_equal(
+    as.integer(ndm_test_py_numeric(env$np$asanyarray(prefill$last_valid))),
+    expected_last
+  )
+  expect_equal(
+    as.integer(ndm_test_py_numeric(env$np$asanyarray(prefill$next_pos))),
+    expected_last + 1L
+  )
+  expect_true(cache_valid[[expected_last + 1L]])
+  expect_false(any(cache_valid[seq_len(3L)]))
+
+  decoder_input <- env$DecoderBackboneToOutput(
+    TSList = model_list$TSList,
+    hidden_state = prefill$xt_last
+  )
+  decoded <- env$transformer_decode_step_kv(
+    token_in = decoder_input,
+    pos = prefill$next_pos,
+    TransformerList = model_list$TSList$TSBackbone,
+    cache = prefill$cache
+  )
+  decoded_valid <- ndm_test_py_numeric(
+    env$np$asanyarray(decoded$cache$d1$valid)
+  ) > 0
+  expected_decoded_valid <- expected_valid
+  expected_decoded_valid[[expected_last + 2L]] <- TRUE
+  expect_identical(decoded_valid, expected_decoded_valid)
+
+  legacy_cached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    case_seed = 1618L,
+    enable_kv_cache = TRUE,
+    runtime_globals = list(UseFullAttentionResiduals = FALSE),
+    return_details = TRUE
+  )
+  legacy_uncached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    case_seed = 1618L,
+    enable_kv_cache = FALSE,
+    runtime_globals = list(UseFullAttentionResiduals = FALSE),
+    return_details = TRUE
+  )
+  legacy_cached_batch <- ndm_test_decoder_batch_mask(
+    legacy_cached_details$batch,
+    runtime_env = legacy_cached_details$runtime_env,
+    left_pad = 3L
+  )
+  legacy_uncached_batch <- ndm_test_decoder_batch_mask(
+    legacy_uncached_details$batch,
+    runtime_env = legacy_uncached_details$runtime_env,
+    left_pad = 3L
+  )
+  legacy_cached <- ndm_test_capture_model_prediction(
+    legacy_cached_details$trained,
+    batch = legacy_cached_batch,
+    seed = 29L,
+    inference = FALSE
+  )
+  legacy_uncached <- ndm_test_capture_model_prediction(
+    legacy_uncached_details$trained,
+    batch = legacy_uncached_batch,
+    seed = 29L,
+    inference = FALSE
+  )
+  expect_lt(
+    ndm_test_max_abs_diff(legacy_cached$y_mu, legacy_uncached$y_mu),
     1e-4
   )
 })
@@ -267,20 +471,11 @@ test_that("legacy residual transformer remains available through UseFullAttentio
 })
 
 test_that("maintained transformer sources keep cache and rotary guardrails", {
-  source_root <- ndm_test_transformer_source_root()
-  buildml_source <- paste(
-    readLines(
-      file.path(source_root, "ModelDefiners", "SuperLModel_BuildML.R"),
-      warn = FALSE
-    ),
-    collapse = "\n"
+  buildml_source <- ndm_test_runtime_source_text(
+    "ModelDefiners/SuperLModel_BuildML.R"
   )
-  backbone_source <- paste(
-    readLines(
-      file.path(source_root, "ModelDefiners", "SuperLModel_BackboneTransformer.R"),
-      warn = FALSE
-    ),
-    collapse = "\n"
+  backbone_source <- ndm_test_runtime_source_text(
+    "ModelDefiners/SuperLModel_BackboneTransformer.R"
   )
 
   expect_match(buildml_source, "DecoderBackboneToOutput <- function\\(TSList, hidden_state\\)")
@@ -296,6 +491,31 @@ test_that("maintained transformer sources keep cache and rotary guardrails", {
   expect_match(backbone_source, "attnres_append <- function")
   expect_match(backbone_source, "QNormScale")
   expect_match(backbone_source, "KNormScale")
+  expect_match(backbone_source, "\"valid\" =")
+  expect_match(backbone_source, "\"last_valid\" = last_valid")
+  expect_match(backbone_source, "\"next_pos\" = next_pos")
+  expect_match(buildml_source, "insert_pos <- prefill_ret\\$next_pos")
+  expect_false(grepl("prefix_len <- jnp\\$sum", buildml_source))
+  expect_match(
+    buildml_source,
+    "ndm_runtime_get0\\(\"InitialObservationScale\", ifnotfound = 1(?:\\.0)?\\)"
+  )
+  expect_match(
+    buildml_source,
+    "ndm_runtime_get0\\(\"ObservationScaleFloor\", ifnotfound = 1e-0?5\\)"
+  )
+  expect_match(
+    buildml_source,
+    "InitialObservationScaleLearned <- InitialObservationScale - ObservationScaleFloor"
+  )
+  expect_match(
+    buildml_source,
+    "InitialObservationScaleLearned \\+[\n ]+log\\(-expm1\\(-InitialObservationScaleLearned\\)\\)"
+  )
+  expect_match(
+    buildml_source,
+    "ObservationScaleFloor \\+ SoftPlus\\(ModelList\\$ScaleList\\$ScaleBayes\\$DecoderObservationScale\\)"
+  )
   expect_false(grepl("jnp\\$stack\\(layer_outputs", backbone_source))
   expect_false(grepl("RotaryPositionalEmbedding", paste(buildml_source, backbone_source), fixed = TRUE))
 })
@@ -337,8 +557,6 @@ test_that("optional residual attention benchmark warms up and syncs before timin
     env$jnp$concatenate(list(processed[[1]], env$jnp$zeros(list(gen_cap, processed[[1]]$shape[[2]]))), 0L),
     env$jnp$concatenate(list(processed[[2]], env$jnp$zeros(list(gen_cap, 1L))), 0L)
   )
-  prefix_len <- env$jnp$sum(xt_running[[2]])$astype(env$jnp$int32)
-
   backbone_bench <- env$ndm_benchmark_helpers$benchmark(
     function() {
       env$RunTransformerBackbone(
@@ -355,8 +573,7 @@ test_that("optional residual attention benchmark warms up and syncs before timin
       env$transformer_prefill_kv(
         xt = xt_running[[1]],
         x_mask = xt_running[[2]],
-        TransformerList = model_list$TSList$TSBackbone,
-        prefix_len = prefix_len
+        TransformerList = model_list$TSList$TSBackbone
       )
     },
     warmup = 1L,
@@ -365,9 +582,9 @@ test_that("optional residual attention benchmark warms up and syncs before timin
   prefill_ret <- env$transformer_prefill_kv(
     xt = xt_running[[1]],
     x_mask = xt_running[[2]],
-    TransformerList = model_list$TSList$TSBackbone,
-    prefix_len = prefix_len
+    TransformerList = model_list$TSList$TSBackbone
   )
+  next_pos <- prefill_ret$next_pos
   xt_last <- env$DecoderBackboneToOutput(
     TSList = model_list$TSList,
     hidden_state = prefill_ret$xt_last
@@ -375,18 +592,18 @@ test_that("optional residual attention benchmark warms up and syncs before timin
   xt_running[[1]] <- env$jax$lax$dynamic_update_slice(
     xt_running[[1]],
     env$jnp$expand_dims(xt_last, 0L),
-    env$jnp$array(c(prefix_len, 0L), dtype = env$jnp$int32)
+    env$jnp$array(c(next_pos, 0L), dtype = env$jnp$int32)
   )
   xt_running[[2]] <- env$jax$lax$dynamic_update_slice(
     xt_running[[2]],
     env$jnp$ones(list(1L, 1L), dtype = xt_running[[2]]$dtype),
-    env$jnp$array(c(prefix_len, 0L), dtype = env$jnp$int32)
+    env$jnp$array(c(next_pos, 0L), dtype = env$jnp$int32)
   )
   decode_bench <- env$ndm_benchmark_helpers$benchmark(
     function() {
       env$transformer_decode_step_kv(
-        token_in = env$jnp$take(xt_running[[1]], prefix_len, axis = 0L),
-        pos = prefix_len,
+        token_in = env$jnp$take(xt_running[[1]], next_pos, axis = 0L),
+        pos = next_pos,
         TransformerList = model_list$TSList$TSBackbone,
         cache = prefill_ret$cache
       )

@@ -11,6 +11,71 @@ clipAt <- function(zr, qval = 0.975, na.rm=T){
   return( zr ) 
 }
 
+ndm_paired_squared_error_skill <- function(squared_prediction_error,
+                                           squared_baseline_error,
+                                           eps = 1e-3) {
+  squared_prediction_error <- as.numeric(squared_prediction_error)
+  squared_baseline_error <- as.numeric(squared_baseline_error)
+
+  input_lengths <- c(
+    length(squared_prediction_error),
+    length(squared_baseline_error)
+  )
+  if (length(unique(input_lengths)) != 1L) {
+    stop(
+      "squared prediction and baseline errors must have equal lengths.",
+      call. = FALSE
+    )
+  }
+  if (length(eps) != 1L || !is.finite(eps) || eps < 0) {
+    stop("eps must be one finite non-negative value.", call. = FALSE)
+  }
+  finite_errors <- c(
+    squared_prediction_error[is.finite(squared_prediction_error)],
+    squared_baseline_error[is.finite(squared_baseline_error)]
+  )
+  if (any(finite_errors < 0)) {
+    stop("squared errors must be non-negative.", call. = FALSE)
+  }
+
+  paired <- is.finite(squared_prediction_error) &
+    is.finite(squared_baseline_error)
+  if (!any(paired)) {
+    return(c(skill = NA_real_, rss_pred = NA_real_, rss_baseline = NA_real_))
+  }
+
+  rss_pred <- mean(squared_prediction_error[paired])
+  rss_baseline <- mean(squared_baseline_error[paired])
+  skill <- 1 - (eps + sqrt(rss_pred)) / (eps + sqrt(rss_baseline))
+
+  c(skill = skill, rss_pred = rss_pred, rss_baseline = rss_baseline)
+}
+
+ndm_paired_rmse_skill <- function(prediction, baseline, truth, eps = 1e-3) {
+  prediction <- as.numeric(prediction)
+  baseline <- as.numeric(baseline)
+  truth <- as.numeric(truth)
+
+  input_lengths <- c(length(prediction), length(baseline), length(truth))
+  if (length(unique(input_lengths)) != 1L) {
+    stop("prediction, baseline, and truth must have equal lengths.", call. = FALSE)
+  }
+
+  ndm_paired_squared_error_skill(
+    squared_prediction_error = (prediction - truth)^2,
+    squared_baseline_error = (baseline - truth)^2,
+    eps = eps
+  )
+}
+
+ndm_skill_to_unconstrained <- function(skill, offset = 1e-3) {
+  -log((1 + offset) - skill)
+}
+
+ndm_skill_from_unconstrained <- function(value, offset = 1e-3) {
+  (1 + offset) - exp(-value)
+}
+
 f2n <- function(.){as.numeric(as.character(.))}
 
 print2 <- function(text){ print( sprintf("[%s] %s" ,format(Sys.time(), "%Y-%m-%d %H:%M:%S"),text) ) }
@@ -343,12 +408,6 @@ MakeHeatMap <- function(factor1, factor2, outcome, dat, lm_obj, pdf_path,
 
 se <- function(zer){ sqrt( 1/length(zer) * var(zer) ) }
 
-clippedMean <- function(zer,pct = 0.05,directional = "lower", na.rm = T){
-  if(directional %in% c("lower","both")){ zer[zer < quantile(zer,pct/2,na.rm=na.rm)] <- quantile(zer,pct/2,na.rm=na.rm) }
-  if(directional %in% c("upper","both")){ zer[zer > quantile(zer,1-pct/2,na.rm=na.rm)] <- quantile(zer,1-pct/2,na.rm=na.rm) }
-  return( mean(zer) )
-}
-
 robust_cut <- function(x, n_bins = 2L){
 
   # extract the non-NA uniques
@@ -541,5 +600,3 @@ robust_cut <- function(x, n_bins = 2L){
 }
 
 print2("Done loading helper functions...")
-
-

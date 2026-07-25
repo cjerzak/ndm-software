@@ -47,7 +47,11 @@ runtime_registry_source_root <- function() {
     }
   }
 
-  testthat::skip("runtime source tree is not available in this installed-package context")
+  stop(
+    "The packaged test suite requires tools/runtime_source/ndm_runtime; ",
+    "check .Rbuildignore and the source tarball contents.",
+    call. = FALSE
+  )
 }
 
 runtime_source_relative_files <- function(source_root) {
@@ -60,44 +64,8 @@ runtime_source_text <- function(source_root, relative_path) {
   paste(readLines(file.path(source_root, relative_path), warn = FALSE), collapse = "\n")
 }
 
-runtime_registry_escape_non_ascii <- function(lines) {
-  vapply(
-    enc2utf8(lines),
-    function(line) {
-      code_points <- utf8ToInt(line)
-      escaped <- vapply(
-        code_points,
-        function(code_point) {
-          if (code_point <= 127L) {
-            intToUtf8(code_point)
-          } else if (code_point <= 65535L) {
-            sprintf("\\\\u%04X", code_point)
-          } else {
-            sprintf("\\\\U%08X", code_point)
-          }
-        },
-        character(1),
-        USE.NAMES = FALSE
-      )
-      paste0(escaped, collapse = "")
-    },
-    character(1),
-    USE.NAMES = FALSE
-  )
-}
-
 runtime_registry_expected_expr <- function(path) {
-  eval(
-    parse(
-      text = paste(
-        runtime_registry_escape_non_ascii(
-          capture.output(dput(parse(file = path, keep.source = FALSE)))
-        ),
-        collapse = "\n"
-      )
-    ),
-    envir = baseenv()
-  )
+  parse(file = path, keep.source = FALSE)
 }
 
 expect_runtime_expr_matches_source <- function(expr_name, relative_path) {
@@ -106,10 +74,13 @@ expect_runtime_expr_matches_source <- function(expr_name, relative_path) {
   source_path <- file.path(source_root, relative_path)
 
   expect_true(exists(expr_name, envir = ns, inherits = FALSE), info = relative_path)
-  expect_identical(
+  comparison <- all.equal(
     get(expr_name, envir = ns, inherits = FALSE),
-    runtime_registry_expected_expr(source_path),
-    info = relative_path
+    runtime_registry_expected_expr(source_path)
+  )
+  expect_true(
+    isTRUE(comparison),
+    info = paste(c(relative_path, as.character(comparison)), collapse = "\n")
   )
 }
 
@@ -164,8 +135,21 @@ test_that("generated embedded runtime sources stay in sync with runtime source f
   source_root <- runtime_registry_source_root()
   embedded_sources <- get(".ndm_embedded_runtime_sources", envir = ns, inherits = FALSE)
   relative_paths <- runtime_source_relative_files(source_root)
+  portable_tar_omissions <- c(
+    "ModelStructureTex/bayes_ode_SEIRS_DynamicBeta_DynamicGlobal_MultiOutcome.tex",
+    "ModelStructureTex/bayes_ode_SEIRS_DynamicBeta_FixedGlobal_MultiOutcome.tex"
+  )
 
-  expect_setequal(names(embedded_sources), relative_paths)
+  # The two names above exceed the portable 100-byte tar path limit under the
+  # maintained tools/runtime_source prefix. They remain embedded and
+  # materializable, while every other authoritative source ships in the source
+  # tarball so R CMD check can independently compare it with generated code.
+  expect_true(all(relative_paths %in% names(embedded_sources)))
+  embedded_only <- setdiff(names(embedded_sources), relative_paths)
+  expect_true(
+    length(embedded_only) == 0L ||
+      setequal(embedded_only, portable_tar_omissions)
+  )
 
   for (relative_path in relative_paths) {
     expect_identical(

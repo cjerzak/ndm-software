@@ -72,6 +72,7 @@ test_that("WHO bundle loading supports renamed outcomes and TB-only validation",
   expect_equal(bundle$true_value_names, "CaseRate")
   expect_true(all(c("CaseRate", "Covariate1") %in% names(bundle$truth_df_red)))
   expect_true(all(bundle$truth_df_red$CaseRate > 0))
+  expect_equal(sort(bundle$truth_df_red$CaseRate), sort(c(15, 20, 30) / 1e5))
 
   expect_error(
     ndm:::.ndm_multidisease_resolve_diseases("HIV", data_format = "WHO"),
@@ -109,6 +110,119 @@ test_that("IHME bundle loading honors desired_measure overrides", {
   expect_equal(bundle$resolved_diseases, "HIV/AIDS and sexually transmitted infections")
   expect_equal(nrow(bundle$truth_df_red), 1L)
   expect_equal(bundle$truth_df_red$CountValue, 50 / 1e5)
+})
+
+test_that("IHME bundle loading preserves each requested disease as an outcome", {
+  project_root <- ndm_test_multidisease_project_root()
+  data_dir <- file.path(
+    project_root,
+    "Data",
+    "MultiDiseaseRuns",
+    "IHMEData",
+    "IHME-GBD_2021_DATA-ea2ad67b-1"
+  )
+  dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
+  diseases <- c(
+    "HIV/AIDS and sexually transmitted infections",
+    "Influenza and pneumonia"
+  )
+  fixture <- expand.grid(
+    location_id = 1:2,
+    year = 2000:2005,
+    cause_name = diseases,
+    KEEP.OUT.ATTRS = FALSE,
+    stringsAsFactors = FALSE
+  )
+  fixture$location_name <- paste0("Loc", fixture$location_id)
+  fixture$sex_name <- "Both"
+  fixture$age_name <- "All ages"
+  fixture$measure_name <- "Prevalence"
+  fixture$metric_name <- "Rate"
+  fixture$val <- ifelse(
+    fixture$cause_name == diseases[[1L]],
+    100 + 10 * (fixture$year - 2000L) + fixture$location_id,
+    200 + 20 * (fixture$year - 2000L) + fixture$location_id
+  )
+  utils::write.csv(
+    fixture,
+    file.path(data_dir, "IHME-GBD_2021_DATA-ea2ad67b-1.csv"),
+    row.names = FALSE
+  )
+
+  bundle <- ndm:::.ndm_load_multidisease_bundle(
+    project_root = project_root,
+    data_format = "IHME",
+    disease_names = diseases
+  )
+  expected_outcomes <- c(
+    "CountValue__hiv_aids_and_sexually_transmitted_infections",
+    "CountValue__influenza_and_pneumonia"
+  )
+
+  expect_identical(bundle$resolved_diseases, diseases)
+  expect_identical(bundle$true_value_names, expected_outcomes)
+  expect_identical(bundle$nOutcomes, 2L)
+  expect_identical(
+    bundle$outcome_disease_map,
+    data.frame(
+      disease = diseases,
+      outcome = expected_outcomes,
+      stringsAsFactors = FALSE
+    )
+  )
+  expect_true(all(expected_outcomes %in% names(bundle$truth_df_red)))
+  expect_equal(
+    bundle$truth_df_red[[expected_outcomes[[1L]]]][[1L]],
+    101 / 1e5
+  )
+  expect_equal(
+    bundle$truth_df_red[[expected_outcomes[[2L]]]][[1L]],
+    201 / 1e5
+  )
+  expect_equal(
+    bundle$truth_df_red$Covariate1,
+    bundle$truth_df_red[[expected_outcomes[[1L]]]]
+  )
+
+  row <- data.frame(
+    BaseID = 1L,
+    ContextLength = 4L,
+    evaluationTime = 1L,
+    evaluationOriginTimeID = 4L,
+    evaluationHorizon = 1L,
+    inferenceSampling = "complete_locations",
+    dataSeed = 1L,
+    initialTransform = "none",
+    initialNormType = "all",
+    paddingMethod = "left",
+    OSSType = "OutOfTime",
+    dataInputs = "all",
+    nObsInference = 1L,
+    stringsAsFactors = FALSE
+  )
+  contract <- ndm:::.ndm_multidisease_artifact_contract(
+    row_values = row,
+    bundle = bundle,
+    lookahead = 1L,
+    min_anchoring_time = 0L
+  )
+  prepared <- ndmdatasets::ndm_real_prepare_tables(
+    contract$table_bundle,
+    contract$dataset_spec
+  )
+  example <- ndmdatasets::ndm_real_make_example(
+    prepared = prepared,
+    dataset_spec = contract$dataset_spec,
+    split = "inference",
+    seed = 1L,
+    loc_id = "1",
+    anchor_time = 4L
+  )
+  expect_identical(dim(example$YTrue_out), c(1L, 2L))
+  expect_equal(
+    as.numeric(example$YTrue_out[1L, ]),
+    c(151, 301) / 1e5
+  )
 })
 
 test_that("multidisease training calibrates and runs under project_root", {
