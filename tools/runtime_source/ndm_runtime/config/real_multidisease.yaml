@@ -7,7 +7,7 @@ outer:
 model_type: null
 respect_grid_model_type: true
 run_seed: null
-force_to_gpu: true
+compute_backend: auto
 gpu_mem_frac: null
 enable_kv_cache: false
 inference_mc_draws: 5
@@ -22,6 +22,8 @@ tfrecord_dir: Data/RunTFRecords/RealTFRecords/RealLatest
 outcome_metric: CountValue
 data_subset: all
 data_format: IHME
+covariate_panel_file: null
+covariate_manifest_file: null
 disease_names:
   - Covid
   - Flu

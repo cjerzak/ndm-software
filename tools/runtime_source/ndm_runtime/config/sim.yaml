@@ -7,7 +7,7 @@ outer:
 model_type: null
 respect_grid_model_type: true
 run_seed: null
-force_to_gpu: true
+compute_backend: auto
 gpu_mem_frac: null
 enable_kv_cache: false
 inference_mc_draws: 5

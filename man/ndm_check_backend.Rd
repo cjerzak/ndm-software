@@ -26,7 +26,10 @@ ndm_initialize_backend(
   conda = "auto",
   conda_env_required = TRUE,
   float_type = c("32", "64"),
-  import_tensorflow = TRUE
+  import_tensorflow = TRUE,
+  compute_backend = c("auto", "cpu", "gpu"),
+  force_to_gpu = NULL,
+  gpu_mem_frac = NULL
 )
 
 ndm_backend_modules()
@@ -57,6 +60,18 @@ the `required` flag.}
 
 \item{import_tensorflow}{Logical scalar indicating whether TensorFlow should
 be imported when it is available in the selected environment.}
+
+\item{compute_backend}{Compute device policy. `"auto"` selects a supported
+JAX GPU when an isolated pre-import probe succeeds and otherwise uses CPU;
+`"cpu"` and `"gpu"` require that backend explicitly. macOS supports CPU
+execution only under this contract.}
+
+\item{force_to_gpu}{Deprecated logical alias for `compute_backend`. `TRUE`
+maps to `"gpu"` and `FALSE` maps to `"cpu"`. Supplying conflicting old
+and new controls is an error.}
+
+\item{gpu_mem_frac}{Optional finite GPU memory fraction in `(0, 1]`. It is
+rejected whenever backend selection resolves to CPU.}
 }
 \value{
 `ndm_check_backend()` returns `TRUE` invisibly when the requested
@@ -68,7 +83,8 @@ be imported when it is available in the selected environment.}
 
 `ndm_initialize_backend()` returns an object of class
   `ndm_backend`. The returned list contains imported Python modules, the
-  configured float type, and a small compatibility shim used by the legacy
+  configured float type, requested and resolved compute backends,
+  selected-device provenance, and compatibility shims used by the legacy
   runtime.
 
 `ndm_backend_modules()` returns the currently initialized

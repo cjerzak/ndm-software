@@ -11,7 +11,7 @@ test_that("run_seed is preserved and emitted independently of the grid row", {
   expect_true("--run_seed=202" %in% ndm:::.ndm_run_config_to_args(config))
 })
 
-test_that("run configs expose GPU and NeuralODE KL controls with safe defaults", {
+test_that("run configs expose portable backend and NeuralODE KL controls", {
   config <- ndm_create_sim_run_config(
     project_root = tempdir(),
     grid = data.frame(BaseID = 1L, ModelType = "NeuralODE"),
@@ -28,7 +28,8 @@ test_that("run configs expose GPU and NeuralODE KL controls with safe defaults",
   )
   args <- ndm:::.ndm_run_config_to_args(config)
 
-  expect_true(config$force_to_gpu)
+  expect_null(config$force_to_gpu)
+  expect_identical(config$compute_backend, "auto")
   expect_true(config$respect_grid_model_type)
   expect_equal(config$gpu_mem_frac, 0.5)
   expect_true(config$enable_kv_cache)
@@ -38,7 +39,8 @@ test_that("run configs expose GPU and NeuralODE KL controls with safe defaults",
   expect_false(config$neuralode_variational)
   expect_equal(config$neuralode_kl_weight, 0)
   expect_equal(config$neuralode_mean_loss_weight, 0.3)
-  expect_true("--force_to_gpu=TRUE" %in% args)
+  expect_true("--compute_backend=auto" %in% args)
+  expect_false(any(grepl("^--force_to_gpu=", args)))
   expect_true("--gpu_mem_frac=0.5" %in% args)
   expect_true("--enable_kv_cache=TRUE" %in% args)
   expect_true("--inference_mc_draws=7" %in% args)
@@ -47,6 +49,59 @@ test_that("run configs expose GPU and NeuralODE KL controls with safe defaults",
   expect_true("--neuralode_variational=FALSE" %in% args)
   expect_true("--neuralode_kl_weight=0" %in% args)
   expect_true("--neuralode_mean_loss_weight=0.3" %in% args)
+})
+
+test_that("run configs preserve the legacy backend alias without ambiguity", {
+  cpu_config <- suppressWarnings(ndm_create_sim_run_config(
+    project_root = tempdir(),
+    grid = data.frame(BaseID = 1L),
+    force_to_gpu = FALSE,
+    dry_run = TRUE
+  ))
+  expect_identical(cpu_config$compute_backend, "cpu")
+  expect_false(cpu_config$force_to_gpu)
+  expect_true("--compute_backend=cpu" %in% ndm:::.ndm_run_config_to_args(cpu_config))
+  expect_false(any(grepl(
+    "^--force_to_gpu=",
+    ndm:::.ndm_run_config_to_args(cpu_config)
+  )))
+
+  gpu_config <- ndm_create_sim_run_config(
+    project_root = tempdir(),
+    grid = data.frame(BaseID = 1L),
+    compute_backend = "gpu",
+    dry_run = TRUE
+  )
+  expect_identical(gpu_config$compute_backend, "gpu")
+  expect_true(gpu_config$force_to_gpu)
+  expect_true("--compute_backend=gpu" %in% ndm:::.ndm_run_config_to_args(gpu_config))
+
+  expect_error(
+    suppressWarnings(ndm_create_sim_run_config(
+      project_root = tempdir(),
+      force_to_gpu = TRUE,
+      compute_backend = "cpu"
+    )),
+    "Conflicting backend controls"
+  )
+  expect_error(
+    ndm_create_sim_run_config(
+      project_root = tempdir(),
+      compute_backend = "cpu",
+      gpu_mem_frac = 0.5
+    ),
+    "resolved compute backend is CPU"
+  )
+  mutated <- ndm_create_sim_run_config(
+    project_root = tempdir(),
+    gpu_mem_frac = 0.5,
+    dry_run = TRUE
+  )
+  mutated$compute_backend <- "cpu"
+  expect_error(
+    ndm:::.ndm_run_config_to_args(mutated),
+    "resolved compute backend is CPU"
+  )
 })
 
 test_that("Analysis2 outer rows preserve frozen CSV order and stable row identity", {

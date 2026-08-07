@@ -345,7 +345,7 @@ test_that("package-native sim runner consumes a requested canonical prefix", {
       grid = grid,
       outer = 1L,
       model_type = "DecoderOnly",
-      force_to_gpu = FALSE,
+      compute_backend = "cpu",
       max_sgd_steps = 1L,
       resave_tfrecords = FALSE,
       dry_run = FALSE
@@ -397,7 +397,7 @@ test_that("package-native real runner consumes a requested canonical prefix", {
       grid = grid,
       outer = 1L,
       model_type = "NeuralODE",
-      force_to_gpu = FALSE,
+      compute_backend = "cpu",
       max_sgd_steps = 1L,
       resave_tfrecords = FALSE,
       raw_data_dir = raw_data_dir,
@@ -489,7 +489,7 @@ test_that("package-native multidisease runner fails closed when canonical artifa
         grid = grid,
         outer = 1L,
         model_type = "NeuralODE",
-        force_to_gpu = FALSE,
+        compute_backend = "cpu",
         data_format = "IHME",
         disease_names = "hiv",
         data_subset = "all",
@@ -520,6 +520,26 @@ test_that("multidisease compatibility driver cannot enable inline TFRecord writi
   expect_match(
     driver_source,
     ".ndm_preflight_multidisease_tfrecords",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    "covariate_panel_file = analysis2_multidisease_spec$covariate_panel_file",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    "covariate_manifest_file = analysis2_multidisease_spec$covariate_manifest_file",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    ".ndm_multidisease_resolve_inputs",
+    fixed = TRUE
+  )
+  expect_match(
+    driver_source,
+    "dataInputs_colnames_past <- resolved_row_inputs",
     fixed = TRUE
   )
   preflight_position <- regexpr(
@@ -833,9 +853,11 @@ test_that("Analysis2 YAML flags reject numeric scalars instead of silently disab
   api <- ndm:::.ndm_new_run_impl_env()
   numeric_manifest <- tempfile(fileext = ".yaml")
   canonical_manifest <- tempfile(fileext = ".yaml")
-  on.exit(unlink(c(numeric_manifest, canonical_manifest)), add = TRUE)
+  conflicting_manifest <- tempfile(fileext = ".yaml")
+  on.exit(unlink(c(numeric_manifest, canonical_manifest, conflicting_manifest)), add = TRUE)
   writeLines("force_to_gpu: 1", numeric_manifest)
   writeLines(c("force_to_gpu: yes", "dry_run: \"false\""), canonical_manifest)
+  writeLines(c("compute_backend: auto", "force_to_gpu: no"), conflicting_manifest)
 
   numeric_config <- api$analysis2_load_yaml_config(numeric_manifest)
   expect_identical(numeric_config$force_to_gpu, 1L)
@@ -846,6 +868,11 @@ test_that("Analysis2 YAML flags reject numeric scalars instead of silently disab
 
   canonical_config <- api$analysis2_load_yaml_config(canonical_manifest)
   expect_silent(api$analysis2_validate_manifest(canonical_config, "real"))
+  conflicting_config <- api$analysis2_load_yaml_config(conflicting_manifest)
+  expect_error(
+    api$analysis2_validate_manifest(conflicting_config, "real"),
+    "conflicts with `compute_backend`"
+  )
   spec <- utils::modifyList(api$analysis2_mode_defaults("real"), canonical_config)
   spec$project_root <- tempdir()
   normalized <- api$analysis2_normalize_run_spec(
@@ -853,8 +880,45 @@ test_that("Analysis2 YAML flags reject numeric scalars instead of silently disab
     mode = "real",
     paths = list(project_root = tempdir())
   )
-  expect_true(normalized$force_to_gpu)
+  expect_null(normalized$force_to_gpu)
+  expect_identical(normalized$compute_backend, "gpu")
   expect_false(normalized$dry_run)
+
+  auto_spec <- api$analysis2_mode_defaults("real")
+  auto_spec$project_root <- tempdir()
+  auto_normalized <- api$analysis2_normalize_run_spec(
+    auto_spec,
+    mode = "real",
+    paths = list(project_root = tempdir())
+  )
+  expect_null(auto_normalized$force_to_gpu)
+  expect_identical(auto_normalized$compute_backend, "auto")
+  expect_identical(api$analysis2_compute_backend(NULL, FALSE), "cpu")
+  expect_identical(api$analysis2_compute_backend(NULL, TRUE), "gpu")
+  expect_error(
+    api$analysis2_compute_backend("cpu", TRUE),
+    "conflicts with `compute_backend`"
+  )
+  expect_error(
+    api$analysis2_compute_backend("auto", FALSE),
+    "conflicts with `compute_backend`"
+  )
+  expect_error(
+    api$analysis2_compute_backend("metal"),
+    "one of"
+  )
+  cpu_with_gpu_memory <- api$analysis2_mode_defaults("real")
+  cpu_with_gpu_memory$project_root <- tempdir()
+  cpu_with_gpu_memory$compute_backend <- "cpu"
+  cpu_with_gpu_memory$gpu_mem_frac <- 0.5
+  expect_error(
+    api$analysis2_normalize_run_spec(
+      cpu_with_gpu_memory,
+      mode = "real",
+      paths = list(project_root = tempdir())
+    ),
+    "resolved compute backend is CPU"
+  )
 
   for (field in c(
     "respect_grid_model_type",
@@ -885,6 +949,8 @@ test_that("multidisease driver consumes all normalized sensitivity controls", {
       nCheckpointsDefault = 99L,
       nCheckpoints = 99L,
       PriorSDMultiplier = 0.25,
+      computeBackend = "cpu",
+      compute_backend = "cpu",
       force2GPU = FALSE,
       GPU_MEM_FRAC = 0.9,
       nSGD_DefiningLRSeq = 999L,
@@ -897,7 +963,7 @@ test_that("multidisease driver consumes all normalized sensitivity controls", {
     spec = list(
       n_checkpoints = 7L,
       prior_sd_multiplier = 2.5,
-      force_to_gpu = TRUE,
+      compute_backend = "gpu",
       gpu_mem_frac = 0.4
     ),
     n_samples_train = 64L,
@@ -908,6 +974,8 @@ test_that("multidisease driver consumes all normalized sensitivity controls", {
   expect_identical(grid_globals$nCheckpointsDefault, 7L)
   expect_identical(grid_globals$nCheckpoints, 5L)
   expect_equal(grid_globals$PriorSDMultiplier, 2.5)
+  expect_identical(grid_globals$computeBackend, "gpu")
+  expect_identical(grid_globals$compute_backend, "gpu")
   expect_true(grid_globals$force2GPU)
   expect_equal(grid_globals$GPU_MEM_FRAC, 0.4)
   expect_identical(grid_globals$nSGD_DefiningLRSeq, 5L)
@@ -983,6 +1051,27 @@ test_that("multidisease driver consumes all normalized sensitivity controls", {
     driver_source,
     "nsgd_calibration <- analysis2_resolve_nsgd_calibration(",
     fixed = TRUE
+  )
+})
+
+test_that("Analysis2 rejects mixed float types before fitting", {
+  api <- ndm:::.ndm_new_run_impl_env()
+  grid <- data.frame(floatType = c("32", "64", "32"))
+
+  expect_invisible(
+    api$analysis2_validate_process_float_type(grid, c(1L, 3L), "grid.csv")
+  )
+  expect_error(
+    api$analysis2_validate_process_float_type(grid, c(1L, 2L), "grid.csv"),
+    "exactly one `floatType`"
+  )
+  expect_error(
+    api$analysis2_validate_process_float_type(
+      data.frame(floatType = c("32", "bad")),
+      c(1L, 2L),
+      "grid.csv"
+    ),
+    "must use `floatType` 32 or 64"
   )
 })
 

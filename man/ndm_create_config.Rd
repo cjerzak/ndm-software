@@ -9,7 +9,7 @@ ndm_create_config(
   model_type = c("DecoderOnly", "NeuralODE"),
   backbone = "transformer",
   float_type = c("32", "64"),
-  force_to_gpu = TRUE,
+  force_to_gpu = NULL,
   resave_tfrecords = FALSE,
   gpu_mem_frac = NULL,
   neuralode_local_latent_dim = NULL,
@@ -28,6 +28,7 @@ ndm_create_config(
   neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
+  compute_backend = c("auto", "cpu", "gpu"),
   ...
 )
 
@@ -42,13 +43,15 @@ ndm_create_config(
 \item{float_type}{Floating point precision used when initializing the backend.
 Use `"32"` or `"64"`.}
 
-\item{force_to_gpu}{Logical scalar requiring a CUDA-capable JAX GPU when
-`TRUE`.}
+\item{force_to_gpu}{Deprecated logical alias for `compute_backend`. `TRUE`
+maps to `"gpu"` and `FALSE` maps to `"cpu"`.}
 
 \item{resave_tfrecords}{Logical scalar preserved for compatibility. Public
 training APIs require `FALSE`; prepare canonical inputs before training.}
 
-\item{gpu_mem_frac}{Optional finite GPU memory fraction in `(0, 1]`.}
+\item{gpu_mem_frac}{Optional finite GPU memory fraction in `(0, 1]`. It is
+invalid when `compute_backend = "cpu"` and rejected at initialization if
+`"auto"` resolves to CPU.}
 
 \item{neuralode_local_latent_dim}{Optional local NeuralODE latent width. When
 `NULL`, runtime code resolves this to `ModelDims`.}
@@ -103,6 +106,10 @@ variational samples.}
 \item{neuralode_mean_loss_weight}{Non-negative multiplier for an auxiliary
 masked mean-squared-error term applied to NeuralODE forecasts alongside
 the Student-t likelihood.}
+
+\item{compute_backend}{Compute device policy: `"auto"` selects a supported
+JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`
+require the named backend.}
 
 \item{...}{Unused; included for S3 method compatibility.}
 

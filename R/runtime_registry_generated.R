@@ -575,37 +575,79 @@
 
 .ndm_stage_expr_SetupEnv_SuperLModel_MasterImports <- expression({
     Sys.setenv(TF_CPP_MIN_LOG_LEVEL = "0")
-    if (!is.null(GPU_MEM_FRAC)) {
-        Sys.setenv(XLA_PYTHON_CLIENT_MEM_FRACTION = sprintf("%s",
-            GPU_MEM_FRAC))
-    }
     backend_conda_env <- get0("conda_env", inherits = TRUE, ifnotfound = Sys.getenv("NDM_SOFTWARE_CONDA_ENV",
         unset = Sys.getenv("NDM_CONDA_ENV", unset = if (grepl(version$os,
             pattern = "darwin"))
             "jax_cpu"
         else "ndm_software_env")))
+    backend_compute_request <- get0("computeBackend", inherits = TRUE,
+        ifnotfound = get0("compute_backend", inherits = TRUE,
+            ifnotfound = NULL))
+    if (is.null(backend_compute_request)) {
+        legacy_force_to_gpu <- get0("force2GPU", inherits = TRUE,
+            ifnotfound = NULL)
+        backend_compute_request <- if (is.null(legacy_force_to_gpu)) {
+            "auto"
+        }
+        else if (isTRUE(legacy_force_to_gpu)) {
+            "gpu"
+        }
+        else {
+            "cpu"
+        }
+    }
     backend <- ndm::ndm_initialize_backend(conda_env = backend_conda_env,
-        float_type = as.character(floatType), import_tensorflow = TRUE)
+        float_type = as.character(floatType), import_tensorflow = TRUE,
+        compute_backend = backend_compute_request, gpu_mem_frac = GPU_MEM_FRAC)
     jax <- backend$jax
-    ndm:::.ndm_assert_gpu_available(jax, force_to_gpu = force2GPU)
     jnp <- backend$jnp
     np <- backend$np
     optax <- backend$optax
     eq <- backend$eq
     diffrax <- backend$diffrax
-    flash_mha <- backend$flash_mha
+    compute_backend_requested <- backend$compute_backend_requested
+    compute_backend_resolved <- backend$compute_backend_resolved
+    if (is.null(compute_backend_resolved)) {
+        compute_backend_resolved <- backend$compute_backend
+    }
+    compute_backend <- compute_backend_resolved
+    computeBackend <- compute_backend
+    force2GPU <- identical(compute_backend, "gpu")
+    selected_device <- backend$selected_device
+    device_platform <- backend$device_platform
+    device_kind <- backend$device_kind
+    device_vendor <- backend$device_vendor
+    device_provenance <- backend$device_provenance
+    accelerator_runtime <- backend$accelerator_runtime
+    is_cuda <- isTRUE(backend$is_cuda) && identical(accelerator_runtime,
+        "cuda")
+    NDM_CUDA_ATTENTION_AVAILABLE <- force2GPU && is_cuda
+    flash_mha <- if (isTRUE(NDM_CUDA_ATTENTION_AVAILABLE))
+        backend$flash_mha
+    else NULL
     py_gc <- backend$py_gc
     tf <- backend$tf
+    if (!is.null(tf)) {
+        try(tf$config$set_visible_devices(list(), "GPU"), silent = TRUE)
+    }
     jaxFloatType <- backend$jaxFloatType
+    send2device <- backend$send2device
     send2cpu <- backend$send2cpu
     send2gpu <- backend$send2gpu
-    num_devices <- length(jax$devices())
-    if (isTRUE(force2GPU) && !identical(backend$default_backend,
-        "cpu")) {
-        send2cpu <- send2gpu <- function(x) {
-            x
-        }
+    selected_devices <- tryCatch(jax$devices(device_platform),
+        error = function(...) list(selected_device))
+    if (length(selected_devices) == 0L) {
+        selected_devices <- list(selected_device)
     }
+    device_count <- backend$device_count
+    if (is.null(device_count)) {
+        device_count <- backend$device_provenance$device_count
+    }
+    if (is.null(device_count)) {
+        device_count <- length(selected_devices)
+    }
+    device_count <- as.integer(device_count)
+    num_devices <- min(length(selected_devices), device_count)
     DefaultDtypeTf <- if (identical(as.character(floatType),
         "64"))
         "tf$float64"
@@ -660,10 +702,14 @@
         }
         tryCatch({
             if (!is.null(jax$make_mesh)) {
-                return(jax$make_mesh(list(as.integer(num_devices)),
-                  list("data")))
+                mesh <- tryCatch(jax$make_mesh(list(as.integer(num_devices)),
+                  list("data"), devices = selected_devices),
+                  error = function(...) NULL)
+                if (!is.null(mesh)) {
+                  return(mesh)
+                }
             }
-            jax_sharding$Mesh(jax$devices(), list("data"))
+            jax_sharding$Mesh(selected_devices, list("data"))
         }, error = function(...) NULL)
     }
     ndm_mesh <- ndm_runtime_make_mesh()
@@ -702,14 +748,14 @@
         tryCatch(eq$filter_shard(x, shardings), error = function(...) NULL)
     }
     ndm_runtime_data_to_device <- function(x) {
-        if (!ndm_sharding_enabled) {
-            return(x)
-        }
         if (is.list(x)) {
             return(lapply(x, ndm_runtime_data_to_device))
         }
         if (!ndm_runtime_is_python_array(x)) {
             return(x)
+        }
+        if (!ndm_sharding_enabled) {
+            return(tryCatch(send2device(x), error = function(...) x))
         }
         sharding <- ndm_runtime_named_sharding(x, sharded = ndm_runtime_array_rank(x) >
             0L)
@@ -719,18 +765,18 @@
         tryCatch(jax$device_put(x, sharding), error = function(...) x)
     }
     ndm_runtime_replicate_tree <- function(x) {
-        if (!ndm_sharding_enabled) {
-            return(x)
-        }
-        sharded_tree <- ndm_runtime_shard_tree(x, sharded = FALSE)
-        if (!is.null(sharded_tree)) {
-            return(sharded_tree)
-        }
         if (is.list(x)) {
             return(lapply(x, ndm_runtime_replicate_tree))
         }
         if (!ndm_runtime_is_python_array(x)) {
             return(x)
+        }
+        if (!ndm_sharding_enabled) {
+            return(tryCatch(send2device(x), error = function(...) x))
+        }
+        sharded_tree <- ndm_runtime_shard_tree(x, sharded = FALSE)
+        if (!is.null(sharded_tree)) {
+            return(sharded_tree)
         }
         sharding <- ndm_runtime_named_sharding(x, sharded = FALSE)
         if (is.null(sharding)) {
@@ -3939,8 +3985,11 @@
             get0(name, envir = backbone_runtime_lookup_env, inherits = FALSE,
                 ifnotfound = ifnotfound)
         }
-        TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(),
-            function(d) d$device_kind))), error = function(e) FALSE)
+        cuda_attention_available <- isTRUE(backbone_runtime_get0("NDM_CUDA_ATTENTION_AVAILABLE",
+            ifnotfound = FALSE))
+        TRY_FLASH <- cuda_attention_available && tryCatch(!any(grepl("V100",
+            sapply(selected_devices, function(d) d$device_kind))),
+            error = function(e) FALSE)
         EnableKVCaching <- backbone_runtime_get0("EnableKVCaching",
             ifnotfound = FALSE)
         EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType ==
@@ -3962,11 +4011,11 @@
             choose_attention_impl <- function(prefer = "auto") {
                 if (prefer == "xla")
                   return("xla")
-                if (prefer == "cudnn")
-                  return("cudnn")
-                has_gpu <- any(sapply(jax$devices(), function(d) d$platform ==
-                  "gpu"))
-                if (isTRUE(has_gpu) && isTRUE(TRY_FLASH))
+                if (prefer == "cudnn") {
+                  return(if (isTRUE(cuda_attention_available) &&
+                    isTRUE(TRY_FLASH)) "cudnn" else "xla")
+                }
+                if (isTRUE(cuda_attention_available) && isTRUE(TRY_FLASH))
                   "cudnn"
                 else "xla"
             }
@@ -9477,16 +9526,13 @@
         stop("`prior_sd_multiplier` must be one finite positive value.",
             call. = FALSE)
     }
-    force_to_gpu <- spec$force_to_gpu
-    if (!is.logical(force_to_gpu) || length(force_to_gpu) !=
-        1L || is.na(force_to_gpu)) {
-        stop("`force_to_gpu` must be one non-missing logical value.",
-            call. = FALSE)
-    }
+    compute_backend <- match.arg(tolower(as.character(spec$compute_backend %||%
+        "auto")), c("auto", "cpu", "gpu"))
     resolved_n_sgd <- max(1L, analysis2_as_int(n_sgd))
     list(nCheckpointsDefault = n_checkpoints_default, nCheckpoints = analysis2_small_run_n_checkpoints(n_samples_train,
         resolved_n_sgd, n_checkpoints_default), PriorSDMultiplier = prior_sd_multiplier,
-        force2GPU = force_to_gpu, GPU_MEM_FRAC = spec$gpu_mem_frac,
+        computeBackend = compute_backend, compute_backend = compute_backend,
+        force2GPU = identical(compute_backend, "gpu"), GPU_MEM_FRAC = spec$gpu_mem_frac,
         nSGD_DefiningLRSeq = resolved_n_sgd, nSGD_model = resolved_n_sgd,
         nSGD_posttrain = resolved_n_sgd)
 }, analysis2_small_run_n_obs_inference <- function(n_samples_train,
@@ -9551,6 +9597,31 @@
     else paste0("`", field, "`")
     stop(label, " must be one non-missing logical value or canonical logical spelling.",
         call. = FALSE)
+}, analysis2_compute_backend <- function(compute_backend = NULL,
+    force_to_gpu = NULL, compute_backend_supplied = !is.null(compute_backend)) {
+    compute_backend_supplied <- isTRUE(compute_backend_supplied)
+    if (!is.null(force_to_gpu)) {
+        force_to_gpu <- analysis2_parse_bool(force_to_gpu, field = "force_to_gpu")
+    }
+    compute_backend <- tolower(analysis2_normalize_string(compute_backend) %||%
+        "auto")
+    if (!compute_backend %in% c("auto", "cpu", "gpu")) {
+        stop("`compute_backend` must be one of \"auto\", \"cpu\", or \"gpu\".",
+            call. = FALSE)
+    }
+    if (!is.null(force_to_gpu)) {
+        legacy_backend <- if (isTRUE(force_to_gpu))
+            "gpu"
+        else "cpu"
+        if (!isTRUE(compute_backend_supplied)) {
+            compute_backend <- legacy_backend
+        }
+        else if (!identical(compute_backend, legacy_backend)) {
+            stop("`force_to_gpu` conflicts with `compute_backend`; use the canonical compute policy.",
+                call. = FALSE)
+        }
+    }
+    compute_backend
 }, analysis2_parse_args <- function(args = commandArgs(TRUE)) {
     out <- list(positional = character())
     for (arg in args) {
@@ -9607,17 +9678,18 @@
     analysis2_parse_bool(x)
 }, analysis2_supported_flags <- function(mode) {
     base <- c("config", "project_root", "analysis_name", "grid_file",
-        "outer", "run_seed", "force_to_gpu", "gpu_mem_frac",
-        "enable_kv_cache", "inference_mc_draws", "observation_scale_floor",
-        "initial_observation_scale", "neuralode_variational",
-        "neuralode_kl_weight", "neuralode_mean_loss_weight",
+        "outer", "run_seed", "compute_backend", "force_to_gpu",
+        "gpu_mem_frac", "enable_kv_cache", "inference_mc_draws",
+        "observation_scale_floor", "initial_observation_scale",
+        "neuralode_variational", "neuralode_kl_weight", "neuralode_mean_loss_weight",
         "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier",
         "solver_profile", "model_type", "respect_grid_model_type",
         "resave_tfrecords", "run_figures", "tfrecord_dir", "dry_run",
         "help")
     extras <- switch(mode, real = c("raw_data_dir", "outcome_metric",
         "data_subset"), sim = character(), multidisease = c("outcome_metric",
-        "data_subset", "disease_names", "data_format"), stop("Unsupported Analysis2 mode: ",
+        "data_subset", "disease_names", "data_format", "covariate_panel_file",
+        "covariate_manifest_file"), stop("Unsupported Analysis2 mode: ",
         mode, call. = FALSE))
     unique(c(base, extras))
 }, analysis2_validate_args <- function(opts, mode) {
@@ -9649,6 +9721,8 @@
     for (field in boolean_fields) {
         analysis2_parse_bool(manifest[[field]], field = field)
     }
+    analysis2_compute_backend(manifest$compute_backend, manifest$force_to_gpu,
+        compute_backend_supplied = "compute_backend" %in% names(manifest))
     invisible(manifest)
 }, analysis2_default_config_name <- function(mode) {
     switch(mode, real = "real.yaml", sim = "sim.yaml", multidisease = "real_multidisease.yaml",
@@ -9674,18 +9748,31 @@
     as.list(config)
 }, analysis2_mode_defaults <- function(mode) {
     switch(mode, real = list(mode = "real", analysis_name = "RealApril15",
-        grid_file = NULL, outer = 3L, run_seed = NULL, force_to_gpu = TRUE,
-        gpu_mem_frac = NULL, enable_kv_cache = FALSE, inference_mc_draws = 5L,
-        observation_scale_floor = 1e-05, initial_observation_scale = 1,
-        neuralode_variational = TRUE, neuralode_kl_weight = 1,
-        neuralode_mean_loss_weight = 0, n_checkpoints = 1L, max_sgd_steps = NULL,
-        prior_sd_multiplier = 1, solver_profile = "default",
-        model_type = NULL, respect_grid_model_type = TRUE, resave_tfrecords = FALSE,
-        run_figures = FALSE, project_root = NULL, raw_data_dir = "Data/MainData",
-        tfrecord_dir = NULL, outcome_metric = "inc_death", data_subset = "high_income",
+        grid_file = NULL, outer = 3L, run_seed = NULL, compute_backend = "auto",
+        force_to_gpu = NULL, gpu_mem_frac = NULL, enable_kv_cache = FALSE,
+        inference_mc_draws = 5L, observation_scale_floor = 1e-05,
+        initial_observation_scale = 1, neuralode_variational = TRUE,
+        neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
+        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
+        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
+        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
+        raw_data_dir = "Data/MainData", tfrecord_dir = NULL,
+        outcome_metric = "inc_death", data_subset = "high_income",
         disease_names = NULL, data_format = NULL, dry_run = FALSE,
         help = FALSE), sim = list(mode = "sim", analysis_name = "BigSimsLatest",
-        grid_file = NULL, outer = 1L, run_seed = NULL, force_to_gpu = TRUE,
+        grid_file = NULL, outer = 1L, run_seed = NULL, compute_backend = "auto",
+        force_to_gpu = NULL, gpu_mem_frac = NULL, enable_kv_cache = FALSE,
+        inference_mc_draws = 5L, observation_scale_floor = 1e-05,
+        initial_observation_scale = 1, neuralode_variational = TRUE,
+        neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
+        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
+        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
+        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
+        raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = NULL,
+        data_subset = NULL, disease_names = NULL, data_format = NULL,
+        dry_run = FALSE, help = FALSE), multidisease = list(mode = "multidisease",
+        analysis_name = "RealLatest", grid_file = NULL, outer = 1L,
+        run_seed = NULL, compute_backend = "auto", force_to_gpu = NULL,
         gpu_mem_frac = NULL, enable_kv_cache = FALSE, inference_mc_draws = 5L,
         observation_scale_floor = 1e-05, initial_observation_scale = 1,
         neuralode_variational = TRUE, neuralode_kl_weight = 1,
@@ -9693,21 +9780,11 @@
         prior_sd_multiplier = 1, solver_profile = "default",
         model_type = NULL, respect_grid_model_type = TRUE, resave_tfrecords = FALSE,
         run_figures = FALSE, project_root = NULL, raw_data_dir = NULL,
-        tfrecord_dir = NULL, outcome_metric = NULL, data_subset = NULL,
-        disease_names = NULL, data_format = NULL, dry_run = FALSE,
-        help = FALSE), multidisease = list(mode = "multidisease",
-        analysis_name = "RealLatest", grid_file = NULL, outer = 1L,
-        run_seed = NULL, force_to_gpu = TRUE, gpu_mem_frac = NULL,
-        enable_kv_cache = FALSE, inference_mc_draws = 5L, observation_scale_floor = 1e-05,
-        initial_observation_scale = 1, neuralode_variational = TRUE,
-        neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
-        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
-        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
-        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
-        raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = "CountValue",
-        data_subset = "all", disease_names = c("Covid", "Flu"),
-        data_format = "IHME", dry_run = FALSE, help = FALSE),
-        stop("Unsupported Analysis2 mode: ", mode, call. = FALSE))
+        tfrecord_dir = NULL, outcome_metric = "CountValue", data_subset = "all",
+        disease_names = c("Covid", "Flu"), data_format = "IHME",
+        covariate_panel_file = NULL, covariate_manifest_file = NULL,
+        dry_run = FALSE, help = FALSE), stop("Unsupported Analysis2 mode: ",
+        mode, call. = FALSE))
 }, analysis2_mode_default_grid_file <- function(mode, project_root,
     analysis_name) {
     path <- switch(mode, real = file.path(project_root, "Data",
@@ -9758,8 +9835,9 @@
 }, analysis2_cli_overrides <- function(opts, mode) {
     overrides <- list()
     scalar_fields <- intersect(c("project_root", "analysis_name",
-        "grid_file", "model_type", "raw_data_dir", "tfrecord_dir",
-        "outcome_metric", "data_subset", "data_format", "solver_profile"),
+        "grid_file", "model_type", "compute_backend", "raw_data_dir",
+        "tfrecord_dir", "outcome_metric", "data_subset", "data_format",
+        "covariate_panel_file", "covariate_manifest_file", "solver_profile"),
         names(opts))
     for (field in scalar_fields) {
         overrides[[field]] <- analysis2_normalize_string(opts[[field]])
@@ -9819,8 +9897,15 @@
     spec$model_type <- analysis2_normalize_string(spec$model_type)
     spec$respect_grid_model_type <- analysis2_parse_bool(spec$respect_grid_model_type %||%
         defaults$respect_grid_model_type, field = "respect_grid_model_type")
-    spec$force_to_gpu <- analysis2_parse_bool(spec$force_to_gpu %||%
+    legacy_force_to_gpu <- analysis2_parse_bool(spec$force_to_gpu %||%
         defaults$force_to_gpu, field = "force_to_gpu")
+    compute_backend_supplied <- isTRUE(spec$.compute_backend_supplied) ||
+        (!is.null(spec$compute_backend) && !identical(tolower(as.character(spec$compute_backend)),
+            "auto"))
+    spec$compute_backend <- analysis2_compute_backend(spec$compute_backend %||%
+        defaults$compute_backend, legacy_force_to_gpu, compute_backend_supplied = compute_backend_supplied)
+    spec$force_to_gpu <- NULL
+    spec$.compute_backend_supplied <- NULL
     spec$enable_kv_cache <- analysis2_parse_bool(spec$enable_kv_cache %||%
         defaults$enable_kv_cache, field = "enable_kv_cache")
     spec$neuralode_variational <- analysis2_parse_bool(spec$neuralode_variational %||%
@@ -9843,6 +9928,8 @@
     spec$outcome_metric <- analysis2_normalize_string(spec$outcome_metric)
     spec$data_subset <- analysis2_normalize_string(spec$data_subset)
     spec$data_format <- analysis2_normalize_string(spec$data_format)
+    spec$covariate_panel_file <- analysis2_normalize_string(spec$covariate_panel_file)
+    spec$covariate_manifest_file <- analysis2_normalize_string(spec$covariate_manifest_file)
     spec$disease_names <- analysis2_parse_csv(spec$disease_names %||%
         defaults$disease_names)
     spec$outer <- analysis2_normalize_outer(spec$outer, default = defaults$outer)
@@ -9861,6 +9948,10 @@
         if (length(spec$gpu_mem_frac) != 1L || !is.finite(spec$gpu_mem_frac) ||
             spec$gpu_mem_frac <= 0 || spec$gpu_mem_frac > 1) {
             stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].",
+                call. = FALSE)
+        }
+        if (identical(spec$compute_backend, "cpu")) {
+            stop("`gpu_mem_frac` cannot be used when the resolved compute backend is CPU.",
                 call. = FALSE)
         }
     }
@@ -9948,6 +10039,24 @@
         must_work = FALSE)
     spec$raw_data_dir <- analysis2_path_from_project(spec$raw_data_dir,
         project_root = spec$project_root, must_work = FALSE)
+    spec$covariate_panel_file <- analysis2_path_from_project(spec$covariate_panel_file,
+        project_root = spec$project_root, must_work = FALSE)
+    spec$covariate_manifest_file <- analysis2_path_from_project(spec$covariate_manifest_file,
+        project_root = spec$project_root, must_work = FALSE)
+    if (xor(is.null(spec$covariate_panel_file), is.null(spec$covariate_manifest_file))) {
+        stop("`covariate_panel_file` and `covariate_manifest_file` must be supplied together.",
+            call. = FALSE)
+    }
+    if (!identical(mode, "multidisease") && (!is.null(spec$covariate_panel_file) ||
+        !is.null(spec$covariate_manifest_file))) {
+        stop("Covariate panel files are supported only for multidisease runs.",
+            call. = FALSE)
+    }
+    if (!is.null(spec$covariate_panel_file) && !identical(toupper(as.character(spec$data_format)),
+        "WHO")) {
+        stop("Covariate panel files are supported only when `data_format = \"WHO\"`.",
+            call. = FALSE)
+    }
     if (identical(mode, "real") && is.null(spec$raw_data_dir)) {
         spec$raw_data_dir <- analysis2_path_from_project(defaults$raw_data_dir,
             project_root = spec$project_root, must_work = FALSE)
@@ -9977,6 +10086,8 @@
     cli <- analysis2_cli_overrides(opts, mode)
     spec <- utils::modifyList(defaults, manifest)
     spec <- utils::modifyList(spec, cli)
+    spec$.compute_backend_supplied <- "compute_backend" %in%
+        names(manifest) || "compute_backend" %in% names(cli)
     spec$config_file <- config_file
     spec <- analysis2_normalize_run_spec(spec, mode = mode, paths = initial_paths)
     spec$paths <- analysis2_paths(project_root = spec$project_root)
@@ -9992,14 +10103,16 @@
     extra_flags <- switch(mode, real = c("  --raw_data_dir=PATH",
         "  --outcome_metric=NAME", "  --data_subset=NAME"), sim = character(),
         multidisease = c("  --data_subset=NAME", "  --disease_names=a,b",
-            "  --data_format=IHME|WHO|Tycho", "  --outcome_metric=NAME"))
+            "  --data_format=IHME|WHO|Tycho", "  --outcome_metric=NAME",
+            "  --covariate_panel_file=PATH", "  --covariate_manifest_file=PATH"))
     paste(c(sprintf("Analysis2 %s runner", mode_title), "", "Supported precedence: CLI > config manifest > grid row > code defaults",
         sprintf("Default config: %s", config_default), "", "Core flags:",
         "  --config=PATH", "  --project_root=PATH", "  --analysis_name=NAME",
         "  --grid_file=PATH", "  --outer=1,2,3", "  --run_seed=INTEGER",
-        "  --force_to_gpu=TRUE|FALSE", "  --gpu_mem_frac=NUMBER",
-        "  --enable_kv_cache=TRUE|FALSE", "  --inference_mc_draws=POSITIVE_INTEGER",
-        "  --observation_scale_floor=POSITIVE_NUMBER", "  --initial_observation_scale=NUMBER_GREATER_THAN_OBSERVATION_SCALE_FLOOR",
+        "  --compute_backend=auto|cpu|gpu", "  --force_to_gpu=TRUE|FALSE",
+        "  --gpu_mem_frac=NUMBER", "  --enable_kv_cache=TRUE|FALSE",
+        "  --inference_mc_draws=POSITIVE_INTEGER", "  --observation_scale_floor=POSITIVE_NUMBER",
+        "  --initial_observation_scale=NUMBER_GREATER_THAN_OBSERVATION_SCALE_FLOOR",
         "  --neuralode_variational=TRUE|FALSE", "  --neuralode_kl_weight=NUMBER",
         "  --neuralode_mean_loss_weight=NUMBER", "  --n_checkpoints=POSITIVE_INTEGER",
         "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)", "  --prior_sd_multiplier=POSITIVE_NUMBER",
@@ -10091,6 +10204,25 @@
     stop("Requested outer iteration(s) outside the grid bounds for ",
         grid_file, ": ", paste(bad, collapse = ", "), ". Valid rows are between 1 and ",
         nrow(grid), ".", call. = FALSE)
+}, analysis2_validate_process_float_type <- function(grid, outer_iterations,
+    grid_file) {
+    if (!"floatType" %in% names(grid)) {
+        stop("Grid is missing required `floatType`: ", grid_file,
+            call. = FALSE)
+    }
+    values <- trimws(as.character(grid$floatType[outer_iterations]))
+    if (anyNA(values) || any(!values %in% c("32", "64"))) {
+        stop("Selected grid rows must use `floatType` 32 or 64 in ",
+            grid_file, ".", call. = FALSE)
+    }
+    unique_values <- unique(values)
+    if (length(unique_values) != 1L) {
+        stop("One Analysis2 run/process must use exactly one `floatType`; selected rows in ",
+            grid_file, " contain: ", paste(unique_values, collapse = ", "),
+            ". Split mixed-precision rows into separate processes.",
+            call. = FALSE)
+    }
+    invisible(unique_values[[1L]])
 }, analysis2_require_ndm <- function() {
     pkg <- tryCatch(utils::packageName(), error = function(e) NULL)
     if (!is.null(pkg) && nzchar(pkg)) {
@@ -10188,7 +10320,7 @@
     switch(mode, real = c("row_id", "pair_id", "core_row_id",
         "core_pair_id", "ModelType", "ModelDepth", "ModelDims",
         "nSamplesTrain", "nObsInference", "floatType", "model_spec_name",
-        "model_tex_loc", "run_seed", "force_to_gpu", "gpu_mem_frac",
+        "model_tex_loc", "run_seed", "compute_backend", "gpu_mem_frac",
         "enable_kv_cache", "inference_mc_draws", "observation_scale_floor",
         "initial_observation_scale", "neuralode_variational",
         "neuralode_kl_weight", "neuralode_mean_loss_weight",
@@ -10197,7 +10329,7 @@
         sim = c("row_id", "pair_id", "core_row_id", "core_pair_id",
             "ModelType", "ModelDepth", "ModelDims", "nSamplesTrain",
             "floatType", "model_spec_name", "model_tex_loc",
-            "run_seed", "force_to_gpu", "gpu_mem_frac", "enable_kv_cache",
+            "run_seed", "compute_backend", "gpu_mem_frac", "enable_kv_cache",
             "inference_mc_draws", "observation_scale_floor",
             "initial_observation_scale", "neuralode_variational",
             "neuralode_kl_weight", "neuralode_mean_loss_weight",
@@ -11518,6 +11650,8 @@
     real_grid <- analysis2_order_grid(real_grid_raw, outer_iterations)
     analysis2_validate_outer_iterations(real_grid, outer_iterations,
         grid_file)
+    analysis2_validate_process_float_type(real_grid, outer_iterations,
+        grid_file)
     if (isTRUE(spec$dry_run)) {
         return(analysis2_dry_run_result(spec, real_grid, nsgd_calibration = nsgd_calibration))
     }
@@ -11563,7 +11697,7 @@
         config <- analysis2_call(ndm_pkg, "ndm_create_config",
             model_type = model_type, backbone = "transformer",
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType),
-            force_to_gpu = spec$force_to_gpu, resave_tfrecords = FALSE,
+            compute_backend = spec$compute_backend, resave_tfrecords = FALSE,
             gpu_mem_frac = spec$gpu_mem_frac, enable_kv_cache = spec$enable_kv_cache,
             inference_mc_draws = spec$inference_mc_draws, observation_scale_floor = spec$observation_scale_floor,
             initial_observation_scale = spec$initial_observation_scale,
@@ -11653,6 +11787,8 @@
     sim_grid <- analysis2_order_grid(sim_grid_raw, outer_iterations)
     analysis2_validate_outer_iterations(sim_grid, outer_iterations,
         grid_file)
+    analysis2_validate_process_float_type(sim_grid, outer_iterations,
+        grid_file)
     if (isTRUE(spec$dry_run)) {
         return(analysis2_dry_run_result(spec, sim_grid, nsgd_calibration = nsgd_calibration))
     }
@@ -11695,7 +11831,7 @@
         config <- analysis2_call(ndm_pkg, "ndm_create_config",
             model_type = model_type, backbone = "transformer",
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType),
-            force_to_gpu = spec$force_to_gpu, resave_tfrecords = FALSE,
+            compute_backend = spec$compute_backend, resave_tfrecords = FALSE,
             gpu_mem_frac = spec$gpu_mem_frac, enable_kv_cache = spec$enable_kv_cache,
             inference_mc_draws = spec$inference_mc_draws, observation_scale_floor = spec$observation_scale_floor,
             initial_observation_scale = spec$initial_observation_scale,
@@ -11797,6 +11933,8 @@
     real_grid <- analysis2_order_grid(real_grid_raw, spec$outer)
     analysis2_validate_outer_iterations(real_grid, spec$outer,
         grid_file)
+    analysis2_validate_process_float_type(real_grid, spec$outer,
+        grid_file)
     if (isTRUE(spec$dry_run)) {
         return(analysis2_dry_run_result(spec, real_grid, nsgd_calibration = nsgd_calibration))
     }
@@ -11874,7 +12012,18 @@
                 "Run ndm_bootstrap_multidisease_tfrecords() before training.",
                 call. = FALSE)
         }
-        force2GPU <- isTRUE(analysis2_multidisease_spec$force_to_gpu)
+        computeBackend <- analysis2_multidisease_spec$compute_backend %||%
+            if (is.null(analysis2_multidisease_spec$force_to_gpu)) {
+                "auto"
+            }
+            else if (isTRUE(analysis2_multidisease_spec$force_to_gpu)) {
+                "gpu"
+            }
+            else {
+                "cpu"
+            }
+        compute_backend <- computeBackend
+        force2GPU <- identical(computeBackend, "gpu")
         nRealGridSeed <- 128L
         nExamplesPerCell <- 10L
         nRealGrid <- 704
@@ -11919,7 +12068,8 @@
             "ndm"))(project_root = analysis2_multidisease_spec$project_root,
             data_format = dataFormat, disease_names = DiseaseNameVec,
             outcome_metric = analysis2_multidisease_spec$outcome_metric,
-            data_subset = data_subset)
+            data_subset = data_subset, covariate_panel_file = analysis2_multidisease_spec$covariate_panel_file,
+            covariate_manifest_file = analysis2_multidisease_spec$covariate_manifest_file)
         truth_df_red <- multidisease_bundle$truth_df_red
         input_df_red <- multidisease_bundle$input_df_red
         true_value_names <- multidisease_bundle$true_value_names
@@ -12005,6 +12155,12 @@
                   eval(parse(text = sprintf("RealEntry['%s'] <- tmp_",
                     e_)))
                 }
+                resolved_row_inputs <- (utils::getFromNamespace(".ndm_multidisease_resolve_inputs",
+                  "ndm"))(multidisease_bundle, RealEntry$dataInputs)
+                dataInputs_pool <- resolved_row_inputs
+                dataInputs_colnames <- resolved_row_inputs
+                dataInputs_colnames_past <- resolved_row_inputs
+                dataInputs_colnames_future <- character()
                 if (exists("nSamplesTrain") && !is.na(nSamplesTrain) &&
                   nSamplesTrain > 0) {
                   nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))

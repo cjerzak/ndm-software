@@ -14,6 +14,7 @@ test_that("configuration objects preserve requested modeling defaults", {
       "backbone",
       "float_type",
       "force_to_gpu",
+      "compute_backend",
       "resave_tfrecords",
       "gpu_mem_frac",
       "neuralode_local_latent_dim",
@@ -37,6 +38,8 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_null(cfg$neuralode_local_latent_dim)
   expect_null(cfg$neuralode_global_latent_dim)
   expect_null(cfg$neuralode_init_state_logit_offset)
+  expect_null(cfg$force_to_gpu)
+  expect_identical(cfg$compute_backend, "auto")
   expect_equal(cfg$neuralode_init_state_logit_scale_max, Inf)
   expect_equal(cfg$neuralode_optim_solver, "tsit5")
   expect_equal(cfg$neuralode_optim_dt0, 1e-3)
@@ -157,6 +160,21 @@ test_that("default configs do not expose runtime-root fields", {
 
 test_that("backend resource controls reject ambiguous values", {
   expect_error(ndm_create_config(force_to_gpu = NA), "non-missing logical")
+  expect_error(ndm_create_config(compute_backend = "metal"), "auto.*cpu.*gpu")
+  expect_error(
+    suppressWarnings(ndm_create_config(force_to_gpu = TRUE, compute_backend = "cpu")),
+    "Conflicting backend controls"
+  )
+  expect_identical(ndm_create_config(compute_backend = "cpu")$compute_backend, "cpu")
+  expect_false(ndm_create_config(compute_backend = "cpu")$force_to_gpu)
+  expect_identical(
+    suppressWarnings(ndm_create_config(force_to_gpu = TRUE))$compute_backend,
+    "gpu"
+  )
+  expect_error(
+    ndm_create_config(compute_backend = "cpu", gpu_mem_frac = 0.25),
+    "resolved compute backend is CPU"
+  )
   expect_error(ndm_create_config(gpu_mem_frac = 0), "in \\(0, 1\\]")
   expect_error(ndm_create_config(gpu_mem_frac = Inf), "finite")
   expect_equal(ndm_create_config(gpu_mem_frac = 0.25)$gpu_mem_frac, 0.25)

@@ -215,6 +215,295 @@
   bundle
 }
 
+.ndm_multidisease_optional_file_pair <- function(project_root,
+                                                 covariate_panel_file = NULL,
+                                                 covariate_manifest_file = NULL,
+                                                 must_work = TRUE) {
+  normalize_optional <- function(path, name) {
+    if (is.null(path)) {
+      return(NULL)
+    }
+    path <- as.character(path)
+    if (length(path) != 1L || is.na(path) || !nzchar(trimws(path))) {
+      stop("`", name, "` must be NULL or one non-empty path.", call. = FALSE)
+    }
+    .ndm_normalize_path(
+      .ndm_path_join_if_relative(project_root, path),
+      must_work = must_work
+    )
+  }
+
+  panel <- normalize_optional(covariate_panel_file, "covariate_panel_file")
+  manifest <- normalize_optional(
+    covariate_manifest_file,
+    "covariate_manifest_file"
+  )
+  if (xor(is.null(panel), is.null(manifest))) {
+    stop(
+      "`covariate_panel_file` and `covariate_manifest_file` must be supplied together.",
+      call. = FALSE
+    )
+  }
+  list(panel = panel, manifest = manifest)
+}
+
+.ndm_multidisease_sha256_file <- function(path) {
+  digest::digest(file = path, algo = "sha256", serialize = FALSE)
+}
+
+.ndm_multidisease_covariate_schema_sha256 <- function(feature_names) {
+  digest::digest(
+    list(
+      contract = "ndm_multidisease_covariate_panel_v1",
+      key_columns = c("location_id", "year"),
+      feature_names = as.character(feature_names),
+      feature_storage = rep("numeric", length(feature_names))
+    ),
+    algo = "sha256",
+    serialize = TRUE
+  )
+}
+
+.ndm_multidisease_read_covariate_files <- function(covariate_panel_file,
+                                                   covariate_manifest_file) {
+  panel <- as.data.frame(
+    data.table::fread(
+      covariate_panel_file,
+      check.names = FALSE,
+      showProgress = FALSE
+    ),
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+  manifest <- as.data.frame(
+    data.table::fread(
+      covariate_manifest_file,
+      check.names = FALSE,
+      showProgress = FALSE
+    ),
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+
+  if (anyDuplicated(names(panel))) {
+    stop("The covariate panel has duplicate column names.", call. = FALSE)
+  }
+  if (anyDuplicated(names(manifest))) {
+    stop("The covariate manifest has duplicate column names.", call. = FALSE)
+  }
+  key_columns <- c("location_id", "year")
+  missing_keys <- setdiff(key_columns, names(panel))
+  if (length(missing_keys) > 0L) {
+    stop(
+      "The covariate panel is missing required key column(s): ",
+      paste(missing_keys, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  if (!"feature_name" %in% names(manifest)) {
+    stop("The covariate manifest must contain `feature_name`.", call. = FALSE)
+  }
+  if (nrow(panel) == 0L) {
+    stop("The covariate panel must contain at least one row.", call. = FALSE)
+  }
+  if (nrow(manifest) == 0L) {
+    stop("The covariate manifest must declare at least one feature.", call. = FALSE)
+  }
+
+  location_id <- as.character(panel$location_id)
+  if (anyNA(location_id) || any(!nzchar(trimws(location_id))) ||
+      any(location_id != trimws(location_id))) {
+    stop(
+      "Covariate panel `location_id` values must be non-empty and whitespace-trimmed.",
+      call. = FALSE
+    )
+  }
+  year <- suppressWarnings(as.numeric(panel$year))
+  if (any(!is.finite(year)) || any(year != floor(year)) ||
+      any(year < 0) || any(year > .Machine$integer.max)) {
+    stop("Covariate panel `year` values must be non-negative integers.", call. = FALSE)
+  }
+  panel$location_id <- location_id
+  panel$year <- as.integer(year)
+  if (anyDuplicated(paste(panel$location_id, panel$year, sep = "\r"))) {
+    stop(
+      "The covariate panel must have unique `(location_id, year)` keys.",
+      call. = FALSE
+    )
+  }
+
+  feature_names <- as.character(manifest$feature_name)
+  if (anyNA(feature_names) || any(!nzchar(trimws(feature_names))) ||
+      any(feature_names != trimws(feature_names)) || anyDuplicated(feature_names)) {
+    stop(
+      "Covariate manifest `feature_name` values must be unique, non-empty, and whitespace-trimmed.",
+      call. = FALSE
+    )
+  }
+  if (any(grepl("__", feature_names, fixed = TRUE))) {
+    stop("Covariate feature names must not contain `__`.", call. = FALSE)
+  }
+  if (any(feature_names %in% key_columns)) {
+    stop("Covariate feature names must not reuse panel key names.", call. = FALSE)
+  }
+
+  panel_features <- setdiff(names(panel), key_columns)
+  missing_features <- setdiff(feature_names, panel_features)
+  undeclared_features <- setdiff(panel_features, feature_names)
+  if (length(missing_features) > 0L || length(undeclared_features) > 0L) {
+    details <- c(
+      if (length(missing_features) > 0L) {
+        paste0("missing declared feature(s): ", paste(missing_features, collapse = ", "))
+      },
+      if (length(undeclared_features) > 0L) {
+        paste0("undeclared panel feature(s): ", paste(undeclared_features, collapse = ", "))
+      }
+    )
+    stop(
+      "Covariate panel columns do not exactly match the manifest: ",
+      paste(details, collapse = "; "),
+      ".",
+      call. = FALSE
+    )
+  }
+  all_missing <- vapply(
+    panel[feature_names],
+    function(values) all(is.na(values)),
+    logical(1L)
+  )
+  for (feature in feature_names[all_missing]) {
+    panel[[feature]] <- as.numeric(panel[[feature]])
+  }
+  non_numeric <- feature_names[!vapply(
+    panel[feature_names],
+    is.numeric,
+    logical(1L)
+  )]
+  if (length(non_numeric) > 0L) {
+    stop(
+      "Covariate panel features must be numeric: ",
+      paste(non_numeric, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  non_finite <- feature_names[vapply(
+    panel[feature_names],
+    function(values) any(is.nan(values) | is.infinite(values)),
+    logical(1L)
+  )]
+  if (length(non_finite) > 0L) {
+    stop(
+      "Covariate panel features must use NA, not NaN or infinite values: ",
+      paste(non_finite, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  panel <- panel[c(key_columns, feature_names)]
+
+  list(
+    panel = panel,
+    manifest = manifest,
+    feature_names = feature_names,
+    panel_file_sha256 = .ndm_multidisease_sha256_file(covariate_panel_file),
+    manifest_file_sha256 = .ndm_multidisease_sha256_file(
+      covariate_manifest_file
+    ),
+    schema_sha256 = .ndm_multidisease_covariate_schema_sha256(feature_names)
+  )
+}
+
+.ndm_multidisease_attach_covariate_panel <- function(bundle,
+                                                     covariate_panel_file,
+                                                     covariate_manifest_file) {
+  if (!identical(toupper(as.character(bundle$data_format)), "WHO")) {
+    stop(
+      "External annual covariate panels are supported only for WHO multidisease bundles.",
+      call. = FALSE
+    )
+  }
+  covariates <- .ndm_multidisease_read_covariate_files(
+    covariate_panel_file,
+    covariate_manifest_file
+  )
+  feature_names <- covariates$feature_names
+  reserved <- intersect(
+    feature_names,
+    unique(c(
+      names(bundle$truth_df_red),
+      bundle$true_value_names,
+      bundle$dataInputs_colnames_past,
+      bundle$dataInputs_colnames_future
+    ))
+  )
+  if (length(reserved) > 0L) {
+    stop(
+      "Covariate feature names collide with existing bundle columns: ",
+      paste(reserved, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  if (!all(c("location_id", "year") %in% names(bundle$truth_df_red))) {
+    stop("The WHO bundle is missing covariate join keys.", call. = FALSE)
+  }
+
+  truth <- as.data.frame(bundle$truth_df_red, stringsAsFactors = FALSE)
+  input <- as.data.frame(bundle$input_df_red, stringsAsFactors = FALSE)
+  truth_key <- paste(as.character(truth$location_id), as.integer(truth$year), sep = "\r")
+  panel_key <- paste(
+    covariates$panel$location_id,
+    covariates$panel$year,
+    sep = "\r"
+  )
+  panel_index <- match(truth_key, panel_key)
+  if (all(is.na(panel_index))) {
+    stop(
+      "The covariate panel has no `(location_id, year)` keys matching the WHO bundle.",
+      call. = FALSE
+    )
+  }
+  empty_features <- feature_names[!vapply(
+    covariates$panel[feature_names],
+    function(values) any(is.finite(values[panel_index[!is.na(panel_index)]])),
+    logical(1L)
+  )]
+  if (length(empty_features) > 0L) {
+    stop(
+      "Covariate panel features need at least one finite value on matched WHO keys: ",
+      paste(empty_features, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  for (feature in feature_names) {
+    values <- covariates$panel[[feature]][panel_index]
+    truth[[feature]] <- values
+    input[[feature]] <- values
+  }
+  if (nrow(truth) != nrow(bundle$truth_df_red) ||
+      nrow(input) != nrow(bundle$input_df_red)) {
+    stop("Covariate panel attachment changed the WHO row count.", call. = FALSE)
+  }
+
+  bundle$truth_df_red <- truth
+  bundle$input_df_red <- input
+  bundle$dataInputs_colnames_past <- unique(c(
+    bundle$dataInputs_colnames_past,
+    feature_names
+  ))
+  bundle$covariate_panel_file <- covariate_panel_file
+  bundle$covariate_manifest_file <- covariate_manifest_file
+  bundle$covariate_feature_names <- feature_names
+  bundle$covariate_manifest <- covariates$manifest
+  bundle$covariate_panel_file_sha256 <- covariates$panel_file_sha256
+  bundle$covariate_manifest_file_sha256 <- covariates$manifest_file_sha256
+  bundle$covariate_schema_sha256 <- covariates$schema_sha256
+  bundle
+}
+
 .ndm_multidisease_outcome_names <- function(diseases,
                                             outcome_metric = "CountValue") {
   diseases <- unique(as.character(diseases))
@@ -362,7 +651,14 @@
   truth_df_red <- who_dt[
     !is.na(CountValue),
     list(CountValue = sum(CountValue, na.rm = TRUE)),
-    by = list(location_id, location_id_numeric, location_name, time_id, targetTime_id)
+    by = list(
+      location_id,
+      location_id_numeric,
+      location_name,
+      year,
+      time_id,
+      targetTime_id
+    )
   ]
   if (!identical(outcome_metric, "CountValue")) {
     data.table::setnames(truth_df_red, "CountValue", outcome_metric)
@@ -608,7 +904,15 @@
                                              disease_names,
                                              outcome_metric,
                                              data_subset,
-                                             desired_measure = NULL) {
+                                             desired_measure = NULL,
+                                             covariate_panel_file = NULL,
+                                             covariate_manifest_file = NULL) {
+  covariate_files <- .ndm_multidisease_optional_file_pair(
+    project_root = project_root,
+    covariate_panel_file = covariate_panel_file,
+    covariate_manifest_file = covariate_manifest_file,
+    must_work = TRUE
+  )
   bundle <- .ndm_load_multidisease_bundle(
     project_root = project_root,
     data_format = data_format,
@@ -616,6 +920,13 @@
     outcome_metric = outcome_metric,
     desired_measure = desired_measure
   )
+  if (!is.null(covariate_files$panel)) {
+    bundle <- .ndm_multidisease_attach_covariate_panel(
+      bundle,
+      covariate_panel_file = covariate_files$panel,
+      covariate_manifest_file = covariate_files$manifest
+    )
+  }
   .ndm_multidisease_subset_bundle(bundle, data_subset = data_subset)
 }
 
@@ -1006,6 +1317,42 @@
   as.integer(numeric_value)
 }
 
+.ndm_multidisease_inference_support_inputs <- function(row_values,
+                                                       selected_inputs) {
+  value <- .ndm_multidisease_row_value(
+    row_values,
+    c("inferenceSupportInputs", "inference_support_inputs"),
+    default = NULL
+  )
+  if (is.null(value)) {
+    return(NULL)
+  }
+  value <- as.character(value)
+  if (length(value) != 1L || is.na(value) || !nzchar(trimws(value))) {
+    return(NULL)
+  }
+  if (identical(value, "all")) {
+    return(selected_inputs)
+  }
+  support_inputs <- strsplit(value, split = "__", fixed = TRUE)[[1L]]
+  if (any(!nzchar(support_inputs)) || anyDuplicated(support_inputs)) {
+    stop(
+      "Multidisease `inferenceSupportInputs` must encode unique, non-empty input names.",
+      call. = FALSE
+    )
+  }
+  missing_inputs <- setdiff(support_inputs, selected_inputs)
+  if (length(missing_inputs) > 0L) {
+    stop(
+      "Multidisease `inferenceSupportInputs` must be a subset of `dataInputs`; missing: ",
+      paste(missing_inputs, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  support_inputs
+}
+
 .ndm_multidisease_dataset_spec <- function(row_values,
                                            bundle,
                                            data_subset = "all",
@@ -1016,6 +1363,10 @@
   selected_inputs <- .ndm_multidisease_resolve_inputs(
     bundle,
     .ndm_multidisease_row_value(row_values, "dataInputs", "all")
+  )
+  inference_support_inputs <- .ndm_multidisease_inference_support_inputs(
+    row_values,
+    selected_inputs = selected_inputs
   )
   evaluation_horizon <- .ndm_multidisease_row_integer(
     row_values,
@@ -1109,6 +1460,19 @@
   )
   if (!is.null(training_target_horizon)) {
     spec_args$training_target_horizon <- training_target_horizon
+  }
+  if (!is.null(inference_support_inputs)) {
+    spec_args$inference_support_inputs <- inference_support_inputs
+  }
+  if (!is.null(bundle$covariate_panel_file_sha256)) {
+    spec_args$covariate_panel_contract <- "ndm_multidisease_covariate_panel_v1"
+    spec_args$covariate_feature_names <- bundle$covariate_feature_names
+    spec_args$covariate_panel_file_sha256 <-
+      bundle$covariate_panel_file_sha256
+    spec_args$covariate_manifest_file_sha256 <-
+      bundle$covariate_manifest_file_sha256
+    spec_args$covariate_schema_sha256 <- bundle$covariate_schema_sha256
+    spec_args$covariate_manifest <- as.list(bundle$covariate_manifest)
   }
   do.call(
     dataset_call,
@@ -1301,7 +1665,8 @@
     c(
       "ContextLength", "evaluationTime", "evaluationOriginTimeID",
       "evaluationHorizon", "training_target_horizon",
-      "trainingTargetHorizon", "inferenceSampling", "dataSeed",
+      "trainingTargetHorizon", "inferenceSampling",
+      "inferenceSupportInputs", "inference_support_inputs", "dataSeed",
       "initialTransform", "initialNormType", "paddingMethod", "OSSType",
       "dataInputs", "nObsInference", "DiseaseName"
     ),
@@ -1386,6 +1751,12 @@
 #'   post-anchor targets that must be finite for an anchor to be eligible for
 #'   training. It must not exceed `lookahead`; a same-named grid column is used
 #'   when this argument is `NULL`.
+#' @param covariate_panel_file Optional WHO annual covariate panel CSV with
+#'   unique `location_id`/`year` keys and numeric feature columns. It must be
+#'   supplied together with `covariate_manifest_file`.
+#' @param covariate_manifest_file Optional covariate manifest CSV. Its unique,
+#'   ordered `feature_name` column must exactly name the panel's non-key
+#'   columns; additional columns are retained as provenance metadata.
 #' @param producer Non-empty named producer metadata. Required to publish.
 #'   For environment-bound training, use `list(contract = "<contract>")`.
 #' @param overwrite Whether to replace an existing complete pair.
@@ -1416,7 +1787,9 @@ ndm_bootstrap_multidisease_tfrecords <- function(
     training_target_horizon = NULL,
     producer = NULL,
     overwrite = FALSE,
-    dry_run = FALSE) {
+    dry_run = FALSE,
+    covariate_panel_file = NULL,
+    covariate_manifest_file = NULL) {
   project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
   if (missing(disease_names)) {
     stop("`disease_names` must be supplied.", call. = FALSE)
@@ -1443,6 +1816,19 @@ ndm_bootstrap_multidisease_tfrecords <- function(
       (training_target_horizon < 1L || training_target_horizon > lookahead)) {
     stop(
       "`training_target_horizon` must be positive and no greater than `lookahead`.",
+      call. = FALSE
+    )
+  }
+  covariate_files <- .ndm_multidisease_optional_file_pair(
+    project_root = project_root,
+    covariate_panel_file = covariate_panel_file,
+    covariate_manifest_file = covariate_manifest_file,
+    must_work = !isTRUE(dry_run)
+  )
+  if (!is.null(covariate_files$panel) &&
+      !identical(toupper(as.character(data_format)), "WHO")) {
+    stop(
+      "Covariate panel files are supported only when `data_format = \"WHO\"`.",
       call. = FALSE
     )
   }
@@ -1504,7 +1890,9 @@ ndm_bootstrap_multidisease_tfrecords <- function(
     data_format = data_format,
     disease_names = disease_names,
     outcome_metric = outcome_metric,
-    data_subset = data_subset
+    data_subset = data_subset,
+    covariate_panel_file = covariate_files$panel,
+    covariate_manifest_file = covariate_files$manifest
   )
   tensorflow <- NULL
   statuses <- character(nrow(plan))
@@ -1614,14 +2002,14 @@ ndm_bootstrap_multidisease_tfrecords <- function(
   jnp <- runtime_env$jnp
   diffrax <- runtime_env$diffrax
   runtime_array <- function(x) {
-    if (identical(runtime_env$backend$default_backend, "cpu")) {
-      return(jnp$array(x))
+    value <- jnp$array(x)
+    if (exists("ndm_runtime_data_to_device", envir = runtime_env, inherits = FALSE)) {
+      return(runtime_env$ndm_runtime_data_to_device(value))
     }
-    if (isTRUE(.ndm_runtime_get0(runtime_env, "force2GPU", ifnotfound = FALSE)) ||
-        isTRUE(.ndm_runtime_get0(runtime_env, "force_to_gpu", ifnotfound = FALSE))) {
-      return(runtime_env$send2gpu(x))
+    if (is.function(runtime_env$send2device)) {
+      return(runtime_env$send2device(value))
     }
-    runtime_env$send2cpu(x)
+    value
   }
   decoder_in_neural_ode <- isTRUE(.ndm_runtime_get0(runtime_env, "DecoderInNeuralODE", ifnotfound = FALSE))
 
@@ -1664,6 +2052,11 @@ ndm_bootstrap_multidisease_tfrecords <- function(
       "inferenceSampling",
       ifnotfound = "random"
     )),
+    inferenceSupportInputs = as.character(.ndm_runtime_value(
+      runtime_env,
+      c("inferenceSupportInputs", "inference_support_inputs"),
+      default = NA_character_
+    )),
     dataInputs = paste(selected_inputs, collapse = "__"),
     OSSType = as.character(.ndm_runtime_get0(runtime_env, "OSSType")),
     simplexType = as.integer(.ndm_runtime_get0(runtime_env, "simplexType", ifnotfound = 1L)),
@@ -1689,7 +2082,9 @@ ndm_bootstrap_multidisease_tfrecords <- function(
       DiseaseNameVec = bundle$resolved_diseases,
       COMMAND_ARG_INPUT = as.character(.ndm_runtime_get0(runtime_env, "COMMAND_ARG_INPUT", ifnotfound = "ndm")),
       ReSaveTfRecords = FALSE,
-      force2GPU = isTRUE(runtime_env$force_to_gpu),
+      computeBackend = runtime_env$compute_backend,
+      compute_backend = runtime_env$compute_backend,
+      force2GPU = identical(runtime_env$compute_backend, "gpu"),
       GPU_MEM_FRAC = runtime_env$gpu_mem_frac,
       UseShortOutcomes = TRUE,
       nTimesLookahead = n_times_lookahead,
@@ -1754,14 +2149,20 @@ ndm_bootstrap_multidisease_tfrecords <- function(
       evaluationHorizon = real_entry$evaluationHorizon,
       training_target_horizon = real_entry$training_target_horizon,
       inferenceSampling = real_entry$inferenceSampling,
+      inferenceSupportInputs = real_entry$inferenceSupportInputs,
       dataInputs_pool_orig = bundle$dataInputs_colnames_past,
       dataInputs_pool = selected_inputs,
       dataInputs_colnames = selected_inputs,
-      dataInputs_colnames_past = bundle$dataInputs_colnames_past,
+      dataInputs_colnames_past = selected_inputs,
       dataInputs_colnames_future = bundle$dataInputs_colnames_future,
       RealEntry = real_entry,
       RealGrid = real_entry,
       ndm_multidisease_resolved_diseases = bundle$resolved_diseases,
+      ndm_covariate_panel_file_sha256 =
+        bundle$covariate_panel_file_sha256 %||% NULL,
+      ndm_covariate_manifest_file_sha256 =
+        bundle$covariate_manifest_file_sha256 %||% NULL,
+      ndm_covariate_schema_sha256 = bundle$covariate_schema_sha256 %||% NULL,
       ndm_data_generator = "multidisease"
       ),
       .ndm_nsgd_calibration_globals(
@@ -1805,6 +2206,16 @@ ndm_bootstrap_multidisease_tfrecords <- function(
   data_subset <- as.character(.ndm_runtime_get0(runtime_env, "data_subset", ifnotfound = "all"))
   outcome_metric <- as.character(.ndm_runtime_get0(runtime_env, "outcome_metric", ifnotfound = "CountValue"))
   desired_measure <- .ndm_runtime_get0(runtime_env, "desired_measure", ifnotfound = NULL)
+  covariate_panel_file <- .ndm_runtime_get0(
+    runtime_env,
+    "covariate_panel_file",
+    ifnotfound = NULL
+  )
+  covariate_manifest_file <- .ndm_runtime_get0(
+    runtime_env,
+    "covariate_manifest_file",
+    ifnotfound = NULL
+  )
 
   bundle <- .ndm_prepare_multidisease_bundle(
     project_root = project_root,
@@ -1812,7 +2223,9 @@ ndm_bootstrap_multidisease_tfrecords <- function(
     disease_names = disease_names,
     outcome_metric = outcome_metric,
     data_subset = data_subset,
-    desired_measure = desired_measure
+    desired_measure = desired_measure,
+    covariate_panel_file = covariate_panel_file,
+    covariate_manifest_file = covariate_manifest_file
   )
 
   truth_df_red <- data.table::as.data.table(bundle$truth_df_red)

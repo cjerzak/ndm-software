@@ -1,9 +1,6 @@
 # Package-owned backend bootstrap for the bundled Analysis2 runtime.
 {
   Sys.setenv(TF_CPP_MIN_LOG_LEVEL = "0")
-  if (!is.null(GPU_MEM_FRAC)) {
-    Sys.setenv(XLA_PYTHON_CLIENT_MEM_FRACTION = sprintf("%s", GPU_MEM_FRAC))
-  }
 
   backend_conda_env <- get0(
     "conda_env",
@@ -17,31 +14,84 @@
     )
   )
 
+  backend_compute_request <- get0(
+    "computeBackend",
+    inherits = TRUE,
+    ifnotfound = get0("compute_backend", inherits = TRUE, ifnotfound = NULL)
+  )
+  if (is.null(backend_compute_request)) {
+    legacy_force_to_gpu <- get0(
+      "force2GPU",
+      inherits = TRUE,
+      ifnotfound = NULL
+    )
+    backend_compute_request <- if (is.null(legacy_force_to_gpu)) {
+      "auto"
+    } else if (isTRUE(legacy_force_to_gpu)) {
+      "gpu"
+    } else {
+      "cpu"
+    }
+  }
+
   backend <- ndm::ndm_initialize_backend(
     conda_env = backend_conda_env,
     float_type = as.character(floatType),
-    import_tensorflow = TRUE
+    import_tensorflow = TRUE,
+    compute_backend = backend_compute_request,
+    gpu_mem_frac = GPU_MEM_FRAC
   )
 
   jax <- backend$jax
-  ndm:::.ndm_assert_gpu_available(jax, force_to_gpu = force2GPU)
   jnp <- backend$jnp
   np <- backend$np
   optax <- backend$optax
   eq <- backend$eq
   diffrax <- backend$diffrax
-  flash_mha <- backend$flash_mha
+  compute_backend_requested <- backend$compute_backend_requested
+  compute_backend_resolved <- backend$compute_backend_resolved
+  if (is.null(compute_backend_resolved)) {
+    compute_backend_resolved <- backend$compute_backend
+  }
+  compute_backend <- compute_backend_resolved
+  computeBackend <- compute_backend
+  force2GPU <- identical(compute_backend, "gpu")
+  selected_device <- backend$selected_device
+  device_platform <- backend$device_platform
+  device_kind <- backend$device_kind
+  device_vendor <- backend$device_vendor
+  device_provenance <- backend$device_provenance
+  accelerator_runtime <- backend$accelerator_runtime
+  is_cuda <- isTRUE(backend$is_cuda) && identical(accelerator_runtime, "cuda")
+  NDM_CUDA_ATTENTION_AVAILABLE <- force2GPU && is_cuda
+  flash_mha <- if (isTRUE(NDM_CUDA_ATTENTION_AVAILABLE)) backend$flash_mha else NULL
   py_gc <- backend$py_gc
   tf <- backend$tf
+  if (!is.null(tf)) {
+    # TensorFlow is used only for CPU-side TFRecord input. Hide its GPU devices
+    # through the TensorFlow API without changing JAX accelerator visibility.
+    try(tf$config$set_visible_devices(list(), "GPU"), silent = TRUE)
+  }
   jaxFloatType <- backend$jaxFloatType
+  send2device <- backend$send2device
   send2cpu <- backend$send2cpu
   send2gpu <- backend$send2gpu
-  num_devices <- length(jax$devices())
-  if (isTRUE(force2GPU) && !identical(backend$default_backend, "cpu")) {
-    send2cpu <- send2gpu <- function(x) {
-      x
-    }
+  selected_devices <- tryCatch(
+    jax$devices(device_platform),
+    error = function(...) list(selected_device)
+  )
+  if (length(selected_devices) == 0L) {
+    selected_devices <- list(selected_device)
   }
+  device_count <- backend$device_count
+  if (is.null(device_count)) {
+    device_count <- backend$device_provenance$device_count
+  }
+  if (is.null(device_count)) {
+    device_count <- length(selected_devices)
+  }
+  device_count <- as.integer(device_count)
+  num_devices <- min(length(selected_devices), device_count)
   DefaultDtypeTf <- if (identical(as.character(floatType), "64")) "tf$float64" else "tf$float32"
   oryx <- backend$oryx
   SoftPlus <- backend$SoftPlus
@@ -98,9 +148,19 @@
     tryCatch(
       {
         if (!is.null(jax$make_mesh)) {
-          return(jax$make_mesh(list(as.integer(num_devices)), list("data")))
+          mesh <- tryCatch(
+            jax$make_mesh(
+              list(as.integer(num_devices)),
+              list("data"),
+              devices = selected_devices
+            ),
+            error = function(...) NULL
+          )
+          if (!is.null(mesh)) {
+            return(mesh)
+          }
         }
-        jax_sharding$Mesh(jax$devices(), list("data"))
+        jax_sharding$Mesh(selected_devices, list("data"))
       },
       error = function(...) NULL
     )
@@ -154,14 +214,14 @@
   }
 
   ndm_runtime_data_to_device <- function(x) {
-    if (!ndm_sharding_enabled) {
-      return(x)
-    }
     if (is.list(x)) {
       return(lapply(x, ndm_runtime_data_to_device))
     }
     if (!ndm_runtime_is_python_array(x)) {
       return(x)
+    }
+    if (!ndm_sharding_enabled) {
+      return(tryCatch(send2device(x), error = function(...) x))
     }
     sharding <- ndm_runtime_named_sharding(
       x,
@@ -174,18 +234,18 @@
   }
 
   ndm_runtime_replicate_tree <- function(x) {
-    if (!ndm_sharding_enabled) {
-      return(x)
-    }
-    sharded_tree <- ndm_runtime_shard_tree(x, sharded = FALSE)
-    if (!is.null(sharded_tree)) {
-      return(sharded_tree)
-    }
     if (is.list(x)) {
       return(lapply(x, ndm_runtime_replicate_tree))
     }
     if (!ndm_runtime_is_python_array(x)) {
       return(x)
+    }
+    if (!ndm_sharding_enabled) {
+      return(tryCatch(send2device(x), error = function(...) x))
+    }
+    sharded_tree <- ndm_runtime_shard_tree(x, sharded = FALSE)
+    if (!is.null(sharded_tree)) {
+      return(sharded_tree)
     }
     sharding <- ndm_runtime_named_sharding(x, sharded = FALSE)
     if (is.null(sharding)) {

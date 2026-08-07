@@ -54,7 +54,17 @@ if (isTRUE(analysis2_multidisease_spec$resave_tfrecords)) {
     call. = FALSE
   )
 }
-force2GPU <- isTRUE(analysis2_multidisease_spec$force_to_gpu)
+computeBackend <- analysis2_multidisease_spec$compute_backend %||% if (
+  is.null(analysis2_multidisease_spec$force_to_gpu)
+) {
+  "auto"
+} else if (isTRUE(analysis2_multidisease_spec$force_to_gpu)) {
+  "gpu"
+} else {
+  "cpu"
+}
+compute_backend <- computeBackend
+force2GPU <- identical(computeBackend, "gpu")
 nRealGridSeed <- 128L
 nExamplesPerCell <- 10L
 nRealGrid <- 704
@@ -107,7 +117,9 @@ multidisease_bundle <- utils::getFromNamespace(
   data_format = dataFormat,
   disease_names = DiseaseNameVec,
   outcome_metric = analysis2_multidisease_spec$outcome_metric,
-  data_subset = data_subset
+  data_subset = data_subset,
+  covariate_panel_file = analysis2_multidisease_spec$covariate_panel_file,
+  covariate_manifest_file = analysis2_multidisease_spec$covariate_manifest_file
 )
 truth_df_red <- multidisease_bundle$truth_df_red
 input_df_red <- multidisease_bundle$input_df_red
@@ -212,6 +224,17 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
     eval(parse(text = sprintf("%s <- tmp_",e_)))
     eval(parse(text = sprintf("RealEntry['%s'] <- tmp_",e_)))
   }
+  resolved_row_inputs <- utils::getFromNamespace(
+    ".ndm_multidisease_resolve_inputs",
+    "ndm"
+  )(
+    multidisease_bundle,
+    RealEntry$dataInputs
+  )
+  dataInputs_pool <- resolved_row_inputs
+  dataInputs_colnames <- resolved_row_inputs
+  dataInputs_colnames_past <- resolved_row_inputs
+  dataInputs_colnames_future <- character()
   if(exists("nSamplesTrain") && !is.na(nSamplesTrain) && nSamplesTrain > 0){
     nBatch <- max(1L, min(as.integer(32L), as.integer(nSamplesTrain)))
     nSamples_max <- as.integer(nsgd_calibration$anchor_max_n_samples_train)

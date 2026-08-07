@@ -117,7 +117,7 @@ test_that("ndm_prepare_runtime loads package-managed helpers without inst/extdat
   )
 
   out <- ndm_prepare_runtime(
-    config = ndm_create_config(force_to_gpu = FALSE),
+    config = ndm_create_config(compute_backend = "cpu"),
     runtime_env = env
   )
 
@@ -137,7 +137,7 @@ test_that("ndm_prepare_runtime exposes validated inference globals", {
   env <- ndm_new_runtime_env()
   config <- ndm_create_config(
     model_type = "NeuralODE",
-    force_to_gpu = FALSE,
+    compute_backend = "cpu",
     enable_kv_cache = TRUE,
     inference_mc_draws = 7L,
     observation_scale_floor = 2e-5,
@@ -157,6 +157,79 @@ test_that("ndm_prepare_runtime exposes validated inference globals", {
   expect_equal(env$ObservationScaleFloor, 2e-5)
   expect_equal(env$InitialObservationScale, 0.02)
   expect_false(env$neuralode_variational)
+})
+
+test_that("runtime backend loaders normalize legacy and canonical compute policy", {
+  seen <- list()
+  local_mocked_bindings(
+    .ndm_install_runtime_helpers = function(...) invisible(TRUE),
+    ndm_runtime_paths = function(...) list(master_imports = "master-imports"),
+    .ndm_source_runtime_file = function(path, env) {
+      seen[[length(seen) + 1L]] <<- as.list(env)
+      invisible(env)
+    },
+    .package = "ndm"
+  )
+
+  auto_env <- ndm_new_runtime_env()
+  ndm:::ndm_source_runtime_backend(env = auto_env)
+  expect_identical(auto_env$computeBackend, "auto")
+  expect_identical(auto_env$compute_backend, "auto")
+  expect_null(auto_env$force2GPU)
+
+  cpu_env <- ndm_new_runtime_env()
+  ndm:::ndm_source_runtime_backend(env = cpu_env, force_to_gpu = FALSE)
+  expect_identical(cpu_env$computeBackend, "cpu")
+  expect_false(cpu_env$force2GPU)
+
+  gpu_env <- ndm_new_runtime_env()
+  ndm:::ndm_source_runtime_backend(env = gpu_env, compute_backend = "gpu")
+  expect_identical(gpu_env$computeBackend, "gpu")
+  expect_true(gpu_env$force2GPU)
+
+  expect_error(
+    ndm:::ndm_source_runtime_backend(
+      env = ndm_new_runtime_env(),
+      force_to_gpu = TRUE,
+      compute_backend = "cpu"
+    ),
+    "Conflicting backend controls"
+  )
+  expect_error(
+    ndm:::ndm_source_runtime_backend(
+      env = ndm_new_runtime_env(),
+      compute_backend = "g"
+    ),
+    "one of 'auto', 'cpu', or 'gpu'"
+  )
+  expect_error(
+    ndm:::ndm_source_runtime_backend(
+      env = ndm_new_runtime_env(),
+      compute_backend = "cpu",
+      gpu_mem_frac = 0.5
+    ),
+    "resolved compute backend is CPU"
+  )
+  expect_length(seen, 3L)
+})
+
+test_that("ndm_prepare_runtime forwards canonical compute policy", {
+  env <- ndm_new_runtime_env()
+  seen <- NULL
+  local_mocked_bindings(
+    .ndm_require_namespaces = function(...) invisible(TRUE),
+    ndm_load_runtime = function(..., compute_backend = NULL) {
+      seen <<- compute_backend
+      invisible(env)
+    },
+    .package = "ndm"
+  )
+
+  ndm_prepare_runtime(
+    config = ndm_create_config(compute_backend = "auto"),
+    runtime_env = env
+  )
+  expect_identical(seen, "auto")
 })
 
 test_that("ndm_prepare_runtime rejects every public regeneration override", {

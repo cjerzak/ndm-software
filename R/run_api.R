@@ -39,8 +39,14 @@
 #' @param run_seed Optional integer scalar used to seed model initialization,
 #'   training, and inference. When `NULL`, legacy outer-row-derived seeding is
 #'   retained for backward compatibility.
-#' @param force_to_gpu Logical scalar indicating whether a GPU is required.
-#' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`.
+#' @param force_to_gpu Deprecated logical alias for `compute_backend`. `TRUE`
+#'   maps to `"gpu"` and `FALSE` maps to `"cpu"`.
+#' @param compute_backend Compute device policy: `"auto"` selects a supported
+#'   JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`
+#'   require the named backend.
+#' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`. It is
+#'   invalid when `compute_backend = "cpu"` and rejected at initialization if
+#'   `"auto"` resolves to CPU.
 #' @param enable_kv_cache Logical scalar controlling DecoderOnly KV caching.
 #'   The corrected default is `FALSE`.
 #' @param inference_mc_draws Positive integer number of posterior draws
@@ -82,6 +88,12 @@
 #' @param data_subset Optional real-data or multidisease subset name.
 #' @param disease_names Character vector of multidisease names.
 #' @param data_format Multidisease data format.
+#' @param covariate_panel_file Optional WHO annual covariate-panel CSV, keyed
+#'   by `location_id` and `year`. Supply it together with
+#'   `covariate_manifest_file`.
+#' @param covariate_manifest_file Optional CSV whose ordered `feature_name`
+#'   column defines the covariate-panel feature contract and whose remaining
+#'   columns carry provenance metadata.
 #' @param dry_run Logical scalar indicating whether the run should stop after
 #'   resolving paths and grid rows.
 #'
@@ -115,7 +127,7 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_%s.csv", analysis_name)),
                                        outer = 3L,
                                        run_seed = NULL,
-                                       force_to_gpu = TRUE,
+                                       force_to_gpu = NULL,
                                        gpu_mem_frac = NULL,
                                        enable_kv_cache = FALSE,
                                        inference_mc_draws = 5L,
@@ -135,7 +147,9 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        raw_data_dir = file.path("Data", "MainData"),
                                        outcome_metric = "inc_death",
                                        data_subset = "high_income",
-                                       dry_run = FALSE) {
+                                       dry_run = FALSE,
+                                       compute_backend = c("auto", "cpu", "gpu")) {
+  compute_backend_supplied <- !missing(compute_backend)
   if (!is.null(grid)) {
     grid_file <- NULL
   }
@@ -148,6 +162,8 @@ ndm_create_real_run_config <- function(project_root = getwd(),
     outer = outer,
     run_seed = run_seed,
     force_to_gpu = force_to_gpu,
+    compute_backend = compute_backend,
+    compute_backend_supplied = compute_backend_supplied,
     gpu_mem_frac = gpu_mem_frac,
     enable_kv_cache = enable_kv_cache,
     inference_mc_draws = inference_mc_draws,
@@ -179,7 +195,7 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       grid_file = file.path("Data", "RunGrids", "SimGrids", sprintf("SimGrid_%s.csv", analysis_name)),
                                       outer = 1L,
                                       run_seed = NULL,
-                                      force_to_gpu = TRUE,
+                                      force_to_gpu = NULL,
                                       gpu_mem_frac = NULL,
                                       enable_kv_cache = FALSE,
                                       inference_mc_draws = 5L,
@@ -196,7 +212,9 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       respect_grid_model_type = TRUE,
                                       resave_tfrecords = FALSE,
                                       tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords", analysis_name),
-                                      dry_run = FALSE) {
+                                      dry_run = FALSE,
+                                      compute_backend = c("auto", "cpu", "gpu")) {
+  compute_backend_supplied <- !missing(compute_backend)
   if (!is.null(grid)) {
     grid_file <- NULL
   }
@@ -209,6 +227,8 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
     outer = outer,
     run_seed = run_seed,
     force_to_gpu = force_to_gpu,
+    compute_backend = compute_backend,
+    compute_backend_supplied = compute_backend_supplied,
     gpu_mem_frac = gpu_mem_frac,
     enable_kv_cache = enable_kv_cache,
     inference_mc_draws = inference_mc_draws,
@@ -237,7 +257,7 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                grid_file = file.path("Data", "RunGrids", "RealGrids", sprintf("RealGrid_%s.csv", analysis_name)),
                                                outer = 1L,
                                                run_seed = NULL,
-                                               force_to_gpu = TRUE,
+                                               force_to_gpu = NULL,
                                                gpu_mem_frac = NULL,
                                                enable_kv_cache = FALSE,
                                                inference_mc_draws = 5L,
@@ -258,7 +278,11 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                data_subset = "all",
                                                disease_names = c("Covid", "Flu"),
                                                data_format = "IHME",
-                                               dry_run = FALSE) {
+                                               dry_run = FALSE,
+                                               covariate_panel_file = NULL,
+                                               covariate_manifest_file = NULL,
+                                               compute_backend = c("auto", "cpu", "gpu")) {
+  compute_backend_supplied <- !missing(compute_backend)
   if (!is.null(grid)) {
     grid_file <- NULL
   }
@@ -271,6 +295,8 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     outer = outer,
     run_seed = run_seed,
     force_to_gpu = force_to_gpu,
+    compute_backend = compute_backend,
+    compute_backend_supplied = compute_backend_supplied,
     gpu_mem_frac = gpu_mem_frac,
     enable_kv_cache = enable_kv_cache,
     inference_mc_draws = inference_mc_draws,
@@ -291,6 +317,8 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     data_subset = data_subset,
     disease_names = disease_names,
     data_format = data_format,
+    covariate_panel_file = covariate_panel_file,
+    covariate_manifest_file = covariate_manifest_file,
     dry_run = dry_run
   )
 }
@@ -496,7 +524,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
                                  grid_file = NULL,
                                  outer,
                                  run_seed = NULL,
-                                 force_to_gpu = TRUE,
+                                 force_to_gpu = NULL,
                                  gpu_mem_frac = NULL,
                                  enable_kv_cache = FALSE,
                                  inference_mc_draws = 5L,
@@ -518,7 +546,11 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
                                  data_subset = NULL,
                                  disease_names = NULL,
                                  data_format = NULL,
-                                 dry_run = FALSE) {
+                                 covariate_panel_file = NULL,
+                                 covariate_manifest_file = NULL,
+                                 dry_run = FALSE,
+                                 compute_backend = c("auto", "cpu", "gpu"),
+                                 compute_backend_supplied = !missing(compute_backend)) {
   project_root <- .ndm_normalize_path(project_root, must_work = TRUE)
 
   if (!is.null(grid) && !is.null(grid_file)) {
@@ -541,7 +573,17 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     }
     run_seed <- as.integer(run_seed_numeric)
   }
-  force_to_gpu <- .ndm_validate_run_flag(force_to_gpu, "force_to_gpu")
+  compute_backend <- .ndm_resolve_compute_backend(
+    compute_backend = compute_backend,
+    force_to_gpu = force_to_gpu,
+    compute_backend_supplied = compute_backend_supplied
+  )
+  force_to_gpu_compat <- switch(
+    compute_backend,
+    auto = NULL,
+    cpu = FALSE,
+    gpu = TRUE
+  )
   enable_kv_cache <- .ndm_validate_run_flag(enable_kv_cache, "enable_kv_cache")
   neuralode_variational <- .ndm_validate_run_flag(
     neuralode_variational,
@@ -552,13 +594,10 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     "respect_grid_model_type"
   )
   dry_run <- .ndm_validate_run_flag(dry_run, "dry_run")
-  if (!is.null(gpu_mem_frac)) {
-    gpu_mem_frac <- suppressWarnings(as.numeric(gpu_mem_frac))
-    if (length(gpu_mem_frac) != 1L || !is.finite(gpu_mem_frac) ||
-        gpu_mem_frac <= 0 || gpu_mem_frac > 1) {
-      stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", call. = FALSE)
-    }
-  }
+  gpu_mem_frac <- .ndm_validate_gpu_mem_frac(
+    gpu_mem_frac,
+    if (identical(compute_backend, "cpu")) "cpu" else NULL
+  )
   inference_mc_draws <- suppressWarnings(as.numeric(inference_mc_draws))
   if (length(inference_mc_draws) != 1L || !is.finite(inference_mc_draws) ||
       inference_mc_draws < 1 || inference_mc_draws > .Machine$integer.max ||
@@ -619,6 +658,26 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     stop("`solver_profile` must be default, loose, tight, or alternative.", call. = FALSE)
   }
   .ndm_validate_resave_tfrecords(mode, resave_tfrecords)
+  if (!identical(mode, "multidisease") &&
+      (!is.null(covariate_panel_file) || !is.null(covariate_manifest_file))) {
+    stop(
+      "Covariate panel files are supported only for multidisease runs.",
+      call. = FALSE
+    )
+  }
+  covariate_files <- .ndm_multidisease_optional_file_pair(
+    project_root = project_root,
+    covariate_panel_file = covariate_panel_file,
+    covariate_manifest_file = covariate_manifest_file,
+    must_work = FALSE
+  )
+  if (!is.null(covariate_files$panel) &&
+      !identical(toupper(as.character(data_format)), "WHO")) {
+    stop(
+      "Covariate panel files are supported only when `data_format = \"WHO\"`.",
+      call. = FALSE
+    )
+  }
 
   class_name <- switch(
     mode,
@@ -637,7 +696,8 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       grid_file = grid_file,
       outer = outer,
       run_seed = run_seed,
-      force_to_gpu = force_to_gpu,
+      force_to_gpu = force_to_gpu_compat,
+      compute_backend = compute_backend,
       gpu_mem_frac = gpu_mem_frac,
       enable_kv_cache = enable_kv_cache,
       inference_mc_draws = inference_mc_draws,
@@ -659,6 +719,8 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       data_subset = data_subset,
       disease_names = disease_names,
       data_format = data_format,
+      covariate_panel_file = covariate_files$panel,
+      covariate_manifest_file = covariate_files$manifest,
       dry_run = dry_run
     ),
     class_name
@@ -680,8 +742,24 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
 
   .ndm_validate_resave_tfrecords(config$mode, config$resave_tfrecords)
   config$resave_tfrecords <- FALSE
+  compute_backend <- .ndm_resolve_compute_backend(
+    compute_backend = config$compute_backend %||% "auto",
+    force_to_gpu = config$force_to_gpu,
+    compute_backend_supplied = !is.null(config$compute_backend),
+    warn_deprecated = FALSE
+  )
+  config$compute_backend <- compute_backend
+  config$force_to_gpu <- switch(
+    compute_backend,
+    auto = NULL,
+    cpu = FALSE,
+    gpu = TRUE
+  )
+  config$gpu_mem_frac <- .ndm_validate_gpu_mem_frac(
+    config$gpu_mem_frac,
+    if (identical(compute_backend, "cpu")) "cpu" else NULL
+  )
   for (field in c(
-    "force_to_gpu",
     "enable_kv_cache",
     "neuralode_variational",
     "respect_grid_model_type",
@@ -700,7 +778,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     sprintf("--project_root=%s", config$project_root),
     sprintf("--analysis_name=%s", config$analysis_name),
     sprintf("--outer=%s", paste(config$outer, collapse = ",")),
-    sprintf("--force_to_gpu=%s", toupper(as.character(config$force_to_gpu))),
+    sprintf("--compute_backend=%s", config$compute_backend),
     sprintf("--enable_kv_cache=%s", toupper(as.character(config$enable_kv_cache))),
     sprintf("--inference_mc_draws=%s", as.integer(config$inference_mc_draws)),
     sprintf("--observation_scale_floor=%s", format(config$observation_scale_floor, scientific = TRUE, trim = TRUE)),
@@ -755,6 +833,13 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
   }
   if (!is.null(config$disease_names) && length(config$disease_names) > 0L) {
     args <- c(args, sprintf("--disease_names=%s", paste(config$disease_names, collapse = ",")))
+  }
+  for (field in c("covariate_panel_file", "covariate_manifest_file")) {
+    value <- config[[field]]
+    if (!is.null(value) && nzchar(value)) {
+      value <- .ndm_path_join_if_relative(config$project_root, value)
+      args <- c(args, sprintf("--%s=%s", field, value))
+    }
   }
 
   args

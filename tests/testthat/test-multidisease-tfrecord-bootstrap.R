@@ -165,9 +165,9 @@ test_that("canonical multidisease preparation binds the explicit rolling origin"
   origin_20 <- prepare_at(20L)
 
   expect_identical(origin_10$prepared$times_in, 0:9)
-  expect_identical(origin_10$prepared$times_out, 10:29)
+  expect_identical(origin_10$prepared$times_out, 10L)
   expect_identical(origin_20$prepared$times_in, 0:19)
-  expect_identical(origin_20$prepared$times_out, 20:29)
+  expect_identical(origin_20$prepared$times_out, 20L)
   expect_true(all(origin_10$prepared$train_df$time_id < 10L))
   expect_true(all(origin_10$prepared$out_df$time_id >= 10L))
   expect_true(all(origin_20$prepared$train_df$time_id < 20L))
@@ -226,6 +226,7 @@ test_that("multidisease Yeo-Johnson fitting excludes producer holdout rows", {
     row$ContextLength <- 2L
     row$evaluationTime <- 1L
     row$evaluationHorizon <- 1L
+    row$inferenceSampling <- "random"
     row$nObsInference <- 2L
     row$OSSType <- split_type
     row$initialTransform <- "none"

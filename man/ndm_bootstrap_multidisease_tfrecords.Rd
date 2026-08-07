@@ -21,7 +21,9 @@ ndm_bootstrap_multidisease_tfrecords(
   training_target_horizon = NULL,
   producer = NULL,
   overwrite = FALSE,
-  dry_run = FALSE
+  dry_run = FALSE,
+  covariate_panel_file = NULL,
+  covariate_manifest_file = NULL
 )
 }
 \arguments{
@@ -63,6 +65,14 @@ For environment-bound training, use `list(contract = "<contract>")`.}
 \item{overwrite}{Whether to replace an existing complete pair.}
 
 \item{dry_run}{Whether to return the plan without loading data or writing.}
+
+\item{covariate_panel_file}{Optional WHO annual covariate panel CSV with
+unique `location_id`/`year` keys and numeric feature columns. It must be
+supplied together with `covariate_manifest_file`.}
+
+\item{covariate_manifest_file}{Optional covariate manifest CSV. Its unique,
+ordered `feature_name` column must exactly name the panel's non-key
+columns; additional columns are retained as provenance metadata.}
 }
 \value{
 A data frame with one row per BaseID. `status` is `"planned"` for

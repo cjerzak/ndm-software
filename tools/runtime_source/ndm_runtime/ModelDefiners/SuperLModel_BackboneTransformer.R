@@ -19,7 +19,14 @@ if(backbonePath == "initialize"){
   backbone_runtime_get0 <- function(name, ifnotfound = NULL) {
     get0(name, envir = backbone_runtime_lookup_env, inherits = FALSE, ifnotfound = ifnotfound)
   }
-  TRY_FLASH <- tryCatch(!any(grepl("V100", sapply(jax$devices(), function(d) d$device_kind))), error = function(e) FALSE)
+  cuda_attention_available <- isTRUE(backbone_runtime_get0(
+    "NDM_CUDA_ATTENTION_AVAILABLE",
+    ifnotfound = FALSE
+  ))
+  TRY_FLASH <- cuda_attention_available && tryCatch(
+    !any(grepl("V100", sapply(selected_devices, function(d) d$device_kind))),
+    error = function(e) FALSE
+  )
   EnableKVCaching <- backbone_runtime_get0("EnableKVCaching", ifnotfound = FALSE)
   EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType == "DecoderOnly")
   # Full attention residuals are now the default transformer residual path.
@@ -41,10 +48,12 @@ if(backbonePath == "initialize"){
     # Decide implementation once per host (not traced)
     choose_attention_impl <- function(prefer = "auto"){
       if (prefer == "xla")   return("xla")
-      if (prefer == "cudnn") return("cudnn")
-      # auto: prefer CUDA/cuDNN when a GPU is visible and TRY_FLASH is TRUE
-      has_gpu <- any(sapply(jax$devices(), function(d) d$platform == "gpu"))
-      if (isTRUE(has_gpu) && isTRUE(TRY_FLASH)) "cudnn" else "xla"
+      # cuDNN is a CUDA-only implementation. An explicit preference must still
+      # fall back to portable XLA on CPU and non-CUDA JAX GPU plugins.
+      if (prefer == "cudnn") {
+        return(if (isTRUE(cuda_attention_available) && isTRUE(TRY_FLASH)) "cudnn" else "xla")
+      }
+      if (isTRUE(cuda_attention_available) && isTRUE(TRY_FLASH)) "cudnn" else "xla"
     }
     
     # Normalize masks: accept numeric/bool; pass through existing broadcast shapes.

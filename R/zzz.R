@@ -1,5 +1,8 @@
 ndm_env <- new.env(parent = emptyenv())
 ndm_env$backend <- NULL
+ndm_env$warned_force_to_gpu <- FALSE
+ndm_env$jax_initialized_by_ndm <- FALSE
+ndm_env$backend_process_contract <- NULL
 
 `%||%` <- function(x, y) {
   if (is.null(x)) {
@@ -189,11 +192,13 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param backbone Backbone family. Phase 1 supports `"transformer"` only.
 #' @param float_type Floating point precision used when initializing the backend.
 #'   Use `"32"` or `"64"`.
-#' @param force_to_gpu Logical scalar requiring a CUDA-capable JAX GPU when
-#'   `TRUE`.
+#' @param force_to_gpu Deprecated logical alias for `compute_backend`. `TRUE`
+#'   maps to `"gpu"` and `FALSE` maps to `"cpu"`.
 #' @param resave_tfrecords Logical scalar preserved for compatibility. Public
 #'   training APIs require `FALSE`; prepare canonical inputs before training.
-#' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`.
+#' @param gpu_mem_frac Optional finite GPU memory fraction in `(0, 1]`. It is
+#'   invalid when `compute_backend = "cpu"` and rejected at initialization if
+#'   `"auto"` resolves to CPU.
 #' @param neuralode_local_latent_dim Optional local NeuralODE latent width. When
 #'   `NULL`, runtime code resolves this to `ModelDims`.
 #' @param neuralode_global_latent_dim Optional global NeuralODE latent width.
@@ -232,6 +237,9 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param neuralode_mean_loss_weight Non-negative multiplier for an auxiliary
 #'   masked mean-squared-error term applied to NeuralODE forecasts alongside
 #'   the Student-t likelihood.
+#' @param compute_backend Compute device policy: `"auto"` selects a supported
+#'   JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`
+#'   require the named backend.
 #' @param ... Additional named values appended to the configuration object.
 #'
 #' @returns `ndm_create_config()` returns an object of class `ndm_config`.
@@ -244,7 +252,7 @@ ndm_print <- function(text, quiet = FALSE) {
 ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               backbone = "transformer",
                               float_type = c("32", "64"),
-                              force_to_gpu = TRUE,
+                              force_to_gpu = NULL,
                               resave_tfrecords = FALSE,
                               gpu_mem_frac = NULL,
                               neuralode_local_latent_dim = NULL,
@@ -263,7 +271,9 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_variational = TRUE,
                               neuralode_kl_weight = 1.0,
                               neuralode_mean_loss_weight = 0.0,
+                              compute_backend = c("auto", "cpu", "gpu"),
                               ...) {
+  compute_backend_supplied <- !missing(compute_backend)
   model_type <- match.arg(model_type)
   float_type <- match.arg(float_type)
   neuralode_optim_solver <- match.arg(neuralode_optim_solver)
@@ -271,9 +281,17 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
-  if (!is.logical(force_to_gpu) || length(force_to_gpu) != 1L || is.na(force_to_gpu)) {
-    stop("`force_to_gpu` must be one non-missing logical value.", call. = FALSE)
-  }
+  compute_backend <- .ndm_resolve_compute_backend(
+    compute_backend = compute_backend,
+    force_to_gpu = force_to_gpu,
+    compute_backend_supplied = compute_backend_supplied
+  )
+  force_to_gpu_compat <- switch(
+    compute_backend,
+    auto = NULL,
+    cpu = FALSE,
+    gpu = TRUE
+  )
   if (!is.logical(enable_kv_cache) || length(enable_kv_cache) != 1L || is.na(enable_kv_cache)) {
     stop("`enable_kv_cache` must be one non-missing logical value.", call. = FALSE)
   }
@@ -283,13 +301,10 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     stop("`neuralode_variational` must be one non-missing logical value.", call. = FALSE)
   }
   .ndm_validate_resave_tfrecords("generic", resave_tfrecords)
-  if (!is.null(gpu_mem_frac)) {
-    gpu_mem_frac <- suppressWarnings(as.numeric(gpu_mem_frac))
-    if (length(gpu_mem_frac) != 1L || !is.finite(gpu_mem_frac) ||
-        gpu_mem_frac <= 0 || gpu_mem_frac > 1) {
-      stop("`gpu_mem_frac` must be NULL or one finite value in (0, 1].", call. = FALSE)
-    }
-  }
+  gpu_mem_frac <- .ndm_validate_gpu_mem_frac(
+    gpu_mem_frac,
+    if (identical(compute_backend, "cpu")) "cpu" else NULL
+  )
   inference_mc_draws <- suppressWarnings(as.numeric(inference_mc_draws))
   if (length(inference_mc_draws) != 1L || !is.finite(inference_mc_draws) ||
       inference_mc_draws < 1 || inference_mc_draws > .Machine$integer.max ||
@@ -328,7 +343,8 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     model_type = model_type,
     backbone = backbone,
     float_type = float_type,
-    force_to_gpu = isTRUE(force_to_gpu),
+    force_to_gpu = force_to_gpu_compat,
+    compute_backend = compute_backend,
     resave_tfrecords = isTRUE(resave_tfrecords),
     gpu_mem_frac = gpu_mem_frac,
     neuralode_local_latent_dim = neuralode_local_latent_dim,
@@ -367,6 +383,7 @@ print.ndm_config <- function(x, ...) {
   cat(sprintf("  model_type: %s\n", x$model_type %||% NA_character_))
   cat(sprintf("  backbone: %s\n", x$backbone %||% NA_character_))
   cat(sprintf("  float_type: %s\n", x$float_type %||% NA_character_))
+  cat(sprintf("  compute_backend: %s\n", x$compute_backend %||% NA_character_))
   invisible(x)
 }
 

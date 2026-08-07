@@ -16,7 +16,7 @@ ndm_create_real_run_config(
     analysis_name)),
   outer = 3L,
   run_seed = NULL,
-  force_to_gpu = TRUE,
+  force_to_gpu = NULL,
   gpu_mem_frac = NULL,
   enable_kv_cache = FALSE,
   inference_mc_draws = 5L,
@@ -37,7 +37,8 @@ ndm_create_real_run_config(
   raw_data_dir = file.path("Data", "MainData"),
   outcome_metric = "inc_death",
   data_subset = "high_income",
-  dry_run = FALSE
+  dry_run = FALSE,
+  compute_backend = c("auto", "cpu", "gpu")
 )
 
 ndm_create_sim_run_config(
@@ -48,7 +49,7 @@ ndm_create_sim_run_config(
     analysis_name)),
   outer = 1L,
   run_seed = NULL,
-  force_to_gpu = TRUE,
+  force_to_gpu = NULL,
   gpu_mem_frac = NULL,
   enable_kv_cache = FALSE,
   inference_mc_draws = 5L,
@@ -66,7 +67,8 @@ ndm_create_sim_run_config(
   resave_tfrecords = FALSE,
   tfrecord_dir = file.path("Data", "RunTFRecords", "SimTFRecords",
     analysis_name),
-  dry_run = FALSE
+  dry_run = FALSE,
+  compute_backend = c("auto", "cpu", "gpu")
 )
 
 ndm_create_multidisease_run_config(
@@ -77,7 +79,7 @@ ndm_create_multidisease_run_config(
     analysis_name)),
   outer = 1L,
   run_seed = NULL,
-  force_to_gpu = TRUE,
+  force_to_gpu = NULL,
   gpu_mem_frac = NULL,
   enable_kv_cache = FALSE,
   inference_mc_draws = 5L,
@@ -99,7 +101,10 @@ ndm_create_multidisease_run_config(
   data_subset = "all",
   disease_names = c("Covid", "Flu"),
   data_format = "IHME",
-  dry_run = FALSE
+  dry_run = FALSE,
+  covariate_panel_file = NULL,
+  covariate_manifest_file = NULL,
+  compute_backend = c("auto", "cpu", "gpu")
 )
 
 ndm_run_real(config = ndm_create_real_run_config())
@@ -123,9 +128,16 @@ ndm_run_multidisease(config = ndm_create_multidisease_run_config())
 training Monte Carlo keys, and inference randomness. When \code{NULL}, the
 legacy outer-row-derived seed is retained.}
 
-\item{force_to_gpu}{Logical scalar requiring a CUDA-capable JAX GPU for fitting.}
+\item{force_to_gpu}{Deprecated logical alias for \code{compute_backend}.
+\code{TRUE} maps to \code{"gpu"} and \code{FALSE} maps to \code{"cpu"}.}
 
-\item{gpu_mem_frac}{Optional finite GPU memory fraction in \code{(0, 1]}.}
+\item{compute_backend}{Compute device policy. \code{"auto"} selects a
+supported JAX GPU when available and otherwise CPU; \code{"cpu"} and
+\code{"gpu"} require the named backend.}
+
+\item{gpu_mem_frac}{Optional finite GPU memory fraction in \code{(0, 1]}.
+It is invalid with \code{compute_backend = "cpu"} and rejected during
+initialization if \code{"auto"} resolves to CPU.}
 
 \item{enable_kv_cache}{Logical scalar controlling DecoderOnly KV caching. The
 corrected default is \code{FALSE}.}
@@ -185,6 +197,14 @@ artifacts separately with \code{ndm_bootstrap_real_tfrecords()} or
 \item{disease_names}{Character vector of multidisease names.}
 
 \item{data_format}{Multidisease data format.}
+
+\item{covariate_panel_file}{Optional WHO annual covariate-panel CSV, keyed
+by \code{location_id} and \code{year}. Supply it together with
+\code{covariate_manifest_file}.}
+
+\item{covariate_manifest_file}{Optional CSV whose ordered
+\code{feature_name} column defines the covariate-panel feature contract and
+whose remaining columns carry provenance metadata.}
 
 \item{dry_run}{Logical scalar indicating whether the run should stop after resolving paths and grid rows.}
 

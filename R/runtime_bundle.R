@@ -395,12 +395,15 @@ ndm_set_runtime_globals <- function(env, values, overwrite = TRUE) {
 #' @param env Runtime environment that should receive the sourced objects.
 #' @param float_type Floating point precision passed into the runtime bootstrap
 #'   code. Use `"32"` or `"64"`.
-#' @param force_to_gpu Logical scalar indicating whether the runtime should try
-#'   to place arrays on a GPU device when available.
+#' @param force_to_gpu Deprecated logical compatibility alias. `TRUE` requests
+#'   `compute_backend = "gpu"`; `FALSE` requests `compute_backend = "cpu"`.
 #' @param gpu_mem_frac Optional GPU memory fraction forwarded to the runtime
 #'   bootstrap code.
 #' @param resave_tfrecords Logical scalar preserved for compatibility with
 #'   existing run workflows.
+#' @param compute_backend Compute policy. One of `"auto"`, `"cpu"`, or
+#'   `"gpu"`. When `NULL`, `force_to_gpu` is honored if supplied and otherwise
+#'   the runtime defaults to `"auto"`.
 #' @param generator Which data generator script to source.
 #'
 #' @returns Each function on this page invisibly returns `env` after sourcing the
@@ -426,16 +429,30 @@ ndm_source_runtime_helper_fxns <- function(analysis_root = .ndm_default_analysis
 ndm_source_runtime_backend <- function(analysis_root = .ndm_default_analysis_root(),
                                        env = ndm_new_runtime_env(),
                                        float_type = "32",
-                                       force_to_gpu = TRUE,
+                                       force_to_gpu = NULL,
                                        gpu_mem_frac = NULL,
-                                       resave_tfrecords = FALSE) {
+                                       resave_tfrecords = FALSE,
+                                       compute_backend = NULL) {
+  compute_backend_supplied <- !is.null(compute_backend)
+  compute_backend <- .ndm_resolve_compute_backend(
+    compute_backend = compute_backend %||% "auto",
+    force_to_gpu = force_to_gpu,
+    compute_backend_supplied = compute_backend_supplied,
+    warn_deprecated = FALSE
+  )
+  gpu_mem_frac <- .ndm_validate_gpu_mem_frac(
+    gpu_mem_frac,
+    if (identical(compute_backend, "cpu")) "cpu" else NULL
+  )
   .ndm_install_runtime_helpers(env, analysis_root = analysis_root)
   paths <- ndm_runtime_paths(analysis_root)
   ndm_set_runtime_globals(
     env,
     list(
       floatType = float_type,
-      force2GPU = isTRUE(force_to_gpu),
+      computeBackend = compute_backend,
+      compute_backend = compute_backend,
+      force2GPU = if (identical(compute_backend, "auto")) NULL else identical(compute_backend, "gpu"),
       GPU_MEM_FRAC = gpu_mem_frac,
       ReSaveTfRecords = isTRUE(resave_tfrecords)
     )
@@ -448,9 +465,10 @@ ndm_source_runtime_backend <- function(analysis_root = .ndm_default_analysis_roo
 ndm_load_runtime <- function(analysis_root = .ndm_default_analysis_root(),
                              env = ndm_new_runtime_env(),
                              float_type = "32",
-                             force_to_gpu = TRUE,
+                             force_to_gpu = NULL,
                              gpu_mem_frac = NULL,
-                             resave_tfrecords = FALSE) {
+                             resave_tfrecords = FALSE,
+                             compute_backend = NULL) {
   ndm_source_runtime_helper_fxns(analysis_root = analysis_root, env = env)
   ndm_source_runtime_backend(
     analysis_root = analysis_root,
@@ -458,7 +476,8 @@ ndm_load_runtime <- function(analysis_root = .ndm_default_analysis_root(),
     float_type = float_type,
     force_to_gpu = force_to_gpu,
     gpu_mem_frac = gpu_mem_frac,
-    resave_tfrecords = resave_tfrecords
+    resave_tfrecords = resave_tfrecords,
+    compute_backend = compute_backend
   )
 }
 

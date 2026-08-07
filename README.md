@@ -57,8 +57,20 @@ conda_env <- Sys.getenv("NDM_SOFTWARE_CONDA_ENV")
 
 ndm_build_backend(conda_env = conda_env, include_tensorflow = TRUE)
 ndm_check_backend(conda_env = conda_env)
-ndm_initialize_backend(conda_env = conda_env, import_tensorflow = TRUE)
+backend <- ndm_initialize_backend(
+  conda_env = conda_env,
+  import_tensorflow = TRUE,
+  compute_backend = "auto"
+)
+backend$compute_backend_resolved
 ```
+
+`compute_backend = "auto"` probes for a supported JAX GPU in an isolated
+process and falls back to CPU. Use `"cpu"` for a deterministic CPU run or
+`"gpu"` to require a JAX GPU without silently falling back. macOS currently
+uses CPU; experimental Metal devices are intentionally outside the supported
+contract. The older `force_to_gpu` argument remains temporarily available as a
+deprecated alias.
 
 When `NDM_SOFTWARE_CONDA_ENV` is unset, the Analysis2-backed runner helpers
 next consult `NDM_CONDA_ENV` and otherwise fall back to `jax_cpu` on macOS and
@@ -80,7 +92,7 @@ library(ndm)
 cfg <- ndm_create_config(
   model_type = "DecoderOnly",
   float_type = "32",
-  force_to_gpu = FALSE
+  compute_backend = "cpu"
 )
 specs <- ndm_model_spec_presets()
 spec <- ndm_model_spec(
@@ -111,6 +123,7 @@ grids required for executable non-dry runs:
 grid <- data.frame(
   BaseID = c(1L, 2L),
   ModelType = c("DecoderOnly", "NeuralODE"),
+  floatType = c("32", "32"),
   stringsAsFactors = FALSE
 )
 
@@ -175,6 +188,16 @@ dry runs may omit it. The training-only `resave_tfrecords` compatibility option
 must remain `FALSE`. Multidisease controllers must also set
 `NDM_TFRECORD_PRODUCER_CONTRACT` and publish with the matching
 `producer = list(contract = "<contract>")`.
+
+WHO multidisease runs may add annual context covariates by supplying the same
+`covariate_panel_file` and `covariate_manifest_file` to bootstrap and run
+configuration calls. The panel must have unique `location_id`/`year` keys and
+numeric feature columns; the manifest's ordered `feature_name` column is the
+closed input schema. Grid `dataInputs` values select model inputs with `__`
+separators, while optional `inferenceSupportInputs` can name a smaller selected
+subset (for example, `Covariate1`) so missing external covariates remain masked
+without shrinking the trajectory-defined inference cohort. Panel, manifest,
+and schema hashes are embedded in canonical artifact provenance.
 
 For full execution rather than dry runs, the package also exposes
 `ndm_prepare_runtime()`, `ndm_prepare_data()`, `ndm_build_model()`,

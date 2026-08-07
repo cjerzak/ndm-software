@@ -442,7 +442,7 @@ test_that("ndm_fit threads runtime, data, build, and train stages for real workf
     model_type = "DecoderOnly",
     backbone = "transformer",
     float_type = "32",
-    force_to_gpu = FALSE
+    compute_backend = "cpu"
   )
   spec <- ndm_model_spec(preset = "seirs_dynamic_beta")
 

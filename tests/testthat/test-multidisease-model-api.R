@@ -197,7 +197,7 @@ test_that("IHME bundle loading preserves each requested disease as an outcome", 
     paddingMethod = "left",
     OSSType = "OutOfTime",
     dataInputs = "all",
-    nObsInference = 1L,
+    nObsInference = 2L,
     stringsAsFactors = FALSE
   )
   contract <- ndm:::.ndm_multidisease_artifact_contract(
@@ -289,7 +289,7 @@ test_that("multidisease preparation validates requested inputs and high_income f
       model_type = "DecoderOnly",
       backbone = "transformer",
       float_type = "32",
-      force_to_gpu = FALSE
+      compute_backend = "cpu"
     ),
     runtime_env = ndm_new_runtime_env(parent = globalenv()),
     runtime_globals = list(
@@ -345,7 +345,7 @@ test_that("multidisease preparation validates requested inputs and high_income f
       model_type = "DecoderOnly",
       backbone = "transformer",
       float_type = "32",
-      force_to_gpu = FALSE
+      compute_backend = "cpu"
     ),
     runtime_env = ndm_new_runtime_env(parent = globalenv()),
     runtime_globals = list(

@@ -83,6 +83,12 @@ escape_r_string_chunks <- function(x, max_chars = 6000L) {
 repo_root <- normalizePath(file.path(dirname(resolve_script_path()), ".."), winslash = "/", mustWork = TRUE)
 runtime_root <- file.path(repo_root, "tools", "runtime_source", "ndm_runtime")
 output_path <- file.path(repo_root, "R", "runtime_sources.R")
+temporary_output_path <- tempfile(
+  pattern = ".runtime_sources-",
+  tmpdir = dirname(output_path),
+  fileext = ".R"
+)
+on.exit(unlink(temporary_output_path), add = TRUE)
 
 runtime_files <- list.files(runtime_root, recursive = TRUE, full.names = FALSE)
 runtime_files <- sort(runtime_files[file.info(file.path(runtime_root, runtime_files))$isdir %in% FALSE])
@@ -94,7 +100,7 @@ runtime_text <- lapply(runtime_files, function(path) {
 })
 names(runtime_text) <- runtime_files
 
-con <- file(output_path, open = "w", encoding = "UTF-8")
+con <- file(temporary_output_path, open = "w", encoding = "UTF-8")
 on.exit(if (isOpen(con)) close(con), add = TRUE)
 
 writeLines("# Generated package-owned runtime sources.", con = con)
@@ -131,9 +137,16 @@ writeLines(")", con = con)
 close(con)
 
 # Fail at generation time if the serialized UTF-8 payload is not valid R code.
-invisible(parse(file = output_path))
+invisible(parse(file = temporary_output_path))
 
-generated_bytes <- readBin(output_path, what = "raw", n = file.info(output_path)$size)
+generated_bytes <- readBin(
+  temporary_output_path,
+  what = "raw",
+  n = file.info(temporary_output_path)$size
+)
 if (any(as.integer(generated_bytes) > 0x7F)) {
   stop("Generated runtime source file must contain only ASCII bytes.", call. = FALSE)
+}
+if (!file.rename(temporary_output_path, output_path)) {
+  stop("Could not atomically publish generated runtime sources.", call. = FALSE)
 }

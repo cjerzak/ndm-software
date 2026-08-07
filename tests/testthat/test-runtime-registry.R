@@ -130,6 +130,29 @@ test_that("production runtime avoids shared per-step files and uses final-only c
   expect_match(parse_dynamic, "PriorSDMultiplier", fixed = TRUE)
 })
 
+test_that("runtime selects portable devices and reserves cuDNN for CUDA", {
+  source_root <- runtime_registry_source_root()
+  imports <- runtime_source_text(
+    source_root,
+    "SetupEnv/SuperLModel_MasterImports.R"
+  )
+  transformer <- runtime_source_text(
+    source_root,
+    "ModelDefiners/SuperLModel_BackboneTransformer.R"
+  )
+
+  expect_match(imports, "compute_backend = backend_compute_request", fixed = TRUE)
+  expect_match(imports, "send2device <- backend$send2device", fixed = TRUE)
+  expect_match(imports, "tf$config$set_visible_devices(list(), \"GPU\")", fixed = TRUE)
+  expect_false(grepl("CUDA_VISIBLE_DEVICES", imports, fixed = TRUE))
+  expect_match(imports, "NDM_CUDA_ATTENTION_AVAILABLE", fixed = TRUE)
+  expect_match(imports, "gpu_mem_frac = GPU_MEM_FRAC", fixed = TRUE)
+  expect_match(imports, "identical(accelerator_runtime, \"cuda\")", fixed = TRUE)
+  expect_match(transformer, "cuda_attention_available", fixed = TRUE)
+  expect_match(transformer, "fall back to portable XLA", fixed = TRUE)
+  expect_false(grepl("has_gpu <-", transformer, fixed = TRUE))
+})
+
 test_that("generated embedded runtime sources stay in sync with runtime source files", {
   ns <- asNamespace("ndm")
   source_root <- runtime_registry_source_root()

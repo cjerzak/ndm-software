@@ -50,7 +50,10 @@ their ndmdatasets manifests. Set `SkipTfRecords = TRUE` only for explicit
 in-memory preparation; the simulation compatibility path then also requires
 `zoo`. The compatibility fields
 `resave_tfrecords` and `ReSaveTfRecords` must remain `FALSE` in configs,
-runtime environments, and runtime globals.
+runtime environments, and runtime globals. JAX precision is process-global;
+all models prepared in one R process must therefore use the same
+`float_type`. Analysis2 runners reject selected grid rows that mix 32- and
+64-bit precision before fitting starts.
 }
 \examples{
 env <- ndm_new_runtime_env()

@@ -22,7 +22,10 @@
 #' in-memory preparation; the simulation compatibility path then also requires
 #' `zoo`. The compatibility fields
 #' `resave_tfrecords` and `ReSaveTfRecords` must remain `FALSE` in configs,
-#' runtime environments, and runtime globals.
+#' runtime environments, and runtime globals. JAX precision is process-global;
+#' all models prepared in one R process must therefore use the same
+#' `float_type`. Analysis2 runners reject selected grid rows that mix 32- and
+#' 64-bit precision before fitting starts.
 #'
 #' @param config An object of class `ndm_config`, usually created by
 #'   `ndm_create_config()`.
@@ -70,9 +73,15 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
   ndm_load_runtime(
     env = runtime_env,
     float_type = config$float_type,
-    force_to_gpu = config$force_to_gpu,
     gpu_mem_frac = config$gpu_mem_frac,
-    resave_tfrecords = config$resave_tfrecords
+    resave_tfrecords = config$resave_tfrecords,
+    compute_backend = config$compute_backend %||% if (is.null(config$force_to_gpu)) {
+      "auto"
+    } else if (isTRUE(config$force_to_gpu)) {
+      "gpu"
+    } else {
+      "cpu"
+    }
   )
 }
 
@@ -344,9 +353,17 @@ ndm_build_model <- function(runtime_env,
   ndm_source_runtime_backend(
     env = runtime_env,
     float_type = runtime_env$float_type %||% "32",
-    force_to_gpu = isTRUE(runtime_env$force_to_gpu),
     gpu_mem_frac = runtime_env$gpu_mem_frac,
-    resave_tfrecords = isTRUE(runtime_env$resave_tfrecords)
+    resave_tfrecords = isTRUE(runtime_env$resave_tfrecords),
+    compute_backend = runtime_env$compute_backend %||%
+      runtime_env$compute_backend_requested %||%
+      if (is.null(runtime_env$force_to_gpu)) {
+        "auto"
+      } else if (isTRUE(runtime_env$force_to_gpu)) {
+        "gpu"
+      } else {
+        "cpu"
+      }
   )
   backend_modules <- ndm_backend_modules()
   ndm_set_runtime_globals(
@@ -363,6 +380,21 @@ ndm_build_model <- function(runtime_env,
       py_gc = backend_modules$py_gc,
       tf = backend_modules$tf,
       jaxFloatType = backend_modules$jaxFloatType,
+      compute_backend_requested = backend_modules$compute_backend_requested,
+      compute_backend_resolved = backend_modules$compute_backend_resolved %||%
+        backend_modules$compute_backend,
+      compute_backend = backend_modules$compute_backend_resolved %||%
+        backend_modules$compute_backend,
+      selected_device = backend_modules$selected_device,
+      device_platform = backend_modules$device_platform,
+      device_kind = backend_modules$device_kind,
+      device_vendor = backend_modules$device_vendor,
+      accelerator_runtime = backend_modules$accelerator_runtime,
+      device_count = backend_modules$device_count %||%
+        backend_modules$device_provenance$device_count,
+      is_cuda = isTRUE(backend_modules$is_cuda),
+      device_provenance = backend_modules$device_provenance,
+      send2device = backend_modules$send2device,
       send2cpu = backend_modules$send2cpu,
       send2gpu = backend_modules$send2gpu,
       oryx = backend_modules$oryx,
