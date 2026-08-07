@@ -221,6 +221,7 @@ analysis2_parse_args <- function(args = commandArgs(TRUE)) {
     "resave_tfrecords",
     "force_to_gpu",
     "enable_kv_cache",
+    "enable_kv_cache_training",
     "neuralode_variational",
     "help"
   )) {
@@ -277,12 +278,15 @@ analysis2_supported_flags <- function(mode) {
     "force_to_gpu",
     "gpu_mem_frac",
     "enable_kv_cache",
+    "enable_kv_cache_training",
     "inference_mc_draws",
     "observation_scale_floor",
     "initial_observation_scale",
     "neuralode_variational",
     "neuralode_kl_weight",
     "neuralode_mean_loss_weight",
+    "training_objective",
+    "outcome_loss_scale",
     "n_checkpoints",
     "max_sgd_steps",
     "prior_sd_multiplier",
@@ -349,6 +353,7 @@ analysis2_validate_manifest <- function(manifest, mode) {
       "run_figures",
       "force_to_gpu",
       "enable_kv_cache",
+      "enable_kv_cache_training",
       "neuralode_variational",
       "dry_run",
       "help"
@@ -413,13 +418,16 @@ analysis2_mode_defaults <- function(mode) {
       compute_backend = "auto",
       force_to_gpu = NULL,
       gpu_mem_frac = NULL,
-      enable_kv_cache = FALSE,
+      enable_kv_cache = TRUE,
+      enable_kv_cache_training = TRUE,
       inference_mc_draws = 5L,
       observation_scale_floor = 1e-5,
       initial_observation_scale = 1.0,
       neuralode_variational = TRUE,
       neuralode_kl_weight = 1.0,
       neuralode_mean_loss_weight = 0.0,
+      training_objective = "student_t_nll",
+      outcome_loss_scale = NULL,
       n_checkpoints = 1L,
       max_sgd_steps = NULL,
       prior_sd_multiplier = 1.0,
@@ -447,13 +455,16 @@ analysis2_mode_defaults <- function(mode) {
       compute_backend = "auto",
       force_to_gpu = NULL,
       gpu_mem_frac = NULL,
-      enable_kv_cache = FALSE,
+      enable_kv_cache = TRUE,
+      enable_kv_cache_training = TRUE,
       inference_mc_draws = 5L,
       observation_scale_floor = 1e-5,
       initial_observation_scale = 1.0,
       neuralode_variational = TRUE,
       neuralode_kl_weight = 1.0,
       neuralode_mean_loss_weight = 0.0,
+      training_objective = "student_t_nll",
+      outcome_loss_scale = NULL,
       n_checkpoints = 1L,
       max_sgd_steps = NULL,
       prior_sd_multiplier = 1.0,
@@ -481,13 +492,16 @@ analysis2_mode_defaults <- function(mode) {
       compute_backend = "auto",
       force_to_gpu = NULL,
       gpu_mem_frac = NULL,
-      enable_kv_cache = FALSE,
+      enable_kv_cache = TRUE,
+      enable_kv_cache_training = TRUE,
       inference_mc_draws = 5L,
       observation_scale_floor = 1e-5,
       initial_observation_scale = 1.0,
       neuralode_variational = TRUE,
       neuralode_kl_weight = 1.0,
       neuralode_mean_loss_weight = 0.0,
+      training_objective = "student_t_nll",
+      outcome_loss_scale = NULL,
       n_checkpoints = 1L,
       max_sgd_steps = NULL,
       prior_sd_multiplier = 1.0,
@@ -581,6 +595,7 @@ analysis2_cli_overrides <- function(opts, mode) {
       "data_format",
       "covariate_panel_file",
       "covariate_manifest_file",
+      "training_objective",
       "solver_profile"
     ),
     names(opts)
@@ -600,6 +615,7 @@ analysis2_cli_overrides <- function(opts, mode) {
     "initial_observation_scale",
     "neuralode_kl_weight",
     "neuralode_mean_loss_weight",
+    "outcome_loss_scale",
     "n_checkpoints",
     "max_sgd_steps",
     "prior_sd_multiplier"
@@ -621,6 +637,7 @@ analysis2_cli_overrides <- function(opts, mode) {
     "run_figures",
     "force_to_gpu",
     "enable_kv_cache",
+    "enable_kv_cache_training",
     "neuralode_variational",
     "dry_run",
     "help"
@@ -685,9 +702,25 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
     spec$enable_kv_cache %||% defaults$enable_kv_cache,
     field = "enable_kv_cache"
   )
+  spec$enable_kv_cache_training <- analysis2_parse_bool(
+    spec$enable_kv_cache_training %||% defaults$enable_kv_cache_training,
+    field = "enable_kv_cache_training"
+  )
+  if (isTRUE(spec$enable_kv_cache_training) && !isTRUE(spec$enable_kv_cache)) {
+    stop(
+      "enable_kv_cache_training=TRUE requires enable_kv_cache=TRUE.",
+      call. = FALSE
+    )
+  }
   spec$neuralode_variational <- analysis2_parse_bool(
     spec$neuralode_variational %||% defaults$neuralode_variational,
     field = "neuralode_variational"
+  )
+  spec$training_objective <- match.arg(
+    tolower(analysis2_normalize_string(
+      spec$training_objective %||% defaults$training_objective
+    )),
+    c("student_t_nll", "scaled_mse")
   )
   resave_tfrecords <- analysis2_parse_bool(
     spec$resave_tfrecords %||% defaults$resave_tfrecords,
@@ -798,6 +831,42 @@ analysis2_normalize_run_spec <- function(spec, mode, paths) {
   if (length(spec$neuralode_mean_loss_weight) != 1L ||
       !is.finite(spec$neuralode_mean_loss_weight) || spec$neuralode_mean_loss_weight < 0) {
     stop("`neuralode_mean_loss_weight` must be one finite non-negative value.", call. = FALSE)
+  }
+  if (!is.null(spec$outcome_loss_scale)) {
+    outcome_loss_scale <- spec$outcome_loss_scale
+    if (is.list(outcome_loss_scale)) {
+      outcome_loss_scale <- unlist(outcome_loss_scale, recursive = TRUE, use.names = FALSE)
+    }
+    if (length(outcome_loss_scale) == 1L && is.character(outcome_loss_scale)) {
+      outcome_loss_scale <- strsplit(outcome_loss_scale, ",", fixed = TRUE)[[1L]]
+    }
+    spec$outcome_loss_scale <- suppressWarnings(as.numeric(outcome_loss_scale))
+    if (!length(spec$outcome_loss_scale) ||
+        any(!is.finite(spec$outcome_loss_scale)) ||
+        any(spec$outcome_loss_scale <= 0)) {
+      stop("`outcome_loss_scale` must be NULL or a finite positive numeric vector.", call. = FALSE)
+    }
+  }
+  if (identical(spec$training_objective, "scaled_mse")) {
+    if (is.null(spec$outcome_loss_scale)) {
+      stop("`outcome_loss_scale` is required for `training_objective = \"scaled_mse\"`.", call. = FALSE)
+    }
+    if (any(spec$outcome_loss_scale < 1e-8)) {
+      stop("`outcome_loss_scale` values must be at least 1e-8 for scaled MSE.", call. = FALSE)
+    }
+    if (isTRUE(spec$neuralode_variational) || spec$neuralode_kl_weight != 0 ||
+        spec$neuralode_mean_loss_weight != 0 || spec$inference_mc_draws != 1L) {
+      stop(
+        paste(
+          "`training_objective = \"scaled_mse\"` requires",
+          "`neuralode_variational = FALSE`, `neuralode_kl_weight = 0`,",
+          "`neuralode_mean_loss_weight = 0`, and `inference_mc_draws = 1`."
+        ),
+        call. = FALSE
+      )
+    }
+  } else if (!is.null(spec$outcome_loss_scale)) {
+    stop("`outcome_loss_scale` is only valid with `training_objective = \"scaled_mse\"`.", call. = FALSE)
   }
   spec$n_checkpoints <- suppressWarnings(as.numeric(spec$n_checkpoints %||% defaults$n_checkpoints))
   if (length(spec$n_checkpoints) != 1L || !is.finite(spec$n_checkpoints) ||
@@ -962,12 +1031,15 @@ analysis2_usage <- function(mode, paths = analysis2_paths()) {
       "  --force_to_gpu=TRUE|FALSE",
       "  --gpu_mem_frac=NUMBER",
       "  --enable_kv_cache=TRUE|FALSE",
+      "  --enable_kv_cache_training=TRUE|FALSE",
       "  --inference_mc_draws=POSITIVE_INTEGER",
       "  --observation_scale_floor=POSITIVE_NUMBER",
       "  --initial_observation_scale=NUMBER_GREATER_THAN_OBSERVATION_SCALE_FLOOR",
       "  --neuralode_variational=TRUE|FALSE",
       "  --neuralode_kl_weight=NUMBER",
       "  --neuralode_mean_loss_weight=NUMBER",
+      "  --training_objective=student_t_nll|scaled_mse",
+      "  --outcome_loss_scale=POSITIVE_NUMBER[,POSITIVE_NUMBER...]",
       "  --n_checkpoints=POSITIVE_INTEGER",
       "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)",
       "  --prior_sd_multiplier=POSITIVE_NUMBER",
@@ -1271,12 +1343,15 @@ analysis2_canonical_variation_fields <- function(mode) {
       "compute_backend",
       "gpu_mem_frac",
       "enable_kv_cache",
+      "enable_kv_cache_training",
       "inference_mc_draws",
       "observation_scale_floor",
       "initial_observation_scale",
       "neuralode_variational",
       "neuralode_kl_weight",
       "neuralode_mean_loss_weight",
+      "training_objective",
+      "outcome_loss_scale",
       "n_checkpoints",
       "max_sgd_steps",
       "prior_sd_multiplier",
@@ -1300,12 +1375,15 @@ analysis2_canonical_variation_fields <- function(mode) {
       "compute_backend",
       "gpu_mem_frac",
       "enable_kv_cache",
+      "enable_kv_cache_training",
       "inference_mc_draws",
       "observation_scale_floor",
       "initial_observation_scale",
       "neuralode_variational",
       "neuralode_kl_weight",
       "neuralode_mean_loss_weight",
+      "training_objective",
+      "outcome_loss_scale",
       "n_checkpoints",
       "max_sgd_steps",
       "prior_sd_multiplier",
@@ -2997,11 +3075,14 @@ analysis2_real_runtime_globals <- function(row_values,
                                            model_type,
                                            run_seed,
                                            gpu_mem_frac = NULL,
-                                           enable_kv_cache = FALSE,
+                                           enable_kv_cache = TRUE,
+                                           enable_kv_cache_training = TRUE,
                                            inference_mc_draws = 5L,
                                            observation_scale_floor = 1e-5,
                                            initial_observation_scale = 1.0,
                                            neuralode_variational = TRUE,
+                                           training_objective = "student_t_nll",
+                                           outcome_loss_scale = NULL,
                                            analysis_name,
                                            analysis_date,
                                            outer_iteration,
@@ -3126,18 +3207,29 @@ analysis2_real_runtime_globals <- function(row_values,
     nRealGrid = nrow(state$truth_df_red),
     GPU_MEM_FRAC = gpu_mem_frac,
     EnableKVCaching = enable_kv_cache,
+    EnableKVCachingTraining = enable_kv_cache_training,
     InferenceMCDraws = inference_mc_draws,
     ObservationScaleFloor = observation_scale_floor,
     InitialObservationScale = initial_observation_scale,
     neuralode_variational = neuralode_variational,
+    training_objective = training_objective,
+    TrainingObjective = training_objective,
+    outcome_loss_scale = outcome_loss_scale,
+    OutcomeLossScale = outcome_loss_scale,
     AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita, na.rm = TRUE),
-    VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$array(1L:vi_total_times)),
+    VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$arange(
+      start = 1L, stop = vi_total_times + 1L, dtype = jnp$int32
+    )),
     diff_eq_solver = diffrax$Dopri8(),
     VI_diff_eq_solver = diffrax$Dopri8(),
     stepsize_controller = diffrax$PIDController(rtol = 1e-7, atol = 1e-9),
     diffraxInterpolator = diffrax$LinearInterpolation,
-    VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim - 1L))),
-    VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(vi_total_times - 1L))),
+    VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$arange(
+      start = 0L, stop = n_time_steps_sim, dtype = jnp$int32
+    )),
+    VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$arange(
+      start = 0L, stop = vi_total_times, dtype = jnp$int32
+    )),
     VI_diff_eq_solver_optim = solver_settings$solver,
     VI_diff_eq_solver_dgp = diffrax$Tsit5(),
     dt0_init = 1e-1,
@@ -3183,11 +3275,14 @@ analysis2_sim_runtime_globals <- function(row_values,
                                           model_type,
                                           run_seed,
                                           gpu_mem_frac = NULL,
-                                          enable_kv_cache = FALSE,
+                                          enable_kv_cache = TRUE,
+                                          enable_kv_cache_training = TRUE,
                                           inference_mc_draws = 5L,
                                           observation_scale_floor = 1e-5,
                                           initial_observation_scale = 1.0,
                                           neuralode_variational = TRUE,
+                                          training_objective = "student_t_nll",
+                                          outcome_loss_scale = NULL,
                                           analysis_name,
                                           analysis_date,
                                           outer_iteration,
@@ -3284,10 +3379,15 @@ analysis2_sim_runtime_globals <- function(row_values,
     AttentionKVHeads = NULL,
     endAppend = TRUE,
     EnableKVCaching = enable_kv_cache,
+    EnableKVCachingTraining = enable_kv_cache_training,
     InferenceMCDraws = inference_mc_draws,
     ObservationScaleFloor = observation_scale_floor,
     InitialObservationScale = initial_observation_scale,
     neuralode_variational = neuralode_variational,
+    training_objective = training_objective,
+    TrainingObjective = training_objective,
+    outcome_loss_scale = outcome_loss_scale,
+    OutcomeLossScale = outcome_loss_scale,
     MaxTimeIndex = max_time_index,
     nPlaces = 1L,
     nMonteEval = 1L,
@@ -3303,8 +3403,12 @@ analysis2_sim_runtime_globals <- function(row_values,
     NTimeSteps_SIM = n_time_steps_sim,
     nTimesLookValidationInference = n_times_lookahead,
     MaxSteps = as.integer(10^4),
-    VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim - 1L))),
-    VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(n_times_lookahead - 1L))),
+    VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$arange(
+      start = 0L, stop = n_time_steps_sim, dtype = jnp$int32
+    )),
+    VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$arange(
+      start = 0L, stop = n_times_lookahead, dtype = jnp$int32
+    )),
     VI_diff_eq_solver_optim = solver_settings$solver,
     VI_diff_eq_solver_dgp = diffrax$Tsit5(),
     dt0_init_dgp = 1e-3,
@@ -3445,13 +3549,16 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
       resave_tfrecords = FALSE,
       gpu_mem_frac = spec$gpu_mem_frac,
       enable_kv_cache = spec$enable_kv_cache,
+      enable_kv_cache_training = spec$enable_kv_cache_training,
       inference_mc_draws = spec$inference_mc_draws,
       observation_scale_floor = spec$observation_scale_floor,
       initial_observation_scale = spec$initial_observation_scale,
       neuralode_variational = isTRUE(spec$neuralode_variational) &&
         identical(model_type, "NeuralODE"),
       neuralode_kl_weight = spec$neuralode_kl_weight,
-      neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight
+      neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight,
+      training_objective = spec$training_objective,
+      outcome_loss_scale = spec$outcome_loss_scale
     )
     runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
     analysis2_seed_backends(runtime_env, run_seed)
@@ -3484,10 +3591,13 @@ analysis2_run_real <- function(args = commandArgs(TRUE)) {
           run_seed = run_seed,
           gpu_mem_frac = spec$gpu_mem_frac,
           enable_kv_cache = config$enable_kv_cache,
+          enable_kv_cache_training = config$enable_kv_cache_training,
           inference_mc_draws = config$inference_mc_draws,
           observation_scale_floor = config$observation_scale_floor,
           initial_observation_scale = config$initial_observation_scale,
           neuralode_variational = config$neuralode_variational,
+          training_objective = config$training_objective,
+          outcome_loss_scale = config$outcome_loss_scale,
           analysis_name = analysis_name,
           analysis_date = analysis_date,
           outer_iteration = outer_iteration,
@@ -3658,13 +3768,16 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
       resave_tfrecords = FALSE,
       gpu_mem_frac = spec$gpu_mem_frac,
       enable_kv_cache = spec$enable_kv_cache,
+      enable_kv_cache_training = spec$enable_kv_cache_training,
       inference_mc_draws = spec$inference_mc_draws,
       observation_scale_floor = spec$observation_scale_floor,
       initial_observation_scale = spec$initial_observation_scale,
       neuralode_variational = isTRUE(spec$neuralode_variational) &&
         identical(model_type, "NeuralODE"),
       neuralode_kl_weight = spec$neuralode_kl_weight,
-      neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight
+      neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight,
+      training_objective = spec$training_objective,
+      outcome_loss_scale = spec$outcome_loss_scale
     )
     runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
     analysis2_seed_backends(runtime_env, run_seed)
@@ -3701,10 +3814,13 @@ analysis2_run_sim <- function(args = commandArgs(TRUE)) {
           run_seed = run_seed,
           gpu_mem_frac = spec$gpu_mem_frac,
           enable_kv_cache = config$enable_kv_cache,
+          enable_kv_cache_training = config$enable_kv_cache_training,
           inference_mc_draws = config$inference_mc_draws,
           observation_scale_floor = config$observation_scale_floor,
           initial_observation_scale = config$initial_observation_scale,
           neuralode_variational = config$neuralode_variational,
+          training_objective = config$training_objective,
+          outcome_loss_scale = config$outcome_loss_scale,
           analysis_name = analysis_name,
           analysis_date = analysis_date,
           outer_iteration = outer_iteration,

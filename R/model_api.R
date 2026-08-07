@@ -61,10 +61,13 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
   ndm_set_runtime_globals(
     runtime_env,
     list(
-      EnableKVCaching = config$enable_kv_cache %||% FALSE,
+      EnableKVCaching = config$enable_kv_cache %||% TRUE,
+      EnableKVCachingTraining = config$enable_kv_cache_training %||% TRUE,
       InferenceMCDraws = config$inference_mc_draws %||% 5L,
       ObservationScaleFloor = config$observation_scale_floor %||% 1e-5,
       InitialObservationScale = config$initial_observation_scale %||% 1.0,
+      TrainingObjective = config$training_objective %||% "student_t_nll",
+      OutcomeLossScale = config$outcome_loss_scale %||% NULL,
       neuralode_variational = config$neuralode_variational %||%
         identical(config$model_type, "NeuralODE")
     )

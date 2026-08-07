@@ -27,8 +27,34 @@ if(backbonePath == "initialize"){
     !any(grepl("V100", sapply(selected_devices, function(d) d$device_kind))),
     error = function(e) FALSE
   )
-  EnableKVCaching <- backbone_runtime_get0("EnableKVCaching", ifnotfound = FALSE)
-  EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType == "DecoderOnly")
+  EnableKVCachingRequested <- isTRUE(backbone_runtime_get0(
+    "EnableKVCaching",
+    ifnotfound = TRUE
+  ))
+  EnableKVCachingTrainingRequested <- isTRUE(backbone_runtime_get0(
+    "EnableKVCachingTraining",
+    ifnotfound = TRUE
+  ))
+  if (EnableKVCachingTrainingRequested && !EnableKVCachingRequested) {
+    stop(
+      "EnableKVCachingTraining=TRUE requires EnableKVCaching=TRUE.",
+      call. = FALSE
+    )
+  }
+  EnableKVCaching <- EnableKVCachingRequested && (ModelType == "DecoderOnly")
+  EnableKVCachingTraining <- EnableKVCaching && EnableKVCachingTrainingRequested
+  EnableKVCachingInferenceEffective <- EnableKVCaching
+  EnableKVCachingTrainingEffective <- EnableKVCachingTraining
+  print(sprintf(
+    paste(
+      "KV cache policy: requested=%s; training_requested=%s;",
+      "inference_effective=%s; training_effective=%s"
+    ),
+    EnableKVCachingRequested,
+    EnableKVCachingTrainingRequested,
+    EnableKVCachingInferenceEffective,
+    EnableKVCachingTrainingEffective
+  ))
   # Full attention residuals are now the default transformer residual path.
   # Set UseFullAttentionResiduals = FALSE in runtime globals to opt back into
   # the legacy additive residual implementation for compatibility testing.
@@ -586,6 +612,18 @@ if(backbonePath == "initialize"){
         dtype <- token_in$dtype
         layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
         pos_i32 <- jnp$astype(pos, jnp$int32)
+        cache_capacity <- cache[[1L]]$k$shape[[1]]
+        pos_i32 <- eq$error_if(
+          pos_i32,
+          jnp$logical_or(
+            jnp$less(pos_i32, jnp$array(0L, dtype = jnp$int32)),
+            jnp$greater_equal(
+              pos_i32,
+              jnp$array(cache_capacity, dtype = jnp$int32)
+            )
+          ),
+          "KV cache decode position is outside the allocated capacity."
+        )
 
         if (!isTRUE(UseFullAttentionResiduals)) {
           xt <- token_in
@@ -619,11 +657,7 @@ if(backbonePath == "initialize"){
             k_KH <- qk_normalize_heads(k_KH, L$Multihead$KNormScale)
 
             max_len <- cache[[l_]]$k$shape[[1]]
-            pos_layer <- jnp$clip(
-              pos_i32,
-              jnp$array(0L, dtype = jnp$int32),
-              jnp$array(max_len - 1L, dtype = jnp$int32)
-            )
+            pos_layer <- pos_i32
             write_idx <- jnp$array(c(pos_layer, 0L, 0L), dtype = jnp$int32)
             cache[[l_]]$k <- jax$lax$dynamic_update_slice(
               cache[[l_]]$k,
@@ -712,11 +746,7 @@ if(backbonePath == "initialize"){
             k_KH <- qk_normalize_heads(k_KH, L$Multihead$KNormScale)
 
             max_len <- cache_in[[branch_idx]]$k$shape[[1]]
-            pos_layer <- jnp$clip(
-              pos_i32,
-              jnp$array(0L, dtype = jnp$int32),
-              jnp$array(max_len - 1L, dtype = jnp$int32)
-            )
+            pos_layer <- pos_i32
             write_idx <- jnp$array(c(pos_layer, 0L, 0L), dtype = jnp$int32)
             cache_in[[branch_idx]]$k <- jax$lax$dynamic_update_slice(
               cache_in[[branch_idx]]$k,

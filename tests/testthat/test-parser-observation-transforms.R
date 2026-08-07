@@ -37,6 +37,49 @@ parser_observation_helper <- function() {
   parser_named_helper(".ndm_unwrap_pretransformed_observation_args")
 }
 
+test_that("ODE constants are imported without caller-frame evaluation", {
+  import_constants <- parser_named_helper(".ndm_import_numeric_ode_constants")
+  runtime_env <- new.env(parent = baseenv())
+  fake_jnp <- list(array = function(value) structure(value, backend = "fake-jnp"))
+
+  observed_names <- import_constants(
+    definitions = c("N \\leftarrow 1", "Scale \\leftarrow 1e4"),
+    jnp_module = fake_jnp,
+    converter = function(value) as.numeric(value),
+    target_env = runtime_env
+  )
+
+  expect_identical(observed_names, c("N", "Scale"))
+  expect_true(exists("CONST_N", envir = runtime_env, inherits = FALSE))
+  expect_true(exists("CONST_Scale", envir = runtime_env, inherits = FALSE))
+  expect_equal(
+    as.numeric(get("CONST_N", envir = runtime_env, inherits = FALSE)),
+    1
+  )
+  expect_equal(
+    as.numeric(get("CONST_Scale", envir = runtime_env, inherits = FALSE)),
+    1e4
+  )
+  expect_identical(
+    attr(get("CONST_N", envir = runtime_env, inherits = FALSE), "backend"),
+    "fake-jnp"
+  )
+
+  expect_error(
+    import_constants(
+      "N;system('false') \\leftarrow 1",
+      fake_jnp,
+      as.numeric,
+      runtime_env
+    ),
+    "Invalid ODE constant name"
+  )
+  expect_error(
+    import_constants("N \\leftarrow 1/2", fake_jnp, as.numeric, runtime_env),
+    "finite number"
+  )
+})
+
 parser_evolving_sigmoid_spec <- function() {
   spec <- ndm_model_spec(preset = "tb_e", model_type = "NeuralODE")
   lines <- strsplit(spec$tex_text, "\n", fixed = TRUE)[[1L]]

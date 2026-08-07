@@ -18,6 +18,7 @@ test_that("run configs expose portable backend and NeuralODE KL controls", {
     outer = 1L,
     gpu_mem_frac = 0.5,
     enable_kv_cache = TRUE,
+    enable_kv_cache_training = TRUE,
     inference_mc_draws = 7L,
     observation_scale_floor = 2e-5,
     initial_observation_scale = 0.02,
@@ -33,6 +34,7 @@ test_that("run configs expose portable backend and NeuralODE KL controls", {
   expect_true(config$respect_grid_model_type)
   expect_equal(config$gpu_mem_frac, 0.5)
   expect_true(config$enable_kv_cache)
+  expect_true(config$enable_kv_cache_training)
   expect_identical(config$inference_mc_draws, 7L)
   expect_equal(config$observation_scale_floor, 2e-5)
   expect_equal(config$initial_observation_scale, 0.02)
@@ -43,12 +45,63 @@ test_that("run configs expose portable backend and NeuralODE KL controls", {
   expect_false(any(grepl("^--force_to_gpu=", args)))
   expect_true("--gpu_mem_frac=0.5" %in% args)
   expect_true("--enable_kv_cache=TRUE" %in% args)
+  expect_true("--enable_kv_cache_training=TRUE" %in% args)
   expect_true("--inference_mc_draws=7" %in% args)
   expect_true("--observation_scale_floor=2e-05" %in% args)
   expect_true("--initial_observation_scale=0.02" %in% args)
   expect_true("--neuralode_variational=FALSE" %in% args)
   expect_true("--neuralode_kl_weight=0" %in% args)
   expect_true("--neuralode_mean_loss_weight=0.3" %in% args)
+})
+
+test_that("run configs serialize deterministic scaled-MSE controls", {
+  pinned_scales <- c(
+    0.00218001845765384,
+    0.0019327084723560455
+  )
+  config <- ndm_create_multidisease_run_config(
+    project_root = tempdir(),
+    grid = data.frame(BaseID = 2009L, ModelType = "NeuralODE"),
+    training_objective = "scaled_mse",
+    outcome_loss_scale = pinned_scales,
+    neuralode_variational = FALSE,
+    neuralode_kl_weight = 0,
+    neuralode_mean_loss_weight = 0,
+    inference_mc_draws = 1L,
+    dry_run = TRUE
+  )
+  args <- ndm:::.ndm_run_config_to_args(config)
+
+  expect_identical(config$training_objective, "scaled_mse")
+  expect_identical(config$outcome_loss_scale, pinned_scales)
+  expect_true("--training_objective=scaled_mse" %in% args)
+  scale_arg <- sub(
+    "^--outcome_loss_scale=", "",
+    args[grepl("^--outcome_loss_scale=", args)]
+  )
+  serialized_scales <- strsplit(scale_arg, ",", fixed = TRUE)[[1L]]
+  expect_identical(as.numeric(serialized_scales), pinned_scales)
+})
+
+test_that("runtime exports objective telemetry and a dynamic persistence skill", {
+  train_source <- ndm_test_runtime_source_text(
+    "ModelTrainers/SuperLModel_TrainDo.R"
+  )
+  analytics_source <- ndm_test_runtime_source_text(
+    "ResultsGet/SuperLModel_GetAnalytics_Real.R"
+  )
+
+  for (field in c(
+    "objective_data_loss", "raw_mse", "scaled_mse", "kl_local",
+    "kl_global", "kl_place", "kl_weighted", "prediction_abs_mean",
+    "truth_abs_mean"
+  )) {
+    expect_match(train_source, field, fixed = TRUE)
+  }
+  expect_match(analytics_source, "last_observed_context", fixed = TRUE)
+  expect_match(analytics_source, "configured_horizon", fixed = TRUE)
+  expect_match(analytics_source, "PredBase_l", fixed = TRUE)
+  expect_false(grepl('sl_dat[,"Truth_l8"]', analytics_source, fixed = TRUE))
 })
 
 test_that("run configs preserve the legacy backend alias without ambiguity", {

@@ -72,6 +72,80 @@
   )
 }
 
+.ndm_import_numeric_ode_constants <- function(definitions,
+                                              jnp_module,
+                                              converter,
+                                              target_env = parent.frame()) {
+  if (!is.environment(target_env)) {
+    stop("`target_env` must be an environment.", call. = FALSE)
+  }
+
+  definitions <- as.character(definitions)
+  if (length(definitions) == 0L) {
+    return(character())
+  }
+
+  definition_parts <- strsplit(definitions, split = "\\\\leftarrow")
+  malformed <- lengths(definition_parts) != 2L
+  if (any(malformed)) {
+    stop(
+      sprintf(
+        "Malformed ODE constant definition: `%s`.",
+        definitions[[which(malformed)[[1L]]]]
+      ),
+      call. = FALSE
+    )
+  }
+
+  constant_names <- vapply(
+    definition_parts,
+    function(parts) gsub("[[:space:]]+", "", parts[[1L]]),
+    character(1L)
+  )
+  valid_names <- grepl(
+    "^[[:alpha:]_][[:alnum:]_]*$",
+    constant_names
+  )
+  if (any(!valid_names)) {
+    stop(
+      sprintf(
+        "Invalid ODE constant name: `%s`.",
+        constant_names[[which(!valid_names)[[1L]]]]
+      ),
+      call. = FALSE
+    )
+  }
+  if (anyDuplicated(constant_names)) {
+    stop("ODE constant names must be unique.", call. = FALSE)
+  }
+
+  constant_values <- vapply(
+    definition_parts,
+    function(parts) {
+      value_text <- gsub("[[:space:]]+", "", parts[[2L]])
+      value <- suppressWarnings(converter(value_text))
+      if (length(value) != 1L || is.na(value) || !is.finite(value)) {
+        stop(
+          sprintf("ODE constant value must be a finite number: `%s`.", value_text),
+          call. = FALSE
+        )
+      }
+      as.numeric(value)
+    },
+    numeric(1L)
+  )
+
+  for (constant_index in seq_along(constant_names)) {
+    assign(
+      paste0("CONST_", constant_names[[constant_index]]),
+      jnp_module$array(constant_values[[constant_index]]),
+      envir = target_env
+    )
+  }
+
+  unname(constant_names)
+}
+
 {
   print("Sarting SuperLModel_ParseDynamicODE.R")
   # Note: Neural1 -> Time evolving parameters like SD, beta_l
@@ -107,16 +181,12 @@
   PriorText <- strsplit(PriorText,split="\\$")
   PriorText <- c(na.omit(unlist(lapply(PriorText,function(zer){ c(zer,NA)[2] }))))
   ConstantsDefs <- PriorText[grep(PriorText,pattern="\\\\leftarrow")]
-  ConstantsNames <- unlist(lapply(strsplit(ConstantsDefs,split="\\\\leftarrow"),function(l_){
-    name_ <- paste(gsub(l_[[1]],pattern=" ",replace=""), sep = "")
-  } ))
-
-  # import code with global side effects
-  lapply(strsplit(ConstantsDefs,split="\\\\leftarrow"),function(l_){
-    name_ <- paste("CONST_", gsub(l_[[1]],pattern=" ",replace=""), sep = "")
-    eval_ <- paste("jnp$array(f2n(", gsub(l_[[2]], pattern=" " ,replace =""), "))", collapse = "")
-    eval.parent(parse(text=sprintf("%s <<- %s",name_,eval_)))
-  })
+  ConstantsNames <- .ndm_import_numeric_ode_constants(
+    definitions = ConstantsDefs,
+    jnp_module = jnp,
+    converter = f2n,
+    target_env = environment()
+  )
 
   PriorDefinitions <- PriorText[grep(PriorText,pattern="\\\\sim")]
   TexTransformationRules <- PriorText[grep(PriorText,pattern="=")]
@@ -322,7 +392,11 @@
       )
 
       # setup ODE
-      VI_SaveAt_ODE_GlobalNeural <- diffrax$SaveAt(ts = jnp$array(  0L:NTimeGlobalNeuralMax ))
+      VI_SaveAt_ODE_GlobalNeural <- diffrax$SaveAt(ts = jnp$arange(
+        start = 0L,
+        stop = as.integer(NTimeGlobalNeuralMax) + 1L,
+        dtype = jnp$int32
+      ))
     }
   }
   if(temporalModelType == "linearInterpolation"){

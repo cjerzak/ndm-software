@@ -114,6 +114,7 @@ test_that("decoder cache and non-cache predictions agree in jax_cpu", {
     n_sgd = 1L,
     case_seed = 1201L,
     enable_kv_cache = FALSE,
+    enable_kv_cache_training = FALSE,
     return_details = TRUE
   )
 

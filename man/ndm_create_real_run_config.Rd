@@ -18,13 +18,16 @@ ndm_create_real_run_config(
   run_seed = NULL,
   force_to_gpu = NULL,
   gpu_mem_frac = NULL,
-  enable_kv_cache = FALSE,
+  enable_kv_cache = TRUE,
+  enable_kv_cache_training = TRUE,
   inference_mc_draws = 5L,
   observation_scale_floor = 1e-05,
   initial_observation_scale = 1,
   neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
+  training_objective = c("student_t_nll", "scaled_mse"),
+  outcome_loss_scale = NULL,
   n_checkpoints = 1L,
   max_sgd_steps = NULL,
   prior_sd_multiplier = 1,
@@ -51,13 +54,16 @@ ndm_create_sim_run_config(
   run_seed = NULL,
   force_to_gpu = NULL,
   gpu_mem_frac = NULL,
-  enable_kv_cache = FALSE,
+  enable_kv_cache = TRUE,
+  enable_kv_cache_training = TRUE,
   inference_mc_draws = 5L,
   observation_scale_floor = 1e-05,
   initial_observation_scale = 1,
   neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
+  training_objective = c("student_t_nll", "scaled_mse"),
+  outcome_loss_scale = NULL,
   n_checkpoints = 1L,
   max_sgd_steps = NULL,
   prior_sd_multiplier = 1,
@@ -81,13 +87,16 @@ ndm_create_multidisease_run_config(
   run_seed = NULL,
   force_to_gpu = NULL,
   gpu_mem_frac = NULL,
-  enable_kv_cache = FALSE,
+  enable_kv_cache = TRUE,
+  enable_kv_cache_training = TRUE,
   inference_mc_draws = 5L,
   observation_scale_floor = 1e-05,
   initial_observation_scale = 1,
   neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
+  training_objective = c("student_t_nll", "scaled_mse"),
+  outcome_loss_scale = NULL,
   n_checkpoints = 1L,
   max_sgd_steps = NULL,
   prior_sd_multiplier = 1,
@@ -140,7 +149,12 @@ It is invalid with \code{compute_backend = "cpu"} and rejected during
 initialization if \code{"auto"} resolves to CPU.}
 
 \item{enable_kv_cache}{Logical scalar controlling DecoderOnly KV caching. The
-corrected default is \code{FALSE}.}
+default enables caching for inference.}
+
+\item{enable_kv_cache_training}{Logical scalar controlling caching during
+DecoderOnly gradient training. It defaults to \code{TRUE}: cached training is
+gradient-equivalent to the un-cached rollout and several times faster per
+step. Set \code{FALSE} to reproduce historical un-cached training exactly.}
 
 \item{inference_mc_draws}{Positive integer number of requested posterior
 inference draws. Deterministic NeuralODE and DecoderOnly paths use one
@@ -163,6 +177,14 @@ disables KL evaluation while preserving variational sampling.}
 
 \item{neuralode_mean_loss_weight}{Finite non-negative multiplier for the
 NeuralODE auxiliary masked mean-squared-error term.}
+
+\item{training_objective}{Training loss for observed outcomes. The default
+\code{"student_t_nll"} preserves the probabilistic likelihood;
+\code{"scaled_mse"} selects deterministic scale-normalized squared error.}
+
+\item{outcome_loss_scale}{Optional finite positive scalar or outcome-length
+vector used by \code{training_objective = "scaled_mse"}. It is required for
+scaled MSE and otherwise must be \code{NULL}.}
 
 \item{n_checkpoints}{Positive integer number of checkpoint and analytics
 states to retain, including the terminal post-update state.}

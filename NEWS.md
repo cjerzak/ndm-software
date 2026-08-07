@@ -1,3 +1,19 @@
+# ndm 0.5.0
+
+- `enable_kv_cache_training` now defaults to `TRUE` across the config, run,
+  Analysis2-spec, and runtime layers: DecoderOnly training uses the KV-cached
+  rollout by default. The cached training path was verified gradient-equivalent
+  to the un-cached reference rollout (forward and gradient parity at float32
+  reordering tolerance across production topology, left padding, interior mask
+  holes, and both residual modes) and is several times faster per training
+  step at production batch sizes (about 7x for batch 32, horizon 12, on CPU).
+  Set `enable_kv_cache_training = FALSE` to reproduce historical un-cached
+  training exactly. The strict rule that `enable_kv_cache_training = TRUE`
+  requires `enable_kv_cache = TRUE` is unchanged, so cache-off callers must
+  now pass `enable_kv_cache_training = FALSE` explicitly.
+- Added a regression test asserting cached-vs-uncached training loss
+  trajectory and post-training prediction parity.
+
 # ndm 0.4.0
 
 - Model and run APIs now default to `compute_backend = "auto"`, selecting a

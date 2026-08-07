@@ -27,12 +27,15 @@ test_that("configuration objects preserve requested modeling defaults", {
       "neuralode_optim_rtol",
       "neuralode_optim_atol",
       "enable_kv_cache",
+      "enable_kv_cache_training",
       "inference_mc_draws",
       "observation_scale_floor",
       "initial_observation_scale",
       "neuralode_variational",
       "neuralode_kl_weight",
-      "neuralode_mean_loss_weight"
+      "neuralode_mean_loss_weight",
+      "training_objective",
+      "outcome_loss_scale"
     )
   )
   expect_null(cfg$neuralode_local_latent_dim)
@@ -46,13 +49,16 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_equal(cfg$neuralode_optim_controller, "pid")
   expect_equal(cfg$neuralode_optim_rtol, 1e-5)
   expect_equal(cfg$neuralode_optim_atol, 1e-7)
-  expect_false(cfg$enable_kv_cache)
+  expect_true(cfg$enable_kv_cache)
+  expect_true(cfg$enable_kv_cache_training)
   expect_identical(cfg$inference_mc_draws, 5L)
   expect_equal(cfg$observation_scale_floor, 1e-5)
   expect_equal(cfg$initial_observation_scale, 1)
   expect_true(cfg$neuralode_variational)
   expect_equal(cfg$neuralode_kl_weight, 1)
   expect_equal(cfg$neuralode_mean_loss_weight, 0)
+  expect_identical(cfg$training_objective, "student_t_nll")
+  expect_null(cfg$outcome_loss_scale)
 })
 
 test_that("public config constructors share the unit observation-scale default", {
@@ -104,16 +110,29 @@ test_that("NeuralODE variational config validates KL weight", {
 test_that("inference and observation-scale controls validate their domains", {
   cfg <- ndm_create_config(
     enable_kv_cache = TRUE,
+    enable_kv_cache_training = TRUE,
     inference_mc_draws = 7L,
     observation_scale_floor = 2e-5,
     initial_observation_scale = 0.02
   )
 
   expect_true(cfg$enable_kv_cache)
+  expect_true(cfg$enable_kv_cache_training)
   expect_identical(cfg$inference_mc_draws, 7L)
   expect_equal(cfg$observation_scale_floor, 2e-5)
   expect_equal(cfg$initial_observation_scale, 0.02)
   expect_error(ndm_create_config(enable_kv_cache = NA), "non-missing logical")
+  expect_error(
+    ndm_create_config(enable_kv_cache_training = NA),
+    "non-missing logical"
+  )
+  expect_error(
+    ndm_create_config(
+      enable_kv_cache = FALSE,
+      enable_kv_cache_training = TRUE
+    ),
+    "requires `enable_kv_cache = TRUE`"
+  )
   expect_error(ndm_create_config(inference_mc_draws = 0L), "positive integer")
   expect_error(ndm_create_config(inference_mc_draws = 1.5), "positive integer")
   expect_error(ndm_create_config(observation_scale_floor = 0), "finite positive")
@@ -149,6 +168,49 @@ test_that("NeuralODE auxiliary mean-loss weight is finite and non-negative", {
   expect_error(
     ndm_create_config(neuralode_mean_loss_weight = Inf),
     "finite"
+  )
+})
+
+test_that("scaled MSE is explicit, scaled, and deterministic", {
+  cfg <- ndm_create_config(
+    model_type = "NeuralODE",
+    training_objective = "scaled_mse",
+    outcome_loss_scale = c(0.001, 0.002),
+    neuralode_variational = FALSE,
+    neuralode_kl_weight = 0,
+    neuralode_mean_loss_weight = 0,
+    inference_mc_draws = 1L
+  )
+
+  expect_identical(cfg$training_objective, "scaled_mse")
+  expect_equal(cfg$outcome_loss_scale, c(0.001, 0.002))
+  expect_error(
+    ndm_create_config(training_objective = "scaled_mse"),
+    "outcome_loss_scale.*required"
+  )
+  expect_error(
+    ndm_create_config(
+      training_objective = "scaled_mse",
+      outcome_loss_scale = 0.001,
+      neuralode_variational = FALSE,
+      neuralode_kl_weight = 0,
+      inference_mc_draws = 2L
+    ),
+    "inference_mc_draws = 1"
+  )
+  expect_error(
+    ndm_create_config(outcome_loss_scale = 0.001),
+    "only valid"
+  )
+  expect_error(
+    ndm_create_config(
+      training_objective = "scaled_mse",
+      outcome_loss_scale = 1e-9,
+      neuralode_variational = FALSE,
+      neuralode_kl_weight = 0,
+      inference_mc_draws = 1L
+    ),
+    "at least 1e-8"
   )
 })
 

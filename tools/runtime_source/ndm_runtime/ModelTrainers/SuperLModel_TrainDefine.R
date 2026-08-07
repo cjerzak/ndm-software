@@ -184,6 +184,7 @@
       "loss" = loss_and_state[[1]],
       "state" = loss_aux$model_state,
       "solver_diagnostics" = loss_aux$solver_diagnostics,
+      "loss_components" = loss_aux$loss_components,
       "grad_norm" = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)),
       "model" = updated_model,
       "opt_state" = updates_and_state[[2]],

@@ -346,6 +346,12 @@ test_that("package-native sim runner consumes a requested canonical prefix", {
       outer = 1L,
       model_type = "DecoderOnly",
       compute_backend = "cpu",
+      training_objective = "scaled_mse",
+      outcome_loss_scale = 1,
+      neuralode_variational = FALSE,
+      neuralode_kl_weight = 0,
+      neuralode_mean_loss_weight = 0,
+      inference_mc_draws = 1L,
       max_sgd_steps = 1L,
       resave_tfrecords = FALSE,
       dry_run = FALSE
@@ -353,6 +359,19 @@ test_that("package-native sim runner consumes a requested canonical prefix", {
   )
 
   expect_true(isTRUE(result))
+  telemetry_files <- list.files(
+    file.path(project_root, "SavedResults", "Sim"),
+    pattern = "^training_telemetry[.]csv$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  expect_length(telemetry_files, 1L)
+  telemetry <- utils::read.csv(telemetry_files[[1L]], check.names = FALSE)
+  expect_true(all(telemetry$training_objective == "scaled_mse"))
+  expect_true(all(is.finite(telemetry$scaled_mse)))
+  expect_equal(telemetry$objective_data_loss, telemetry$scaled_mse, tolerance = 1e-7)
+  expect_equal(telemetry$kl_unweighted, rep(0, nrow(telemetry)))
+  expect_equal(telemetry$kl_weighted, rep(0, nrow(telemetry)))
   expect_equal(
     ndm_test_read_canonical_manifest(tfrecord_dir, base_id = 1L, split = "train")$n_examples,
     8L
@@ -1079,7 +1098,8 @@ test_that("Analysis2 normalizes corrected inference controls", {
   api <- ndm:::.ndm_new_run_impl_env()
   spec <- api$analysis2_mode_defaults("real")
 
-  expect_false(spec$enable_kv_cache)
+  expect_true(spec$enable_kv_cache)
+  expect_true(spec$enable_kv_cache_training)
   expect_identical(spec$inference_mc_draws, 5L)
   expect_equal(spec$observation_scale_floor, 1e-5)
   expect_equal(spec$initial_observation_scale, 1)
@@ -1087,6 +1107,7 @@ test_that("Analysis2 normalizes corrected inference controls", {
 
   opts <- api$analysis2_parse_args(c(
     "--enable_kv_cache=TRUE",
+    "--enable_kv_cache_training=TRUE",
     "--inference_mc_draws=7",
     "--observation_scale_floor=2e-5",
     "--initial_observation_scale=0.02",
@@ -1094,6 +1115,7 @@ test_that("Analysis2 normalizes corrected inference controls", {
   ))
   overrides <- api$analysis2_cli_overrides(opts, "real")
   expect_true(overrides$enable_kv_cache)
+  expect_true(overrides$enable_kv_cache_training)
   expect_identical(overrides$inference_mc_draws, "7")
   expect_false(overrides$neuralode_variational)
 
@@ -1105,6 +1127,7 @@ test_that("Analysis2 normalizes corrected inference controls", {
     paths = list(project_root = tempdir())
   )
   expect_true(normalized$enable_kv_cache)
+  expect_true(normalized$enable_kv_cache_training)
   expect_identical(normalized$inference_mc_draws, 7L)
   expect_equal(normalized$observation_scale_floor, 2e-5)
   expect_equal(normalized$initial_observation_scale, 0.02)
@@ -1131,6 +1154,37 @@ test_that("Analysis2 normalizes corrected inference controls", {
       paths = list(project_root = tempdir())
     ),
     "greater than `observation_scale_floor`"
+  )
+})
+
+test_that("Analysis2 normalizes deterministic scaled-MSE controls", {
+  api <- ndm:::.ndm_new_run_impl_env()
+  paths <- list(project_root = tempdir())
+  spec <- api$analysis2_mode_defaults("multidisease")
+  spec$project_root <- tempdir()
+  spec$training_objective <- "scaled_mse"
+  spec$outcome_loss_scale <- "0.001,0.002"
+  spec$neuralode_variational <- FALSE
+  spec$neuralode_kl_weight <- 0
+  spec$neuralode_mean_loss_weight <- 0
+  spec$inference_mc_draws <- 1L
+
+  normalized <- api$analysis2_normalize_run_spec(
+    spec,
+    mode = "multidisease",
+    paths = paths
+  )
+  expect_identical(normalized$training_objective, "scaled_mse")
+  expect_equal(normalized$outcome_loss_scale, c(0.001, 0.002))
+
+  spec$inference_mc_draws <- 2L
+  expect_error(
+    api$analysis2_normalize_run_spec(
+      spec,
+      mode = "multidisease",
+      paths = paths
+    ),
+    "inference_mc_draws = 1"
   )
 })
 
@@ -1245,6 +1299,28 @@ test_that("multidisease runner restores cwd and error option", {
   expect_true(isTRUE(result))
   expect_identical(getwd(), old_wd)
   expect_identical(getOption("error"), sentinel_error)
+})
+
+test_that("multidisease compatibility driver receives package runtime helpers", {
+  old_wd <- getwd()
+  on.exit(setwd(old_wd), add = TRUE)
+
+  project_root <- tempfile("ndm-runner-project-")
+  on.exit(unlink(project_root, recursive = TRUE, force = TRUE), add = TRUE)
+  env <- ndm_test_fake_multidisease_env(
+    paste(
+      "stopifnot(",
+      "exists('ndm_student_t_masked_nll', inherits = FALSE),",
+      "is.function(ndm_student_t_masked_nll)",
+      ")",
+      "analysis2_multidisease_result <- TRUE",
+      sep = "\n"
+    ),
+    project_root
+  )
+  run_fun <- get("analysis2_run_real_multidisease", envir = env, inherits = FALSE)
+
+  expect_true(isTRUE(run_fun(character())))
 })
 
 test_that("multidisease runner errors when legacy driver omits result", {

@@ -477,10 +477,23 @@ if( !SimMode ){
               colnames(add_true_out) <- c(paste("Truth_l",1:ncol(add_true_out),sep=""))
               colnames(add_true_prior) <- c(paste("PreviousSequenceTruth_l",1:ncol(add_true_prior),sep=""))
               
-              # depreciate PredBase
-              add_pred_out_baseline <- add_pred_out
-              #add_pred_out_baseline[] <- add_true_prior[length(add_true_prior)]
-              add_pred_out_baseline[] <- NA
+              # Persistence baseline: repeat each sequence's most recent finite
+              # observed context value across every forecast horizon.
+              add_true_prior_matrix <- as.matrix(add_true_prior)
+              last_observed_context <- apply(
+                add_true_prior_matrix,
+                1L,
+                function(values) {
+                  values <- values[is.finite(values)]
+                  if (length(values)) tail(values, 1L) else NA_real_
+                }
+              )
+              add_pred_out_baseline <- matrix(
+                rep(last_observed_context, times = ncol(add_pred_out)),
+                nrow = nrow(add_pred_out),
+                ncol = ncol(add_pred_out)
+              )
+              colnames(add_pred_out_baseline) <- colnames(add_pred_out)
               colnames(add_pred_out_baseline) <- gsub(colnames(add_pred_out_baseline),
                                                    pattern = "Pred", replace = "PredBase")
             
@@ -495,11 +508,49 @@ if( !SimMode ){
                                                add_pred_out,
                                                add_pred_out_baseline,
                                                add_true_prior) ) )
-              # plot(f2n(sl_dat[,"Truth_l8"]), f2n(sl_dat[,"Pred_l8"]));abline(a=0,b=1)
-              # plot(f2n(sl_dat[,"Truth_l8"]), f2n(sl_dat[,"Truth_l1"]));abline(a=0,b=1)
-          print2(sprintf("Skill sanity: %.3f",
-              (Skill8SanityCheck <- 1 - (sum(( f2n(sl_dat[,"Truth_l8"]) - f2n(sl_dat[,"Pred_l8"]) )^2)+0.01)/
-                  ( sum(( f2n(sl_dat[,"Truth_l8"]) - f2n(sl_dat[,"Truth_l1"]) )^2) +0.01))))
+          configured_horizon <- suppressWarnings(as.integer(
+            if (exists("RealEntry", inherits = TRUE) &&
+                "evaluationHorizon" %in% names(RealEntry)) {
+              RealEntry$evaluationHorizon[[1L]]
+            } else {
+              ncol(add_pred_out)
+            }
+          ))
+          if (!is.finite(configured_horizon) || configured_horizon < 1L) {
+            configured_horizon <- ncol(add_pred_out)
+          }
+          available_horizons <- seq_len(min(
+            configured_horizon,
+            ncol(add_pred_out)
+          ))
+          truth_skill <- unlist(lapply(
+            paste0("Truth_l", available_horizons),
+            function(column) f2n(sl_dat[, column])
+          ), use.names = FALSE)
+          pred_skill <- unlist(lapply(
+            paste0("Pred_l", available_horizons),
+            function(column) f2n(sl_dat[, column])
+          ), use.names = FALSE)
+          baseline_skill <- unlist(lapply(
+            paste0("PredBase_l", available_horizons),
+            function(column) f2n(sl_dat[, column])
+          ), use.names = FALSE)
+          skill_cells <- is.finite(truth_skill) & is.finite(pred_skill) &
+            is.finite(baseline_skill)
+          ForecastSkillSanityCheck <- if (any(skill_cells)) {
+            1 - (sum((truth_skill[skill_cells] - pred_skill[skill_cells])^2) + 0.01) /
+              (sum((truth_skill[skill_cells] - baseline_skill[skill_cells])^2) + 0.01)
+          } else {
+            NA_real_
+          }
+          # Retain the legacy output name while making its calculation honor
+          # the configured horizon instead of hard-coding lead eight.
+          Skill8SanityCheck <- ForecastSkillSanityCheck
+          print2(sprintf(
+            "Persistence skill sanity across %s horizon(s): %.3f",
+            length(available_horizons),
+            ForecastSkillSanityCheck
+          ))
           }
         }
     }
@@ -525,6 +576,7 @@ if( !SimMode ){
                     "te_grads" = te_grads, 
                     "nTrainingSamplesSeen" = i*nBatch, 
                     "Skill8SanityCheck" = Skill8SanityCheck, 
+                    "ForecastSkillSanityCheck" = get0("ForecastSkillSanityCheck", inherits = TRUE, ifnotfound = NA_real_),
                     "atEpoch" = i*nBatch/nSamplesTrain, 
                     "nParamsModel" = nParamsModel, 
                     "maxInSampleTime_id" = max( input_df_red_in$time_id ),

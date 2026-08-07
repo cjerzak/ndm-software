@@ -266,6 +266,7 @@ ndm_test_fit_sim_case <- function(model_type,
                                   n_checkpoints = 0L,
                                   n_times_lookahead = 4L,
                                   enable_kv_cache = TRUE,
+                                  enable_kv_cache_training = TRUE,
                                   model_dims = 32L,
                                   attention_head_dim = 64L,
                                   attention_kv_heads = NULL,
@@ -347,8 +348,10 @@ ndm_test_fit_sim_case <- function(model_type,
     model_type = model_type,
     backbone = "transformer",
     float_type = "32",
-    force_to_gpu = FALSE,
-    resave_tfrecords = FALSE
+    compute_backend = "cpu",
+    resave_tfrecords = FALSE,
+    enable_kv_cache = enable_kv_cache,
+    enable_kv_cache_training = enable_kv_cache_training
   )
   if (is.list(config_overrides) && length(config_overrides) > 0L) {
     config_defaults <- utils::modifyList(config_defaults, config_overrides)
@@ -390,6 +393,7 @@ ndm_test_fit_sim_case <- function(model_type,
     OUTER_ITERATION = 1L,
     endAppend = TRUE,
     EnableKVCaching = enable_kv_cache,
+    EnableKVCachingTraining = enable_kv_cache_training,
     AttentionHeadDim = as.integer(attention_head_dim),
     AttentionKVHeads = if (is.null(attention_kv_heads)) NULL else as.integer(attention_kv_heads),
     paddingMethod = "left",
@@ -466,10 +470,18 @@ ndm_test_fit_sim_case <- function(model_type,
       nTimesLookValidationInference = n_times_lookahead,
       MaxSteps = as.integer(1e4),
       VI_SaveAt_ODE_sim = runtime_env$diffrax$SaveAt(
-        ts = runtime_env$jnp$array(0L:(n_time_steps_sim - 1L))
+        ts = runtime_env$jnp$arange(
+          start = 0L,
+          stop = n_time_steps_sim,
+          dtype = runtime_env$jnp$int32
+        )
       ),
       VI_SaveAt_ODE_optim = runtime_env$diffrax$SaveAt(
-        ts = runtime_env$jnp$array(0L:(n_times_lookahead - 1L))
+        ts = runtime_env$jnp$arange(
+          start = 0L,
+          stop = n_times_lookahead,
+          dtype = runtime_env$jnp$int32
+        )
       ),
       VI_diff_eq_solver_dgp = runtime_env$diffrax$Tsit5(),
       dt0_init_dgp = 1e-3,

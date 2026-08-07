@@ -100,6 +100,7 @@ test_that("materialized runtime manifests come from generated authoritative sour
       info = relative_path
     )
     expect_match(materialized, "enable_kv_cache:", fixed = TRUE)
+    expect_match(materialized, "enable_kv_cache_training:", fixed = TRUE)
     expect_match(materialized, "inference_mc_draws:", fixed = TRUE)
     expect_match(materialized, "observation_scale_floor:", fixed = TRUE)
     expect_match(materialized, "initial_observation_scale:", fixed = TRUE)
@@ -126,7 +127,8 @@ test_that("ndm_prepare_runtime loads package-managed helpers without inst/extdat
   expect_true(exists("ndm_source_extracted", envir = env, inherits = FALSE))
   expect_match(env$NDM_INTERNAL_ANALYSIS_DIR, "ndm_runtime")
   expect_false(grepl("inst/extdata/analysis_runtime/Analysis2$", env$NDM_INTERNAL_ANALYSIS_DIR))
-  expect_false(env$EnableKVCaching)
+  expect_true(env$EnableKVCaching)
+  expect_true(env$EnableKVCachingTraining)
   expect_identical(env$InferenceMCDraws, 5L)
   expect_equal(env$ObservationScaleFloor, 1e-5)
   expect_equal(env$InitialObservationScale, 1)
@@ -139,6 +141,7 @@ test_that("ndm_prepare_runtime exposes validated inference globals", {
     model_type = "NeuralODE",
     compute_backend = "cpu",
     enable_kv_cache = TRUE,
+    enable_kv_cache_training = TRUE,
     inference_mc_draws = 7L,
     observation_scale_floor = 2e-5,
     initial_observation_scale = 0.02,
@@ -153,6 +156,7 @@ test_that("ndm_prepare_runtime exposes validated inference globals", {
   ndm_prepare_runtime(config = config, runtime_env = env)
 
   expect_true(env$EnableKVCaching)
+  expect_true(env$EnableKVCachingTraining)
   expect_identical(env$InferenceMCDraws, 7L)
   expect_equal(env$ObservationScaleFloor, 2e-5)
   expect_equal(env$InitialObservationScale, 0.02)

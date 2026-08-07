@@ -119,6 +119,7 @@ test_that("production runtime avoids shared per-step files and uses final-only c
   expect_match(train_do, "if (n_checkpoints == 1L", fixed = TRUE)
   expect_match(train_do, "training_telemetry.csv", fixed = TRUE)
   expect_match(train_do, "if (!(i %in% training_telemetry$iteration))", fixed = TRUE)
+  expect_match(train_do, "digits = 17L", fixed = TRUE)
   optimizer_update <- regexpr("ModelList <- train_step_result$model", train_do, fixed = TRUE)[[1L]]
   checkpoint_write <- regexpr("if (i %in% CheckPointSaveAt)", train_do, fixed = TRUE)[[1L]]
   expect_gt(optimizer_update, 0L)
@@ -212,8 +213,12 @@ test_that("runtime source keeps NeuralODE and transformer regression fixes", {
 
   expect_match(build_ml, "neuralode_variational", fixed = TRUE)
   expect_match(build_ml, "ndm_student_t_masked_nll", fixed = TRUE)
+  expect_match(build_ml, "training_objective", fixed = TRUE)
+  expect_match(build_ml, "scaled_mean_squared_error", fixed = TRUE)
+  expect_match(build_ml, "outcome_loss_scale", fixed = TRUE)
   expect_match(build_ml, "local_kl <- jnp$mean(GetPred_output$KL_LOCAL)", fixed = TRUE)
-  expect_match(build_ml, "persistent_kl_first / jnp$array(as.numeric(nSamplesTrain)", fixed = TRUE)
+  expect_match(build_ml, "persistent_kl_component <- function(values)", fixed = TRUE)
+  expect_match(build_ml, "as.numeric(nSamplesTrain)", fixed = TRUE)
   expect_match(build_ml, "neuralode_kl_weight > 0", fixed = TRUE)
   expect_match(build_ml, "neuralode_mean_loss_weight", fixed = TRUE)
   expect_match(build_ml, "local_base_prior_mask_matched", fixed = TRUE)
@@ -222,5 +227,9 @@ test_that("runtime source keeps NeuralODE and transformer regression fixes", {
   expect_match(sim_data, "\"YTrue_out\" = (YTrue_out_ <- jnp$expand_dims(YTrue_d_out,2L))", fixed = TRUE)
   expect_false(grepl("astype\\(jaxFloatType,1L\\)", transformer))
   expect_false(grepl("eval\\(sprintf", parser))
+  expect_false(grepl("eval.parent(parse", parser, fixed = TRUE))
+  expect_false(grepl("<<-", parser, fixed = TRUE))
+  expect_match(parser, ".ndm_import_numeric_ode_constants", fixed = TRUE)
+  expect_match(parser, "envir = target_env", fixed = TRUE)
   expect_match(analysis2_api, "ndm.analysis2.expose_runtime_env", fixed = TRUE)
 })

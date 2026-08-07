@@ -21,13 +21,16 @@ ndm_create_config(
   neuralode_optim_controller = c("pid", "constant"),
   neuralode_optim_rtol = 1e-05,
   neuralode_optim_atol = 1e-07,
-  enable_kv_cache = FALSE,
+  enable_kv_cache = TRUE,
+  enable_kv_cache_training = TRUE,
   inference_mc_draws = 5L,
   observation_scale_floor = 1e-05,
   initial_observation_scale = 1,
   neuralode_variational = TRUE,
   neuralode_kl_weight = 1,
   neuralode_mean_loss_weight = 0,
+  training_objective = c("student_t_nll", "scaled_mse"),
+  outcome_loss_scale = NULL,
   compute_backend = c("auto", "cpu", "gpu"),
   ...
 )
@@ -81,8 +84,14 @@ Use `"pid"` or `"constant"`.}
 `neuralode_optim_controller = "pid"`.}
 
 \item{enable_kv_cache}{Logical scalar controlling DecoderOnly KV caching.
-The corrected default is `FALSE`; opt in only when the cached and uncached
-paths have been verified equivalent for the active padding layout.}
+The default enables the faster cached inference path.}
+
+\item{enable_kv_cache_training}{Logical scalar controlling KV caching during
+DecoderOnly gradient training. The default is `TRUE`: the cached training
+rollout is gradient-equivalent to the un-cached reference (verified to
+float32 tolerance across production topologies, left padding, and mask
+holes) and several times faster per training step at production batch
+sizes. Set `FALSE` to reproduce historical un-cached training exactly.}
 
 \item{inference_mc_draws}{Positive integer number of posterior draws
 requested for inference. Deterministic NeuralODE and DecoderOnly inference
@@ -106,6 +115,14 @@ variational samples.}
 \item{neuralode_mean_loss_weight}{Non-negative multiplier for an auxiliary
 masked mean-squared-error term applied to NeuralODE forecasts alongside
 the Student-t likelihood.}
+
+\item{training_objective}{Training loss for observed outcomes. The default,
+`"student_t_nll"`, preserves the probabilistic likelihood. Use
+`"scaled_mse"` for deterministic scale-normalized squared error.}
+
+\item{outcome_loss_scale}{Optional finite positive scalar or outcome-length
+vector used to normalize residuals for `training_objective = "scaled_mse"`.
+It is required for scaled MSE and otherwise must be `NULL`.}
 
 \item{compute_backend}{Compute device policy: `"auto"` selects a supported
 JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`

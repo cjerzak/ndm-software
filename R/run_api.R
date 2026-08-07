@@ -48,7 +48,11 @@
 #'   invalid when `compute_backend = "cpu"` and rejected at initialization if
 #'   `"auto"` resolves to CPU.
 #' @param enable_kv_cache Logical scalar controlling DecoderOnly KV caching.
-#'   The corrected default is `FALSE`.
+#'   The default enables caching for inference.
+#' @param enable_kv_cache_training Logical scalar controlling caching during
+#'   DecoderOnly gradient training. It defaults to `TRUE`: cached training is
+#'   gradient-equivalent to the un-cached rollout and several times faster per
+#'   step. Set `FALSE` to reproduce historical un-cached training exactly.
 #' @param inference_mc_draws Positive integer number of posterior draws
 #'   requested for inference. Deterministic NeuralODE and DecoderOnly paths use
 #'   one effective draw downstream.
@@ -65,6 +69,12 @@
 #'   variational sampling.
 #' @param neuralode_mean_loss_weight Finite non-negative multiplier for the
 #'   NeuralODE auxiliary masked mean-squared-error term.
+#' @param training_objective Training loss for observed outcomes. The default
+#'   `"student_t_nll"` preserves the current likelihood; `"scaled_mse"` is the
+#'   deterministic scale-normalized squared-error objective.
+#' @param outcome_loss_scale Optional finite positive scalar or outcome-length
+#'   vector used by `training_objective = "scaled_mse"`. It is required for
+#'   scaled MSE and otherwise must be `NULL`.
 #' @param n_checkpoints Positive integer number of checkpoint/analytics states
 #'   to retain, including the terminal post-update state. The production
 #'   default is one final checkpoint.
@@ -129,13 +139,16 @@ ndm_create_real_run_config <- function(project_root = getwd(),
                                        run_seed = NULL,
                                        force_to_gpu = NULL,
                                        gpu_mem_frac = NULL,
-                                       enable_kv_cache = FALSE,
+                                       enable_kv_cache = TRUE,
+                                       enable_kv_cache_training = TRUE,
                                        inference_mc_draws = 5L,
                                        observation_scale_floor = 1e-5,
                                        initial_observation_scale = 1.0,
                                        neuralode_variational = TRUE,
                                        neuralode_kl_weight = 1.0,
                                        neuralode_mean_loss_weight = 0.0,
+                                       training_objective = c("student_t_nll", "scaled_mse"),
+                                       outcome_loss_scale = NULL,
                                        n_checkpoints = 1L,
                                        max_sgd_steps = NULL,
                                        prior_sd_multiplier = 1.0,
@@ -166,12 +179,15 @@ ndm_create_real_run_config <- function(project_root = getwd(),
     compute_backend_supplied = compute_backend_supplied,
     gpu_mem_frac = gpu_mem_frac,
     enable_kv_cache = enable_kv_cache,
+    enable_kv_cache_training = enable_kv_cache_training,
     inference_mc_draws = inference_mc_draws,
     observation_scale_floor = observation_scale_floor,
     initial_observation_scale = initial_observation_scale,
     neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
     neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+    training_objective = training_objective,
+    outcome_loss_scale = outcome_loss_scale,
     n_checkpoints = n_checkpoints,
     max_sgd_steps = max_sgd_steps,
     prior_sd_multiplier = prior_sd_multiplier,
@@ -197,13 +213,16 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
                                       run_seed = NULL,
                                       force_to_gpu = NULL,
                                       gpu_mem_frac = NULL,
-                                      enable_kv_cache = FALSE,
+                                      enable_kv_cache = TRUE,
+                                      enable_kv_cache_training = TRUE,
                                       inference_mc_draws = 5L,
                                       observation_scale_floor = 1e-5,
                                       initial_observation_scale = 1.0,
                                       neuralode_variational = TRUE,
                                       neuralode_kl_weight = 1.0,
                                       neuralode_mean_loss_weight = 0.0,
+                                      training_objective = c("student_t_nll", "scaled_mse"),
+                                      outcome_loss_scale = NULL,
                                       n_checkpoints = 1L,
                                       max_sgd_steps = NULL,
                                       prior_sd_multiplier = 1.0,
@@ -231,12 +250,15 @@ ndm_create_sim_run_config <- function(project_root = getwd(),
     compute_backend_supplied = compute_backend_supplied,
     gpu_mem_frac = gpu_mem_frac,
     enable_kv_cache = enable_kv_cache,
+    enable_kv_cache_training = enable_kv_cache_training,
     inference_mc_draws = inference_mc_draws,
     observation_scale_floor = observation_scale_floor,
     initial_observation_scale = initial_observation_scale,
     neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
     neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+    training_objective = training_objective,
+    outcome_loss_scale = outcome_loss_scale,
     n_checkpoints = n_checkpoints,
     max_sgd_steps = max_sgd_steps,
     prior_sd_multiplier = prior_sd_multiplier,
@@ -259,13 +281,16 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
                                                run_seed = NULL,
                                                force_to_gpu = NULL,
                                                gpu_mem_frac = NULL,
-                                               enable_kv_cache = FALSE,
+                                               enable_kv_cache = TRUE,
+                                               enable_kv_cache_training = TRUE,
                                                inference_mc_draws = 5L,
                                                observation_scale_floor = 1e-5,
                                                initial_observation_scale = 1.0,
                                                neuralode_variational = TRUE,
                                                neuralode_kl_weight = 1.0,
                                                neuralode_mean_loss_weight = 0.0,
+                                               training_objective = c("student_t_nll", "scaled_mse"),
+                                               outcome_loss_scale = NULL,
                                                n_checkpoints = 1L,
                                                max_sgd_steps = NULL,
                                                prior_sd_multiplier = 1.0,
@@ -299,12 +324,15 @@ ndm_create_multidisease_run_config <- function(project_root = getwd(),
     compute_backend_supplied = compute_backend_supplied,
     gpu_mem_frac = gpu_mem_frac,
     enable_kv_cache = enable_kv_cache,
+    enable_kv_cache_training = enable_kv_cache_training,
     inference_mc_draws = inference_mc_draws,
     observation_scale_floor = observation_scale_floor,
     initial_observation_scale = initial_observation_scale,
     neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
     neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+    training_objective = training_objective,
+    outcome_loss_scale = outcome_loss_scale,
     n_checkpoints = n_checkpoints,
     max_sgd_steps = max_sgd_steps,
     prior_sd_multiplier = prior_sd_multiplier,
@@ -526,13 +554,16 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
                                  run_seed = NULL,
                                  force_to_gpu = NULL,
                                  gpu_mem_frac = NULL,
-                                 enable_kv_cache = FALSE,
+                                 enable_kv_cache = TRUE,
+                                 enable_kv_cache_training = TRUE,
                                  inference_mc_draws = 5L,
                                  observation_scale_floor = 1e-5,
                                  initial_observation_scale = 1.0,
                                  neuralode_variational = TRUE,
                                  neuralode_kl_weight = 1.0,
                                  neuralode_mean_loss_weight = 0.0,
+                                 training_objective = c("student_t_nll", "scaled_mse"),
+                                 outcome_loss_scale = NULL,
                                  n_checkpoints = 1L,
                                  max_sgd_steps = NULL,
                                  prior_sd_multiplier = 1.0,
@@ -585,10 +616,21 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     gpu = TRUE
   )
   enable_kv_cache <- .ndm_validate_run_flag(enable_kv_cache, "enable_kv_cache")
+  enable_kv_cache_training <- .ndm_validate_run_flag(
+    enable_kv_cache_training,
+    "enable_kv_cache_training"
+  )
+  if (isTRUE(enable_kv_cache_training) && !isTRUE(enable_kv_cache)) {
+    stop(
+      "`enable_kv_cache_training = TRUE` requires `enable_kv_cache = TRUE`.",
+      call. = FALSE
+    )
+  }
   neuralode_variational <- .ndm_validate_run_flag(
     neuralode_variational,
     "neuralode_variational"
   )
+  training_objective <- match.arg(training_objective)
   respect_grid_model_type <- .ndm_validate_run_flag(
     respect_grid_model_type,
     "respect_grid_model_type"
@@ -630,6 +672,37 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
   if (length(neuralode_mean_loss_weight) != 1L ||
       !is.finite(neuralode_mean_loss_weight) || neuralode_mean_loss_weight < 0) {
     stop("`neuralode_mean_loss_weight` must be one finite non-negative value.", call. = FALSE)
+  }
+  if (!is.null(outcome_loss_scale)) {
+    if (is.list(outcome_loss_scale)) {
+      outcome_loss_scale <- unlist(outcome_loss_scale, recursive = TRUE, use.names = FALSE)
+    }
+    outcome_loss_scale <- suppressWarnings(as.numeric(outcome_loss_scale))
+    if (!length(outcome_loss_scale) || any(!is.finite(outcome_loss_scale)) ||
+        any(outcome_loss_scale <= 0)) {
+      stop("`outcome_loss_scale` must be NULL or a finite positive numeric vector.", call. = FALSE)
+    }
+  }
+  if (identical(training_objective, "scaled_mse")) {
+    if (is.null(outcome_loss_scale)) {
+      stop("`outcome_loss_scale` is required for `training_objective = \"scaled_mse\"`.", call. = FALSE)
+    }
+    if (any(outcome_loss_scale < 1e-8)) {
+      stop("`outcome_loss_scale` values must be at least 1e-8 for scaled MSE.", call. = FALSE)
+    }
+    if (isTRUE(neuralode_variational) || neuralode_kl_weight != 0 ||
+        neuralode_mean_loss_weight != 0 || inference_mc_draws != 1L) {
+      stop(
+        paste(
+          "`training_objective = \"scaled_mse\"` requires",
+          "`neuralode_variational = FALSE`, `neuralode_kl_weight = 0`,",
+          "`neuralode_mean_loss_weight = 0`, and `inference_mc_draws = 1`."
+        ),
+        call. = FALSE
+      )
+    }
+  } else if (!is.null(outcome_loss_scale)) {
+    stop("`outcome_loss_scale` is only valid with `training_objective = \"scaled_mse\"`.", call. = FALSE)
   }
   n_checkpoints <- suppressWarnings(as.numeric(n_checkpoints))
   if (length(n_checkpoints) != 1L || !is.finite(n_checkpoints) ||
@@ -700,12 +773,15 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
       compute_backend = compute_backend,
       gpu_mem_frac = gpu_mem_frac,
       enable_kv_cache = enable_kv_cache,
+      enable_kv_cache_training = enable_kv_cache_training,
       inference_mc_draws = inference_mc_draws,
       observation_scale_floor = observation_scale_floor,
       initial_observation_scale = initial_observation_scale,
       neuralode_variational = neuralode_variational,
       neuralode_kl_weight = neuralode_kl_weight,
       neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+      training_objective = training_objective,
+      outcome_loss_scale = outcome_loss_scale,
       n_checkpoints = n_checkpoints,
       max_sgd_steps = max_sgd_steps,
       prior_sd_multiplier = prior_sd_multiplier,
@@ -761,6 +837,7 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
   )
   for (field in c(
     "enable_kv_cache",
+    "enable_kv_cache_training",
     "neuralode_variational",
     "respect_grid_model_type",
     "dry_run"
@@ -780,12 +857,17 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     sprintf("--outer=%s", paste(config$outer, collapse = ",")),
     sprintf("--compute_backend=%s", config$compute_backend),
     sprintf("--enable_kv_cache=%s", toupper(as.character(config$enable_kv_cache))),
+    sprintf(
+      "--enable_kv_cache_training=%s",
+      toupper(as.character(config$enable_kv_cache_training))
+    ),
     sprintf("--inference_mc_draws=%s", as.integer(config$inference_mc_draws)),
     sprintf("--observation_scale_floor=%s", format(config$observation_scale_floor, scientific = TRUE, trim = TRUE)),
     sprintf("--initial_observation_scale=%s", format(config$initial_observation_scale, scientific = FALSE, trim = TRUE)),
     sprintf("--neuralode_variational=%s", toupper(as.character(config$neuralode_variational))),
     sprintf("--neuralode_kl_weight=%s", format(config$neuralode_kl_weight, scientific = FALSE, trim = TRUE)),
     sprintf("--neuralode_mean_loss_weight=%s", format(config$neuralode_mean_loss_weight, scientific = FALSE, trim = TRUE)),
+    sprintf("--training_objective=%s", config$training_objective),
     sprintf("--n_checkpoints=%s", as.integer(config$n_checkpoints)),
     sprintf("--prior_sd_multiplier=%s", format(config$prior_sd_multiplier, scientific = FALSE, trim = TRUE)),
     sprintf("--solver_profile=%s", config$solver_profile),
@@ -803,6 +885,15 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
   }
   if (!is.null(config$gpu_mem_frac)) {
     args <- c(args, sprintf("--gpu_mem_frac=%s", format(config$gpu_mem_frac, scientific = FALSE, trim = TRUE)))
+  }
+  if (!is.null(config$outcome_loss_scale)) {
+    args <- c(
+      args,
+      sprintf(
+        "--outcome_loss_scale=%s",
+        paste(sprintf("%.17g", config$outcome_loss_scale), collapse = ",")
+      )
+    )
   }
 
   if (!is.null(grid_file)) {
@@ -975,6 +1066,10 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
     analysis2_dir_create(holder_folder)
 
     driver_env <- new.env(parent = globalenv())
+    .ndm_install_runtime_helpers(
+      driver_env,
+      analysis_root = paths$analysis_root
+    )
     driver_env$analysis2_as_int <- analysis2_as_int
     driver_env$analysis2_small_run_n_checkpoints <- analysis2_small_run_n_checkpoints
     if (!is.null(analysis2_multidisease_structured_control_globals)) {

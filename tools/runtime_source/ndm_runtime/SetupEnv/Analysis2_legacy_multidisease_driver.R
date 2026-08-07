@@ -281,6 +281,7 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
   # print( sprintf("Forcing padding method: %s", paddingMethod <- "right" ))
   ModelType <- analysis2_model_type(analysis2_multidisease_spec, RealEntry$ModelType, default = "DecoderOnly")
   EnableKVCaching <- analysis2_multidisease_spec$enable_kv_cache
+  EnableKVCachingTraining <- analysis2_multidisease_spec$enable_kv_cache_training
   InferenceMCDraws <- analysis2_multidisease_spec$inference_mc_draws
   ObservationScaleFloor <- analysis2_multidisease_spec$observation_scale_floor
   InitialObservationScale <- analysis2_multidisease_spec$initial_observation_scale
@@ -288,6 +289,10 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
     identical(ModelType, "NeuralODE")
   neuralode_kl_weight <- analysis2_multidisease_spec$neuralode_kl_weight
   neuralode_mean_loss_weight <- analysis2_multidisease_spec$neuralode_mean_loss_weight
+  training_objective <- analysis2_multidisease_spec$training_objective
+  TrainingObjective <- training_objective
+  outcome_loss_scale <- analysis2_multidisease_spec$outcome_loss_scale
+  OutcomeLossScale <- outcome_loss_scale
   print(sprintf("Using model type: %s", ModelType))
   
   # setup master ODE solution parameters
@@ -325,14 +330,26 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
      dt0_init <- 10^(-1)
      #VI_TotalTimesInLikelihood <- (nTimesLookahead+abs(maxTimesPast)  ) # if predicing  full context + lookahead 
      VI_TotalTimesInLikelihood <- nTimesLookahead # if using lookahead context only 
-     VI_SaveAt_ODE <- diffrax$SaveAt(ts = jnp$array(  1:VI_TotalTimesInLikelihood  ))
+     VI_SaveAt_ODE <- diffrax$SaveAt(ts = jnp$arange(
+       start = 1L,
+       stop = as.integer(VI_TotalTimesInLikelihood) + 1L,
+       dtype = jnp$int32
+     ))
      diff_eq_solver <- VI_diff_eq_solver <- diffrax$Dopri8() # If you need accurate solutions at high tolerances then try diffrax.Dopri8.
      stepsize_controller = diffrax$PIDController(rtol = 1e-7, atol = 1e-9)
      diffraxInterpolator <- diffrax$LinearInterpolation
      
      MaxSteps <- ai( 10^6 )
-     VI_SaveAt_ODE_sim <- diffrax$SaveAt(ts = jnp$array(  0L:(NTimeSteps_SIM-1L) ))
-     VI_SaveAt_ODE_optim <- diffrax$SaveAt(ts = jnp$array(  0L:(VI_TotalTimesInLikelihood-1L) ))
+     VI_SaveAt_ODE_sim <- diffrax$SaveAt(ts = jnp$arange(
+       start = 0L,
+       stop = as.integer(NTimeSteps_SIM),
+       dtype = jnp$int32
+     ))
+     VI_SaveAt_ODE_optim <- diffrax$SaveAt(ts = jnp$arange(
+       start = 0L,
+       stop = as.integer(VI_TotalTimesInLikelihood),
+       dtype = jnp$int32
+     ))
      #VI_diff_eq_solver_optim <- VI_diff_eq_solver_dgp <- diffrax$Dopri8() # If you need accurate solutions at high tolerances then try diffrax.Dopri8.
      VI_diff_eq_solver_dgp <- diffrax$Tsit5() # good general solver
      VI_diff_eq_solver_optim <- solver_settings$solver

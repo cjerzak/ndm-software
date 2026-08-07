@@ -105,6 +105,7 @@ test_that("default full attention residual transformer builds and trains through
     endogeneity = 0.0,
     n_sgd = 1L,
     enable_kv_cache = FALSE,
+    enable_kv_cache_training = FALSE,
     return_details = TRUE,
     before_train = function(runtime_env, model) {
       layer <- model$env$ModelList$TSList$TSBackbone$d1
@@ -136,6 +137,9 @@ test_that("decoder-only transformer preserves requested kv cache setting in jax_
     enable_kv_cache = TRUE,
     before_train = function(runtime_env, model) {
       cached_capture$enable_kv_caching <- get("EnableKVCaching", envir = runtime_env, inherits = FALSE)
+      cached_capture$enable_kv_caching_training <- get(
+        "EnableKVCachingTraining", envir = runtime_env, inherits = FALSE
+      )
     }
   )
 
@@ -144,12 +148,14 @@ test_that("decoder-only transformer preserves requested kv cache setting in jax_
     endogeneity = 0.0,
     n_sgd = 1L,
     enable_kv_cache = FALSE,
+    enable_kv_cache_training = FALSE,
     before_train = function(runtime_env, model) {
       uncached_capture$enable_kv_caching <- get("EnableKVCaching", envir = runtime_env, inherits = FALSE)
     }
   )
 
   expect_true(isTRUE(cached_capture$enable_kv_caching))
+  expect_true(isTRUE(cached_capture$enable_kv_caching_training))
   expect_false(isTRUE(uncached_capture$enable_kv_caching))
 })
 
@@ -162,6 +168,7 @@ test_that("cached and uncached full attention residual decoder predictions stay 
     n_sgd = 1L,
     case_seed = 314L,
     enable_kv_cache = TRUE,
+    enable_kv_cache_training = TRUE,
     return_details = TRUE
   )
   uncached_details <- ndm_test_fit_sim_case(
@@ -170,10 +177,12 @@ test_that("cached and uncached full attention residual decoder predictions stay 
     n_sgd = 1L,
     case_seed = 314L,
     enable_kv_cache = FALSE,
+    enable_kv_cache_training = FALSE,
     return_details = TRUE
   )
 
   expect_true(isTRUE(cached_details$runtime_env$EnableKVCaching))
+  expect_true(isTRUE(cached_details$runtime_env$EnableKVCachingTraining))
   expect_false(isTRUE(uncached_details$runtime_env$EnableKVCaching))
 
   cached_capture <- ndm_test_capture_model_prediction(
@@ -195,6 +204,52 @@ test_that("cached and uncached full attention residual decoder predictions stay 
   )
   expect_lt(
     ndm_test_max_abs_diff(cached_capture$center_param, uncached_capture$center_param),
+    1e-4
+  )
+})
+
+test_that("cached decoder supports a one-step horizon without an empty scan in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  cached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    n_times_lookahead = 1L,
+    case_seed = 1414L,
+    enable_kv_cache = TRUE,
+    enable_kv_cache_training = FALSE,
+    return_details = TRUE
+  )
+  uncached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 1L,
+    n_times_lookahead = 1L,
+    case_seed = 1414L,
+    enable_kv_cache = FALSE,
+    enable_kv_cache_training = FALSE,
+    return_details = TRUE
+  )
+
+  cached <- ndm_test_capture_model_prediction(
+    cached_details$trained,
+    batch = cached_details$batch,
+    seed = 31L,
+    inference = TRUE
+  )
+  uncached <- ndm_test_capture_model_prediction(
+    uncached_details$trained,
+    batch = uncached_details$batch,
+    seed = 31L,
+    inference = TRUE
+  )
+
+  expect_length(cached$y_mu, length(uncached$y_mu))
+  expect_true(all(is.finite(cached$y_mu)))
+  expect_lt(ndm_test_max_abs_diff(cached$y_mu, uncached$y_mu), 1e-4)
+  expect_lt(
+    ndm_test_max_abs_diff(cached$center_param, uncached$center_param),
     1e-4
   )
 })
@@ -227,6 +282,7 @@ test_that("decoder KV cache preserves physical positions and agrees with no-cach
     n_sgd = 1L,
     case_seed = 2718L,
     enable_kv_cache = FALSE,
+    enable_kv_cache_training = FALSE,
     return_details = TRUE
   )
   env <- cached_details$runtime_env
@@ -269,13 +325,13 @@ test_that("decoder KV cache preserves physical positions and agrees with no-cach
       cached_details$trained,
       batch = cached_batch,
       seed = 23L,
-      inference = FALSE
+      inference = TRUE
     )
     uncached_capture <- ndm_test_capture_model_prediction(
       uncached_details$trained,
       batch = uncached_batch,
       seed = 23L,
-      inference = FALSE
+      inference = TRUE
     )
 
     expect_lt(
@@ -369,6 +425,16 @@ test_that("decoder KV cache preserves physical positions and agrees with no-cach
   expected_decoded_valid[[expected_last + 2L]] <- TRUE
   expect_identical(decoded_valid, expected_decoded_valid)
 
+  expect_error({
+    overflow <- env$transformer_decode_step_kv(
+      token_in = decoder_input,
+      pos = as.integer(prefill$cache$d1$k$shape[[1]]),
+      TransformerList = model_list$TSList$TSBackbone,
+      cache = prefill$cache
+    )
+    env$np$array(overflow$token_out)
+  }, "outside the allocated capacity")
+
   legacy_cached_details <- ndm_test_fit_sim_case(
     model_type = "DecoderOnly",
     endogeneity = 0.0,
@@ -384,6 +450,7 @@ test_that("decoder KV cache preserves physical positions and agrees with no-cach
     n_sgd = 1L,
     case_seed = 1618L,
     enable_kv_cache = FALSE,
+    enable_kv_cache_training = FALSE,
     runtime_globals = list(UseFullAttentionResiduals = FALSE),
     return_details = TRUE
   )
@@ -401,13 +468,13 @@ test_that("decoder KV cache preserves physical positions and agrees with no-cach
     legacy_cached_details$trained,
     batch = legacy_cached_batch,
     seed = 29L,
-    inference = FALSE
+    inference = TRUE
   )
   legacy_uncached <- ndm_test_capture_model_prediction(
     legacy_uncached_details$trained,
     batch = legacy_uncached_batch,
     seed = 29L,
-    inference = FALSE
+    inference = TRUE
   )
   expect_lt(
     ndm_test_max_abs_diff(legacy_cached$y_mu, legacy_uncached$y_mu),
@@ -480,7 +547,9 @@ test_that("maintained transformer sources keep cache and rotary guardrails", {
 
   expect_match(buildml_source, "DecoderBackboneToOutput <- function\\(TSList, hidden_state\\)")
   expect_match(buildml_source, "jnp\\$expand_dims\\(xt_last, 0L\\)")
-  expect_match(buildml_source, "jnp\\$expand_dims\\(embed_out, 0L\\)")
+  expect_match(buildml_source, "init = list\\(xt_last, kv_cache, insert_pos\\)")
+  expect_match(buildml_source, "UseKVCachingForCall")
+  expect_match(buildml_source, "EnableKVCachingTraining")
   expect_match(buildml_source, "DecoderProj\\(embed_out\\)")
   expect_match(buildml_source, "PlaceEmbeds_Proj\\(place_embed\\)")
   expect_match(buildml_source, "TimeEmbeds_Proj\\(time_embed\\)")
@@ -494,6 +563,8 @@ test_that("maintained transformer sources keep cache and rotary guardrails", {
   expect_match(backbone_source, "\"valid\" =")
   expect_match(backbone_source, "\"last_valid\" = last_valid")
   expect_match(backbone_source, "\"next_pos\" = next_pos")
+  expect_match(backbone_source, "eq\\$error_if")
+  expect_false(grepl("pos_layer <- jnp\\$clip", backbone_source))
   expect_match(buildml_source, "insert_pos <- prefill_ret\\$next_pos")
   expect_false(grepl("prefix_len <- jnp\\$sum", buildml_source))
   expect_match(
@@ -750,4 +821,63 @@ test_that("metadata projections learn while fixed metadata bases stay frozen in 
   expect_lt(ndm_test_max_abs_diff(fixed_final$time_embeds, captured_fixed$init$time_embeds), 1e-12)
   expect_gt(ndm_test_max_abs_diff(fixed_final$place_proj, captured_fixed$init$place_proj), 1e-8)
   expect_lt(ndm_test_max_abs_diff(fixed_final$place_embeds, captured_fixed$init$place_embeds), 1e-12)
+})
+
+test_that("cached training rollout matches uncached training gradients in jax_cpu", {
+  ndm_skip_if_no_sim_backend()
+
+  cached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 3L,
+    case_seed = 4242L,
+    enable_kv_cache = TRUE,
+    enable_kv_cache_training = TRUE,
+    return_details = TRUE
+  )
+  uncached_details <- ndm_test_fit_sim_case(
+    model_type = "DecoderOnly",
+    endogeneity = 0.0,
+    n_sgd = 3L,
+    case_seed = 4242L,
+    enable_kv_cache = TRUE,
+    enable_kv_cache_training = FALSE,
+    return_details = TRUE
+  )
+
+  cached_first <- cached_details$summary$first_loss[[1L]]
+  uncached_first <- uncached_details$summary$first_loss[[1L]]
+  expect_true(is.finite(cached_first))
+  expect_true(is.finite(uncached_first))
+  # Same weights, same batch: the two training rollouts compute the same loss
+  # up to float32 reordering noise.
+  expect_lt(
+    abs(cached_first - uncached_first) / (abs(uncached_first) + 1e-8),
+    1e-4
+  )
+
+  # Gradient parity: after identical SGD steps through the two training paths
+  # the loss trajectories stay aligned.
+  cached_last <- cached_details$summary$last_loss[[1L]]
+  uncached_last <- uncached_details$summary$last_loss[[1L]]
+  expect_true(is.finite(cached_last))
+  expect_true(is.finite(uncached_last))
+  expect_lt(
+    abs(cached_last - uncached_last) / (abs(uncached_last) + 1e-8),
+    1e-3
+  )
+
+  cached_pred <- ndm_test_capture_model_prediction(
+    cached_details$trained,
+    batch = cached_details$batch,
+    seed = 47L,
+    inference = TRUE
+  )
+  uncached_pred <- ndm_test_capture_model_prediction(
+    uncached_details$trained,
+    batch = uncached_details$batch,
+    seed = 47L,
+    inference = TRUE
+  )
+  expect_lt(ndm_test_max_abs_diff(cached_pred$y_mu, uncached_pred$y_mu), 1e-4)
 })

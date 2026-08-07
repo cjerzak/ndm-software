@@ -218,8 +218,13 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param neuralode_optim_atol Absolute tolerance used when
 #'   `neuralode_optim_controller = "pid"`.
 #' @param enable_kv_cache Logical scalar controlling DecoderOnly KV caching.
-#'   The corrected default is `FALSE`; opt in only when the cached and uncached
-#'   paths have been verified equivalent for the active padding layout.
+#'   The default enables the faster cached inference path.
+#' @param enable_kv_cache_training Logical scalar controlling KV caching during
+#'   DecoderOnly gradient training. The default is `TRUE`: the cached training
+#'   rollout is gradient-equivalent to the un-cached reference (verified to
+#'   float32 tolerance across production topologies, left padding, and mask
+#'   holes) and several times faster per training step at production batch
+#'   sizes. Set `FALSE` to reproduce historical un-cached training exactly.
 #' @param inference_mc_draws Positive integer number of posterior draws
 #'   requested for inference. Deterministic NeuralODE and DecoderOnly inference
 #'   reduce this to one effective draw downstream.
@@ -237,6 +242,12 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param neuralode_mean_loss_weight Non-negative multiplier for an auxiliary
 #'   masked mean-squared-error term applied to NeuralODE forecasts alongside
 #'   the Student-t likelihood.
+#' @param training_objective Training loss for observed outcomes. The default,
+#'   `"student_t_nll"`, preserves the probabilistic likelihood. Use
+#'   `"scaled_mse"` for deterministic scale-normalized squared error.
+#' @param outcome_loss_scale Optional finite positive scalar or outcome-length
+#'   vector used to normalize residuals for `training_objective = "scaled_mse"`.
+#'   It is required for scaled MSE and otherwise must be `NULL`.
 #' @param compute_backend Compute device policy: `"auto"` selects a supported
 #'   JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`
 #'   require the named backend.
@@ -264,13 +275,16 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_optim_controller = c("pid", "constant"),
                               neuralode_optim_rtol = 1e-5,
                               neuralode_optim_atol = 1e-7,
-                              enable_kv_cache = FALSE,
+                              enable_kv_cache = TRUE,
+                              enable_kv_cache_training = TRUE,
                               inference_mc_draws = 5L,
                               observation_scale_floor = 1e-5,
                               initial_observation_scale = 1.0,
                               neuralode_variational = TRUE,
                               neuralode_kl_weight = 1.0,
                               neuralode_mean_loss_weight = 0.0,
+                              training_objective = c("student_t_nll", "scaled_mse"),
+                              outcome_loss_scale = NULL,
                               compute_backend = c("auto", "cpu", "gpu"),
                               ...) {
   compute_backend_supplied <- !missing(compute_backend)
@@ -278,6 +292,7 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   float_type <- match.arg(float_type)
   neuralode_optim_solver <- match.arg(neuralode_optim_solver)
   neuralode_optim_controller <- match.arg(neuralode_optim_controller)
+  training_objective <- match.arg(training_objective)
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
   }
@@ -294,6 +309,17 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   )
   if (!is.logical(enable_kv_cache) || length(enable_kv_cache) != 1L || is.na(enable_kv_cache)) {
     stop("`enable_kv_cache` must be one non-missing logical value.", call. = FALSE)
+  }
+  if (!is.logical(enable_kv_cache_training) ||
+      length(enable_kv_cache_training) != 1L ||
+      is.na(enable_kv_cache_training)) {
+    stop("`enable_kv_cache_training` must be one non-missing logical value.", call. = FALSE)
+  }
+  if (isTRUE(enable_kv_cache_training) && !isTRUE(enable_kv_cache)) {
+    stop(
+      "`enable_kv_cache_training = TRUE` requires `enable_kv_cache = TRUE`.",
+      call. = FALSE
+    )
   }
   if (!is.logical(neuralode_variational) ||
       length(neuralode_variational) != 1L ||
@@ -337,6 +363,37 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
       !is.finite(neuralode_mean_loss_weight) || neuralode_mean_loss_weight < 0) {
     stop("`neuralode_mean_loss_weight` must be one finite non-negative numeric scalar.", call. = FALSE)
   }
+  if (!is.null(outcome_loss_scale)) {
+    if (is.list(outcome_loss_scale)) {
+      outcome_loss_scale <- unlist(outcome_loss_scale, recursive = TRUE, use.names = FALSE)
+    }
+    outcome_loss_scale <- suppressWarnings(as.numeric(outcome_loss_scale))
+    if (!length(outcome_loss_scale) || any(!is.finite(outcome_loss_scale)) ||
+        any(outcome_loss_scale <= 0)) {
+      stop("`outcome_loss_scale` must be NULL or a finite positive numeric vector.", call. = FALSE)
+    }
+  }
+  if (identical(training_objective, "scaled_mse")) {
+    if (is.null(outcome_loss_scale)) {
+      stop("`outcome_loss_scale` is required for `training_objective = \"scaled_mse\"`.", call. = FALSE)
+    }
+    if (any(outcome_loss_scale < 1e-8)) {
+      stop("`outcome_loss_scale` values must be at least 1e-8 for scaled MSE.", call. = FALSE)
+    }
+    if (isTRUE(neuralode_variational) || neuralode_kl_weight != 0 ||
+        neuralode_mean_loss_weight != 0 || inference_mc_draws != 1L) {
+      stop(
+        paste(
+          "`training_objective = \"scaled_mse\"` requires",
+          "`neuralode_variational = FALSE`, `neuralode_kl_weight = 0`,",
+          "`neuralode_mean_loss_weight = 0`, and `inference_mc_draws = 1`."
+        ),
+        call. = FALSE
+      )
+    }
+  } else if (!is.null(outcome_loss_scale)) {
+    stop("`outcome_loss_scale` is only valid with `training_objective = \"scaled_mse\"`.", call. = FALSE)
+  }
 
   extras <- list(...)
   config <- list(
@@ -357,12 +414,15 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     neuralode_optim_rtol = neuralode_optim_rtol,
     neuralode_optim_atol = neuralode_optim_atol,
     enable_kv_cache = enable_kv_cache,
+    enable_kv_cache_training = enable_kv_cache_training,
     inference_mc_draws = inference_mc_draws,
     observation_scale_floor = observation_scale_floor,
     initial_observation_scale = initial_observation_scale,
     neuralode_variational = neuralode_variational,
     neuralode_kl_weight = neuralode_kl_weight,
-    neuralode_mean_loss_weight = neuralode_mean_loss_weight
+    neuralode_mean_loss_weight = neuralode_mean_loss_weight,
+    training_objective = training_objective,
+    outcome_loss_scale = outcome_loss_scale
   )
 
   config <- c(config, extras)

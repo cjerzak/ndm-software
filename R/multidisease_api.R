@@ -1544,7 +1544,8 @@
   )
 }
 
-.ndm_multidisease_expected_producer <- function(runtime_env) {
+.ndm_multidisease_expected_producer <- function(runtime_env,
+                                                row_values = NULL) {
   producer <- .ndm_runtime_get0(
     runtime_env,
     "ndm_tfrecord_producer",
@@ -1558,6 +1559,68 @@
     "NDM_TFRECORD_PRODUCER_CONTRACT",
     unset = ""
   ))
+
+  # A pinned multidisease row can carry the remaining producer identity across
+  # the process boundary.  The environment variable intentionally remains a
+  # scalar deployment contract, while these row fields bind that contract to
+  # the exact design and target horizon used by the bootstrap producer.
+  if (!is.null(row_values)) {
+    row_contract <- .ndm_multidisease_row_value(
+      row_values,
+      c(
+        "tfrecordProducerContract",
+        "tfrecord_producer_contract",
+        "producer_contract"
+      ),
+      default = NULL
+    )
+    design_version <- .ndm_multidisease_row_value(
+      row_values,
+      c(
+        "tfrecordProducerDesignVersion",
+        "tfrecord_producer_design_version",
+        "experiment_version"
+      ),
+      default = NULL
+    )
+    training_target_horizon <- .ndm_multidisease_row_integer(
+      row_values,
+      c(
+        "tfrecordProducerTrainingTargetHorizon",
+        "tfrecord_producer_training_target_horizon",
+        "training_target_horizon"
+      ),
+      default = NULL
+    )
+    complete_row_identity <- !is.null(row_contract) &&
+      !is.null(design_version) &&
+      !is.null(training_target_horizon)
+    if (complete_row_identity) {
+      row_contract <- trimws(as.character(row_contract))
+      design_version <- trimws(as.character(design_version))
+      if (length(row_contract) != 1L || is.na(row_contract) ||
+          !nzchar(row_contract) || length(design_version) != 1L ||
+          is.na(design_version) || !nzchar(design_version)) {
+        stop(
+          "Pinned multidisease producer metadata must contain non-empty scalar values.",
+          call. = FALSE
+        )
+      }
+      if (nzchar(contract) && !identical(contract, row_contract)) {
+        stop(
+          "Pinned multidisease producer contract does not match ",
+          "`NDM_TFRECORD_PRODUCER_CONTRACT`.",
+          call. = FALSE
+        )
+      }
+      return(list(
+        contract = row_contract,
+        design_version = design_version,
+        training_target_horizon = training_target_horizon
+      ))
+    }
+  }
+
   if (!nzchar(contract)) {
     stop(
       "Canonical multidisease training requires expected producer metadata. ",
@@ -1613,7 +1676,10 @@
     n_inference = contract$n_inference,
     source_sha256 = contract$source_sha256,
     expected_seed = contract$data_seed,
-    expected_producer = .ndm_multidisease_expected_producer(runtime_env),
+    expected_producer = .ndm_multidisease_expected_producer(
+      runtime_env,
+      row_values = row_values
+    ),
     expected_inference_support = contract$inference_support,
     verify_checksum = isTRUE(verify_checksum),
     bootstrap = "ndm_bootstrap_multidisease_tfrecords()"

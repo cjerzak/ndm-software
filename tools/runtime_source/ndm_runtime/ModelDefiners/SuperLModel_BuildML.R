@@ -188,6 +188,51 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
      !is.finite(neuralode_mean_loss_weight) || neuralode_mean_loss_weight < 0){
     stop("neuralode_mean_loss_weight must be one finite non-negative scalar.")
   }
+  training_objective <- tolower(as.character(ndm_runtime_get0(
+    "training_objective",
+    ifnotfound = ndm_runtime_get0("TrainingObjective", ifnotfound = "student_t_nll")
+  )))
+  if(length(training_objective) != 1L ||
+     !training_objective %in% c("student_t_nll", "scaled_mse")){
+    stop("training_objective must be either 'student_t_nll' or 'scaled_mse'.")
+  }
+  outcome_loss_scale <- ndm_runtime_get0(
+    "outcome_loss_scale",
+    ifnotfound = ndm_runtime_get0("OutcomeLossScale", ifnotfound = NULL)
+  )
+  if(!is.null(outcome_loss_scale)){
+    outcome_loss_scale <- suppressWarnings(as.numeric(unlist(
+      outcome_loss_scale,
+      recursive = TRUE,
+      use.names = FALSE
+    )))
+    if(length(outcome_loss_scale) < 1L ||
+       any(!is.finite(outcome_loss_scale)) || any(outcome_loss_scale <= 0)){
+      stop("outcome_loss_scale must be a finite positive numeric vector.")
+    }
+  }
+  if(identical(training_objective, "scaled_mse")){
+    if(is.null(outcome_loss_scale)){
+      stop("outcome_loss_scale is required for training_objective='scaled_mse'.")
+    }
+    if(!length(outcome_loss_scale) %in% c(1L, as.integer(nOutcomes))){
+      stop("outcome_loss_scale must have length one or nOutcomes.")
+    }
+    if(any(outcome_loss_scale < 1e-8)){
+      stop("outcome_loss_scale values must be at least 1e-8 for scaled MSE.")
+    }
+    if(isTRUE(neuralode_variational) || neuralode_kl_weight != 0 ||
+       neuralode_mean_loss_weight != 0 ||
+       as.integer(ndm_runtime_get0("InferenceMCDraws", ifnotfound = 1L)) != 1L){
+      stop(paste(
+        "scaled_mse requires deterministic training:",
+        "neuralode_variational=FALSE, neuralode_kl_weight=0,",
+        "neuralode_mean_loss_weight=0, and InferenceMCDraws=1."
+      ))
+    }
+  } else if(!is.null(outcome_loss_scale)){
+    stop("outcome_loss_scale is only valid for training_objective='scaled_mse'.")
+  }
 
   # define model architecture via input
   Constrained2Unconstrained <- function(target_mean_of_transformated_x, transformation, sd){
@@ -1177,13 +1222,18 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           # Extend running buffers by forecast horizon
           oldx <- x[[1]]$shape[[1]]
           GEN_CAP <- GetPredSaveAtInfo[[1]]
+          if (as.integer(GEN_CAP) < 1L) {
+            stop("Decoder forecast horizon must be at least one.", call. = FALSE)
+          }
+          UseKVCachingForCall <- isTRUE(EnableKVCaching) &&
+            (isTRUE(inference) || isTRUE(EnableKVCachingTraining))
           xt_running <- list(
             jnp$concatenate(list(x[[1]], jnp$zeros(list(GEN_CAP, x[[1]]$shape[[2]]))), 0L),  # [T_total, D]
             jnp$concatenate(list(x[[2]], jnp$zeros(list(GEN_CAP, 1L))), 0L)                  # [T_total, 1]
           )
           
           # When KV caching cannot be used, fall back to original full pass/scan
-          if (!EnableKVCaching) {
+          if (!UseKVCachingForCall) {
             # ---- ORIGINAL PATH (unchanged) ----
             decoder_step <- function(xt_running, t_){
               xt_new <- Encoder2Output(
@@ -1226,7 +1276,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             ODEParamsSampList_y0 <- ODEParamsSampList_args <- NULL
             diff_eq_sol <- NULL; diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
           }
-          if( EnableKVCaching) {
+          if (UseKVCachingForCall) {
             # ---- KV-CACHED PATH ----
             
             # 1) Prefill KV cache once at the input's physical sequence
@@ -1247,26 +1297,19 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             # 2) First prediction y_1 uses representation at last known token.
             y_first    <- ModelList$TSList$TSBackbone$DecoderProj(xt_last)  # [nOutcomes]
             
-            # 3) Insert xt_last at the physical position after the last valid
-            #    token. For left-padded input this is not the mask sum.
+            # 3) The first generated embedding occupies the physical position
+            #    after the last valid token. For left-padded input this is not
+            #    the mask sum.
             insert_pos <- prefill_ret$next_pos
-            xt_running[[1]] <- jax$lax$dynamic_update_slice(
-              xt_running[[1]],
-              jnp$expand_dims(xt_last, 0L),                 # [1, D]
-              jnp$array(c(insert_pos, 0L), dtype = jnp$int32)
-            )
-            xt_running[[2]] <- jax$lax$dynamic_update_slice(
-              xt_running[[2]],
-              jnp$ones(list(1L,1L), dtype = xt_running[[2]]$dtype),
-              jnp$array(c(insert_pos, 0L), dtype = jnp$int32)
-            )
             
             # 4) Decode subsequent steps with cache.
-            # Carry: (xt_running, kv_cache, pos)
+            # Carry only the next token, cache, and physical position. Keeping
+            # the full running input in every scan step substantially slows
+            # cached differentiation and is unnecessary once K/V are prefixed.
             decode_step_cached <- function(carry, t_) {
-              xt_run <- carry[[1]]; cache <- carry[[2]]; pos <- carry[[3]] # pos is index of current last known token
-              # Take the input embedding at 'pos' (it was inserted in the previous step)
-              token_in <- jnp$take(xt_run[[1]], jnp$array(pos, dtype = jnp$int32), axis = 0L)  # [D]
+              token_in <- carry[[1]]
+              cache <- carry[[2]]
+              pos <- carry[[3]]
               
               # Run a single-layer stack forward for this one token, updating per-layer K/V at 'pos'
               sret <- transformer_decode_step_kv(
@@ -1281,51 +1324,41 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               )
               cache     <- sret$cache
               
-              # Insert embed_out as the input for the next (pos+1) position and open its mask
+              # The output embedding is the input token for the next position.
               write_pos <- pos + 1L
-              xt_next <- jax$lax$dynamic_update_slice(
-                xt_run[[1]], jnp$expand_dims(embed_out, 0L),
-                jnp$array(c(write_pos, 0L), dtype = jnp$int32)
-              )
-              m_next <- jax$lax$dynamic_update_slice(
-                xt_run[[2]], jnp$ones(list(1L,1L), dtype = xt_run[[2]]$dtype),
-                jnp$array(c(write_pos, 0L), dtype = jnp$int32)
-              )
               
               # Project to prediction (y_t at next step)
               y_t <- ModelList$TSList$TSBackbone$DecoderProj(embed_out) # [nOutcomes]
               
-              list(list(list(xt_next, m_next), cache, write_pos),
+              list(list(embed_out, cache, write_pos),
                    list("logits" = y_t, "decoder_head_input" = embed_out))
             }
-            
-            scan_out2 <- jax$lax$scan(
-              f    = decode_step_cached,
-              init = list(xt_running, kv_cache, insert_pos),
-              xs   = jnp$arange(start = 0L, stop = GEN_CAP-1L) # first entry is already in the prefill, hence -1L
-            )
-            decoder_scan_out2 <- scan_out2[[2]]
-            y_tail <- decoder_scan_out2$logits  # [num_steps, nOutcomes, nFeatures]
-            head_tail <- decoder_scan_out2$decoder_head_input
-            
-            # Concatenate first + tail => [nTimesLookahead, nOutcomes]
-            # Goal:
-            # y_first: [D]
-            # y_tail : [K, D]   (K is static)
-            # We want: [1 + count, D] logically,
-            # but we keep static shape [1 + K, D] by zero-masking tail rows >= count.
-            count_i32   <- jnp$astype(GEN_CAP-1L, jnp$int32)
-            K           <- y_tail$shape[[1]]
-            idxK        <- jnp$arange(K, dtype = jnp$int32)       # OK: K is static
-            keep_tail   <- jnp$less(idxK, count_i32)              # [K]
-            masked_tail <- jnp$where(jnp$expand_dims(keep_tail, 1L),
-                                       y_tail,
-                                       jnp$zeros_like(y_tail))
-            masked_head_tail <- jnp$where(jnp$expand_dims(keep_tail, 1L),
-                                       head_tail,
-                                       jnp$zeros_like(head_tail))
-            y_all <- jnp$concatenate(list(jnp$expand_dims(y_first, 0L), masked_tail), 0L)
-            decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last, 0L), masked_head_tail), 0L)
+            if (as.integer(GEN_CAP) == 1L) {
+              y_all <- jnp$expand_dims(y_first, 0L)
+              decoder_head_input_all <- jnp$expand_dims(xt_last, 0L)
+            } else {
+              scan_out2 <- jax$lax$scan(
+                f = decode_step_cached,
+                init = list(xt_last, kv_cache, insert_pos),
+                xs = jnp$arange(
+                  start = 0L,
+                  stop = as.integer(GEN_CAP) - 1L,
+                  dtype = jnp$int32
+                )
+              )
+              decoder_scan_out2 <- scan_out2[[2]]
+              y_all <- jnp$concatenate(
+                list(jnp$expand_dims(y_first, 0L), decoder_scan_out2$logits),
+                0L
+              )
+              decoder_head_input_all <- jnp$concatenate(
+                list(
+                  jnp$expand_dims(xt_last, 0L),
+                  decoder_scan_out2$decoder_head_input
+                ),
+                0L
+              )
+            }
             
             y_mean  <- jax$nn$softplus(y_all)   # preserve your softplus post-proj
             y_sigma <- jnp$ones_like(y_mean) * (
@@ -2045,53 +2078,109 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           # plot(  np$array(GetPred_output$y_mu)[sample(1:40,1),,1] )
           # plot(  np$array(GetPred_output$y_sigma)[sample(1:40,1),,1] )
           
-          student_t_loss <- ndm_student_t_masked_nll(
-            jax = jax,
-            jnp = jnp,
-            y = loss_y,
-            location = solver_safe_y_mu,
-            scale = solver_safe_y_sigma,
-            mask = solver_safe_loss_mask,
-            df = 4.,
-            scale_floor = ObservationScaleFloor
-          )
-          likelihood_loss <- student_t_loss$loss
-          local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
-
-          persistent_kl_values <- GetPred_output$KL_GLOBAL + GetPred_output$KL_PLACE
-          persistent_kl_first <- jnp$take(persistent_kl_values, 0L, axis = 0L)
-          persistent_kl_spread <- jnp$max(jnp$abs(
-            persistent_kl_values - persistent_kl_first
-          ))
-          persistent_kl <- jnp$where(
-            persistent_kl_spread <= jnp$array(1e-6, dtype = GetPred_output$y_mu$dtype),
-            persistent_kl_first / jnp$array(as.numeric(nSamplesTrain), dtype = GetPred_output$y_mu$dtype),
-            jnp$array(jnp$nan, dtype = GetPred_output$y_mu$dtype)
-          )
-          weighted_kl <- jnp$array(
-            as.numeric(neuralode_kl_weight),
-            dtype = GetPred_output$y_mu$dtype
-          ) * (local_kl + persistent_kl)
           observation_mask <- solver_safe_loss_mask$astype(
             GetPred_output$y_mu$dtype
           )
-          mean_squared_error <- jnp$sum(
-            jnp$square(solver_safe_y_mu - loss_y) * observation_mask
-          ) / jnp$maximum(
+          observation_count <- jnp$maximum(
             jnp$sum(observation_mask),
             jnp$array(1., dtype = GetPred_output$y_mu$dtype)
           )
+          mean_squared_error <- jnp$sum(
+            jnp$square(solver_safe_y_mu - loss_y) * observation_mask
+          ) / observation_count
+          if(identical(training_objective, "scaled_mse")){
+            loss_scale <- jnp$array(
+              outcome_loss_scale,
+              dtype = GetPred_output$y_mu$dtype
+            )
+            scaled_mean_squared_error <- jnp$sum(
+              jnp$square((solver_safe_y_mu - loss_y) / loss_scale) *
+                observation_mask
+            ) / observation_count
+            student_t_nll <- jnp$array(
+              0.,
+              dtype = GetPred_output$y_mu$dtype
+            )
+            likelihood_loss <- scaled_mean_squared_error
+          } else {
+            student_t_loss <- ndm_student_t_masked_nll(
+              jax = jax,
+              jnp = jnp,
+              y = loss_y,
+              location = solver_safe_y_mu,
+              scale = solver_safe_y_sigma,
+              mask = solver_safe_loss_mask,
+              df = 4.,
+              scale_floor = ObservationScaleFloor
+            )
+            student_t_nll <- student_t_loss$loss
+            likelihood_loss <- student_t_nll
+            scaled_mean_squared_error <- jnp$array(
+              jnp$nan,
+              dtype = GetPred_output$y_mu$dtype
+            )
+          }
+          zero_loss_component <- jnp$array(
+            0.,
+            dtype = GetPred_output$y_mu$dtype
+          )
+          if(isTRUE(neuralode_variational) && neuralode_kl_weight > 0){
+            local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
+            persistent_kl_component <- function(values){
+              first <- jnp$take(values, 0L, axis = 0L)
+              spread <- jnp$max(jnp$abs(values - first))
+              jnp$where(
+                spread <= jnp$array(1e-6, dtype = GetPred_output$y_mu$dtype),
+                first / jnp$array(
+                  as.numeric(nSamplesTrain),
+                  dtype = GetPred_output$y_mu$dtype
+                ),
+                jnp$array(jnp$nan, dtype = GetPred_output$y_mu$dtype)
+              )
+            }
+            global_kl <- persistent_kl_component(GetPred_output$KL_GLOBAL)
+            place_kl <- persistent_kl_component(GetPred_output$KL_PLACE)
+          } else {
+            local_kl <- zero_loss_component
+            global_kl <- zero_loss_component
+            place_kl <- zero_loss_component
+          }
+          unweighted_kl <- local_kl + global_kl + place_kl
+          weighted_kl <- jnp$array(
+            as.numeric(neuralode_kl_weight),
+            dtype = GetPred_output$y_mu$dtype
+          ) * unweighted_kl
           weighted_mean_loss <- jnp$array(
             ifelse(ModelType == "NeuralODE", neuralode_mean_loss_weight, 0.0),
             dtype = GetPred_output$y_mu$dtype
           ) * mean_squared_error
           minThis <- likelihood_loss + weighted_kl + weighted_mean_loss
+          prediction_abs_mean <- jnp$sum(
+            jnp$abs(solver_safe_y_mu) * observation_mask
+          ) / observation_count
+          truth_abs_mean <- jnp$sum(
+            jnp$abs(loss_y) * observation_mask
+          ) / observation_count
         }
         return(list(
           minThis,
           list(
             "model_state" = state,
-            "solver_diagnostics" = solver_diagnostics
+            "solver_diagnostics" = solver_diagnostics,
+            "loss_components" = list(
+              "objective_data_loss" = likelihood_loss,
+              "student_t_nll" = student_t_nll,
+              "raw_mse" = mean_squared_error,
+              "scaled_mse" = scaled_mean_squared_error,
+              "kl_local" = local_kl,
+              "kl_global" = global_kl,
+              "kl_place" = place_kl,
+              "kl_unweighted" = unweighted_kl,
+              "kl_weighted" = weighted_kl,
+              "auxiliary_mean_loss" = weighted_mean_loss,
+              "prediction_abs_mean" = prediction_abs_mean,
+              "truth_abs_mean" = truth_abs_mean
+            )
           )
         ))
       }

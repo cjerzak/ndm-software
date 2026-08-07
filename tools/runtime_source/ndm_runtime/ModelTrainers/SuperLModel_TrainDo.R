@@ -380,11 +380,47 @@ checkpoint_save_steps <- function(n_steps, n_checkpoints) {
   sort(unique(c(as.integer(intermediate), n_steps)))
 }
 CheckPointSaveAt <- checkpoint_save_steps(nSGD_MASTER, nCheckpoints)
+KVCacheTrainingExercised <- isTRUE(get0(
+  "KVCacheTrainingExercised", inherits = TRUE, ifnotfound = FALSE
+))
+KVCacheInferenceExercised <- isTRUE(get0(
+  "KVCacheInferenceExercised", inherits = TRUE, ifnotfound = FALSE
+))
+print2(sprintf(
+  paste(
+    "KV cache runtime: requested=%s; training_requested=%s;",
+    "inference_effective=%s; training_effective=%s"
+  ),
+  isTRUE(get0("EnableKVCachingRequested", inherits = TRUE, ifnotfound = FALSE)),
+  isTRUE(get0("EnableKVCachingTrainingRequested", inherits = TRUE, ifnotfound = FALSE)),
+  isTRUE(get0("EnableKVCachingInferenceEffective", inherits = TRUE, ifnotfound = FALSE)),
+  isTRUE(get0("EnableKVCachingTrainingEffective", inherits = TRUE, ifnotfound = FALSE))
+))
 training_telemetry <- data.frame(
   iteration = integer(),
+  training_objective = character(),
+  outcome_loss_scale = character(),
+  kv_cache_requested = logical(),
+  kv_cache_training_requested = logical(),
+  kv_cache_inference_effective = logical(),
+  kv_cache_training_effective = logical(),
+  kv_cache_inference_exercised = logical(),
+  kv_cache_training_exercised = logical(),
   elapsed_seconds = numeric(),
   gradient_seconds = numeric(),
   loss = numeric(),
+  objective_data_loss = numeric(),
+  student_t_nll = numeric(),
+  raw_mse = numeric(),
+  scaled_mse = numeric(),
+  kl_local = numeric(),
+  kl_global = numeric(),
+  kl_place = numeric(),
+  kl_unweighted = numeric(),
+  kl_weighted = numeric(),
+  auxiliary_mean_loss = numeric(),
+  prediction_abs_mean = numeric(),
+  truth_abs_mean = numeric(),
   gradient_norm = numeric(),
   trainable_parameters = numeric(),
   solver_num_steps_max = integer(),
@@ -392,6 +428,24 @@ training_telemetry <- data.frame(
   solver_num_rejected_steps_total = integer(),
   stringsAsFactors = FALSE
 )
+loss_component_names <- c(
+  "objective_data_loss", "student_t_nll", "raw_mse", "scaled_mse",
+  "kl_local", "kl_global", "kl_place", "kl_unweighted", "kl_weighted",
+  "auxiliary_mean_loss", "prediction_abs_mean", "truth_abs_mean"
+)
+loss_components_to_host <- function(components) {
+  values <- stats::setNames(rep(NA_real_, length(loss_component_names)), loss_component_names)
+  if (is.null(components)) {
+    return(values)
+  }
+  for (component_name in intersect(loss_component_names, names(components))) {
+    value <- suppressWarnings(as.numeric(np$array(components[[component_name]])))
+    if (length(value)) {
+      values[[component_name]] <- value[[1L]]
+    }
+  }
+  values
+}
 write_training_telemetry <- function() {
   if (nrow(training_telemetry) == 0L) {
     return(invisible(NULL))
@@ -476,6 +530,11 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
   {
     gd_timer <- Sys.time()
     if( i == 1 ){ print2( "At first gradLoss_jax()" ) }
+    if (isTRUE(get0(
+      "EnableKVCachingTrainingEffective", inherits = TRUE, ifnotfound = FALSE
+    ))) {
+      KVCacheTrainingExercised <- TRUE
+    }
     iteration_key <- ndm_training_iteration_key(i)
     keys_mat <- ndm_runtime_data_to_device(
       jax$random$split(iteration_key, nBatch)
@@ -501,6 +560,7 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
     )
     Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
     GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
+    loss_components_i <- loss_components_to_host(train_step_result$loss_components)
 
     solver_diagnostics_host <- solver_diagnostics_to_host(
       train_step_result$solver_diagnostics
@@ -682,9 +742,51 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
             training_telemetry,
             data.frame(
               iteration = as.integer(i),
+              training_objective = as.character(get0(
+                "training_objective", inherits = TRUE, ifnotfound = "student_t_nll"
+              )),
+              outcome_loss_scale = paste(
+                format(
+                  as.numeric(get0(
+                    "outcome_loss_scale",
+                    inherits = TRUE,
+                    ifnotfound = NA_real_
+                  )),
+                  digits = 17L,
+                  scientific = TRUE,
+                  trim = TRUE
+                ),
+                collapse = ";"
+              ),
+              kv_cache_requested = isTRUE(get0(
+                "EnableKVCachingRequested", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_training_requested = isTRUE(get0(
+                "EnableKVCachingTrainingRequested", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_inference_effective = isTRUE(get0(
+                "EnableKVCachingInferenceEffective", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_training_effective = isTRUE(get0(
+                "EnableKVCachingTrainingEffective", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_inference_exercised = KVCacheInferenceExercised,
+              kv_cache_training_exercised = KVCacheTrainingExercised,
               elapsed_seconds = te_total,
               gradient_seconds = te_grads,
               loss = Loss_i,
+              objective_data_loss = loss_components_i[["objective_data_loss"]],
+              student_t_nll = loss_components_i[["student_t_nll"]],
+              raw_mse = loss_components_i[["raw_mse"]],
+              scaled_mse = loss_components_i[["scaled_mse"]],
+              kl_local = loss_components_i[["kl_local"]],
+              kl_global = loss_components_i[["kl_global"]],
+              kl_place = loss_components_i[["kl_place"]],
+              kl_unweighted = loss_components_i[["kl_unweighted"]],
+              kl_weighted = loss_components_i[["kl_weighted"]],
+              auxiliary_mean_loss = loss_components_i[["auxiliary_mean_loss"]],
+              prediction_abs_mean = loss_components_i[["prediction_abs_mean"]],
+              truth_abs_mean = loss_components_i[["truth_abs_mean"]],
               gradient_norm = GradNorm_i,
               trainable_parameters = as.numeric(nParams),
               solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
@@ -707,9 +809,51 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
             training_telemetry,
             data.frame(
               iteration = as.integer(i),
+              training_objective = as.character(get0(
+                "training_objective", inherits = TRUE, ifnotfound = "student_t_nll"
+              )),
+              outcome_loss_scale = paste(
+                format(
+                  as.numeric(get0(
+                    "outcome_loss_scale",
+                    inherits = TRUE,
+                    ifnotfound = NA_real_
+                  )),
+                  digits = 17L,
+                  scientific = TRUE,
+                  trim = TRUE
+                ),
+                collapse = ";"
+              ),
+              kv_cache_requested = isTRUE(get0(
+                "EnableKVCachingRequested", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_training_requested = isTRUE(get0(
+                "EnableKVCachingTrainingRequested", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_inference_effective = isTRUE(get0(
+                "EnableKVCachingInferenceEffective", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_training_effective = isTRUE(get0(
+                "EnableKVCachingTrainingEffective", inherits = TRUE, ifnotfound = FALSE
+              )),
+              kv_cache_inference_exercised = KVCacheInferenceExercised,
+              kv_cache_training_exercised = KVCacheTrainingExercised,
               elapsed_seconds = checkpoint_total_seconds,
               gradient_seconds = checkpoint_gradient_seconds,
               loss = Loss_i,
+              objective_data_loss = loss_components_i[["objective_data_loss"]],
+              student_t_nll = loss_components_i[["student_t_nll"]],
+              raw_mse = loss_components_i[["raw_mse"]],
+              scaled_mse = loss_components_i[["scaled_mse"]],
+              kl_local = loss_components_i[["kl_local"]],
+              kl_global = loss_components_i[["kl_global"]],
+              kl_place = loss_components_i[["kl_place"]],
+              kl_unweighted = loss_components_i[["kl_unweighted"]],
+              kl_weighted = loss_components_i[["kl_weighted"]],
+              auxiliary_mean_loss = loss_components_i[["auxiliary_mean_loss"]],
+              prediction_abs_mean = loss_components_i[["prediction_abs_mean"]],
+              truth_abs_mean = loss_components_i[["truth_abs_mean"]],
               gradient_norm = GradNorm_i,
               trainable_parameters = as.numeric(nParams),
               solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
@@ -775,6 +919,12 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
         print2( sprintf("Starting GetAnalytics.R at %s of %s", i, nSGD_model) )
         outSampCounter <- outSampCounter+1
         ndm_source_extracted("ResultsGet/SuperLModel_GetAnalytics.R")
+        if (isTRUE(get0(
+          "EnableKVCachingInferenceEffective", inherits = TRUE, ifnotfound = FALSE
+        ))) {
+          KVCacheInferenceExercised <- TRUE
+          training_telemetry$kv_cache_inference_exercised <- TRUE
+        }
         write_training_telemetry()
       }
     }

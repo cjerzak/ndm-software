@@ -48,8 +48,12 @@ if(SimMode == T){
   print2( sprintf("nj %s of %s in GetAnalytics_Sim.R", nj, nMonteEval  )) 
   #GetPredSaveAtInfo_inference <- list(jnp$array(tmp_ <- nTimesTotal-nTimesLookahead+nTimesLookValidation),
   #GetPredSaveAtInfo_inference <- list(jnp$array(tmp_ <- nTimesLookValidationInference),
-  GetPredSaveAtInfo_inference <- list(tmp_ <- nTimesLookValidationInference,
-                                      diffrax$SaveAt(ts = jnp$array(  0L:(tmp_-1L) )))
+  GetPredSaveAtInfo_inference <- list(
+    tmp_ <- nTimesLookValidationInference,
+    diffrax$SaveAt(ts = jnp$arange(
+      start = 0L, stop = as.integer(tmp_), dtype = jnp$int32
+    ))
+  )
   ok_<-F; ok_counter_ <- 0; while(!ok_){
     ok_counter_ <- ok_counter_ + 1
     batch_l <- try(reticulate::iter_next( TFDatasetIterator_inference ), T) 

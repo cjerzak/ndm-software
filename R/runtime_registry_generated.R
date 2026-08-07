@@ -2456,6 +2456,45 @@
             neuralode_mean_loss_weight < 0) {
             stop("neuralode_mean_loss_weight must be one finite non-negative scalar.")
         }
+        training_objective <- tolower(as.character(ndm_runtime_get0("training_objective",
+            ifnotfound = ndm_runtime_get0("TrainingObjective",
+                ifnotfound = "student_t_nll"))))
+        if (length(training_objective) != 1L || !training_objective %in%
+            c("student_t_nll", "scaled_mse")) {
+            stop("training_objective must be either 'student_t_nll' or 'scaled_mse'.")
+        }
+        outcome_loss_scale <- ndm_runtime_get0("outcome_loss_scale",
+            ifnotfound = ndm_runtime_get0("OutcomeLossScale",
+                ifnotfound = NULL))
+        if (!is.null(outcome_loss_scale)) {
+            outcome_loss_scale <- suppressWarnings(as.numeric(unlist(outcome_loss_scale,
+                recursive = TRUE, use.names = FALSE)))
+            if (length(outcome_loss_scale) < 1L || any(!is.finite(outcome_loss_scale)) ||
+                any(outcome_loss_scale <= 0)) {
+                stop("outcome_loss_scale must be a finite positive numeric vector.")
+            }
+        }
+        if (identical(training_objective, "scaled_mse")) {
+            if (is.null(outcome_loss_scale)) {
+                stop("outcome_loss_scale is required for training_objective='scaled_mse'.")
+            }
+            if (!length(outcome_loss_scale) %in% c(1L, as.integer(nOutcomes))) {
+                stop("outcome_loss_scale must have length one or nOutcomes.")
+            }
+            if (any(outcome_loss_scale < 1e-08)) {
+                stop("outcome_loss_scale values must be at least 1e-8 for scaled MSE.")
+            }
+            if (isTRUE(neuralode_variational) || neuralode_kl_weight !=
+                0 || neuralode_mean_loss_weight != 0 || as.integer(ndm_runtime_get0("InferenceMCDraws",
+                ifnotfound = 1L)) != 1L) {
+                stop(paste("scaled_mse requires deterministic training:",
+                  "neuralode_variational=FALSE, neuralode_kl_weight=0,",
+                  "neuralode_mean_loss_weight=0, and InferenceMCDraws=1."))
+            }
+        }
+        else if (!is.null(outcome_loss_scale)) {
+            stop("outcome_loss_scale is only valid for training_objective='scaled_mse'.")
+        }
         Constrained2Unconstrained <- function(target_mean_of_transformated_x,
             transformation, sd) {
             ex_seq <- seq(-100, 100, length.out = 10000)
@@ -3258,11 +3297,17 @@
                     }
                     oldx <- x[[1]]$shape[[1]]
                     GEN_CAP <- GetPredSaveAtInfo[[1]]
+                    if (as.integer(GEN_CAP) < 1L) {
+                      stop("Decoder forecast horizon must be at least one.",
+                        call. = FALSE)
+                    }
+                    UseKVCachingForCall <- isTRUE(EnableKVCaching) &&
+                      (isTRUE(inference) || isTRUE(EnableKVCachingTraining))
                     xt_running <- list(jnp$concatenate(list(x[[1]],
                       jnp$zeros(list(GEN_CAP, x[[1]]$shape[[2]]))),
                       0L), jnp$concatenate(list(x[[2]], jnp$zeros(list(GEN_CAP,
                       1L))), 0L))
-                    if (!EnableKVCaching) {
+                    if (!UseKVCachingForCall) {
                       decoder_step <- function(xt_running, t_) {
                         xt_new <- Encoder2Output(TSList = ModelList$TSList,
                           xt = xt_running, time = time_indices,
@@ -3293,7 +3338,7 @@
                       diff_eq_sol <- NULL
                       diff_eq_sol$ts <- diff_eq_sol$ys <- NULL
                     }
-                    if (EnableKVCaching) {
+                    if (UseKVCachingForCall) {
                       prefill_ret <- transformer_prefill_kv(xt = xt_running[[1]],
                         x_mask = xt_running[[2]], TransformerList = ModelList$TSList$TSBackbone)
                       kv_cache <- prefill_ret$cache
@@ -3302,18 +3347,10 @@
                         hidden_state = xt_last_raw)
                       y_first <- ModelList$TSList$TSBackbone$DecoderProj(xt_last)
                       insert_pos <- prefill_ret$next_pos
-                      xt_running[[1]] <- jax$lax$dynamic_update_slice(xt_running[[1]],
-                        jnp$expand_dims(xt_last, 0L), jnp$array(c(insert_pos,
-                          0L), dtype = jnp$int32))
-                      xt_running[[2]] <- jax$lax$dynamic_update_slice(xt_running[[2]],
-                        jnp$ones(list(1L, 1L), dtype = xt_running[[2]]$dtype),
-                        jnp$array(c(insert_pos, 0L), dtype = jnp$int32))
                       decode_step_cached <- function(carry, t_) {
-                        xt_run <- carry[[1]]
+                        token_in <- carry[[1]]
                         cache <- carry[[2]]
                         pos <- carry[[3]]
-                        token_in <- jnp$take(xt_run[[1]], jnp$array(pos,
-                          dtype = jnp$int32), axis = 0L)
                         sret <- transformer_decode_step_kv(token_in = token_in,
                           pos = pos, TransformerList = ModelList$TSList$TSBackbone,
                           cache = cache)
@@ -3321,35 +3358,27 @@
                           hidden_state = sret$token_out)
                         cache <- sret$cache
                         write_pos <- pos + 1L
-                        xt_next <- jax$lax$dynamic_update_slice(xt_run[[1]],
-                          jnp$expand_dims(embed_out, 0L), jnp$array(c(write_pos,
-                            0L), dtype = jnp$int32))
-                        m_next <- jax$lax$dynamic_update_slice(xt_run[[2]],
-                          jnp$ones(list(1L, 1L), dtype = xt_run[[2]]$dtype),
-                          jnp$array(c(write_pos, 0L), dtype = jnp$int32))
                         y_t <- ModelList$TSList$TSBackbone$DecoderProj(embed_out)
-                        list(list(list(xt_next, m_next), cache,
-                          write_pos), list(logits = y_t, decoder_head_input = embed_out))
+                        list(list(embed_out, cache, write_pos),
+                          list(logits = y_t, decoder_head_input = embed_out))
                       }
-                      scan_out2 <- jax$lax$scan(f = decode_step_cached,
-                        init = list(xt_running, kv_cache, insert_pos),
-                        xs = jnp$arange(start = 0L, stop = GEN_CAP -
-                          1L))
-                      decoder_scan_out2 <- scan_out2[[2]]
-                      y_tail <- decoder_scan_out2$logits
-                      head_tail <- decoder_scan_out2$decoder_head_input
-                      count_i32 <- jnp$astype(GEN_CAP - 1L, jnp$int32)
-                      K <- y_tail$shape[[1]]
-                      idxK <- jnp$arange(K, dtype = jnp$int32)
-                      keep_tail <- jnp$less(idxK, count_i32)
-                      masked_tail <- jnp$where(jnp$expand_dims(keep_tail,
-                        1L), y_tail, jnp$zeros_like(y_tail))
-                      masked_head_tail <- jnp$where(jnp$expand_dims(keep_tail,
-                        1L), head_tail, jnp$zeros_like(head_tail))
-                      y_all <- jnp$concatenate(list(jnp$expand_dims(y_first,
-                        0L), masked_tail), 0L)
-                      decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last,
-                        0L), masked_head_tail), 0L)
+                      if (as.integer(GEN_CAP) == 1L) {
+                        y_all <- jnp$expand_dims(y_first, 0L)
+                        decoder_head_input_all <- jnp$expand_dims(xt_last,
+                          0L)
+                      }
+                      else {
+                        scan_out2 <- jax$lax$scan(f = decode_step_cached,
+                          init = list(xt_last, kv_cache, insert_pos),
+                          xs = jnp$arange(start = 0L, stop = as.integer(GEN_CAP) -
+                            1L, dtype = jnp$int32))
+                        decoder_scan_out2 <- scan_out2[[2]]
+                        y_all <- jnp$concatenate(list(jnp$expand_dims(y_first,
+                          0L), decoder_scan_out2$logits), 0L)
+                        decoder_head_input_all <- jnp$concatenate(list(jnp$expand_dims(xt_last,
+                          0L), decoder_scan_out2$decoder_head_input),
+                          0L)
+                      }
                       y_mean <- jax$nn$softplus(y_all)
                       y_sigma <- jnp$ones_like(y_mean) * (ObservationScaleFloor +
                         SoftPlus(ModelList$ScaleList$ScaleBayes$DecoderObservationScale))
@@ -3903,39 +3932,72 @@
                   solver_safe_y_sigma, jnp$ones_like(solver_safe_y_sigma) *
                     ObservationScaleFloor)
                 {
-                  student_t_loss <- ndm_student_t_masked_nll(jax = jax,
-                    jnp = jnp, y = loss_y, location = solver_safe_y_mu,
-                    scale = solver_safe_y_sigma, mask = solver_safe_loss_mask,
-                    df = 4, scale_floor = ObservationScaleFloor)
-                  likelihood_loss <- student_t_loss$loss
-                  local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
-                  persistent_kl_values <- GetPred_output$KL_GLOBAL +
-                    GetPred_output$KL_PLACE
-                  persistent_kl_first <- jnp$take(persistent_kl_values,
-                    0L, axis = 0L)
-                  persistent_kl_spread <- jnp$max(jnp$abs(persistent_kl_values -
-                    persistent_kl_first))
-                  persistent_kl <- jnp$where(persistent_kl_spread <=
-                    jnp$array(1e-06, dtype = GetPred_output$y_mu$dtype),
-                    persistent_kl_first/jnp$array(as.numeric(nSamplesTrain),
-                      dtype = GetPred_output$y_mu$dtype), jnp$array(jnp$nan,
-                      dtype = GetPred_output$y_mu$dtype))
-                  weighted_kl <- jnp$array(as.numeric(neuralode_kl_weight),
-                    dtype = GetPred_output$y_mu$dtype) * (local_kl +
-                    persistent_kl)
                   observation_mask <- solver_safe_loss_mask$astype(GetPred_output$y_mu$dtype)
-                  mean_squared_error <- jnp$sum(jnp$square(solver_safe_y_mu -
-                    loss_y) * observation_mask)/jnp$maximum(jnp$sum(observation_mask),
+                  observation_count <- jnp$maximum(jnp$sum(observation_mask),
                     jnp$array(1, dtype = GetPred_output$y_mu$dtype))
+                  mean_squared_error <- jnp$sum(jnp$square(solver_safe_y_mu -
+                    loss_y) * observation_mask)/observation_count
+                  if (identical(training_objective, "scaled_mse")) {
+                    loss_scale <- jnp$array(outcome_loss_scale,
+                      dtype = GetPred_output$y_mu$dtype)
+                    scaled_mean_squared_error <- jnp$sum(jnp$square((solver_safe_y_mu -
+                      loss_y)/loss_scale) * observation_mask)/observation_count
+                    student_t_nll <- jnp$array(0, dtype = GetPred_output$y_mu$dtype)
+                    likelihood_loss <- scaled_mean_squared_error
+                  }
+                  else {
+                    student_t_loss <- ndm_student_t_masked_nll(jax = jax,
+                      jnp = jnp, y = loss_y, location = solver_safe_y_mu,
+                      scale = solver_safe_y_sigma, mask = solver_safe_loss_mask,
+                      df = 4, scale_floor = ObservationScaleFloor)
+                    student_t_nll <- student_t_loss$loss
+                    likelihood_loss <- student_t_nll
+                    scaled_mean_squared_error <- jnp$array(jnp$nan,
+                      dtype = GetPred_output$y_mu$dtype)
+                  }
+                  zero_loss_component <- jnp$array(0, dtype = GetPred_output$y_mu$dtype)
+                  if (isTRUE(neuralode_variational) && neuralode_kl_weight >
+                    0) {
+                    local_kl <- jnp$mean(GetPred_output$KL_LOCAL)
+                    persistent_kl_component <- function(values) {
+                      first <- jnp$take(values, 0L, axis = 0L)
+                      spread <- jnp$max(jnp$abs(values - first))
+                      jnp$where(spread <= jnp$array(1e-06, dtype = GetPred_output$y_mu$dtype),
+                        first/jnp$array(as.numeric(nSamplesTrain),
+                          dtype = GetPred_output$y_mu$dtype),
+                        jnp$array(jnp$nan, dtype = GetPred_output$y_mu$dtype))
+                    }
+                    global_kl <- persistent_kl_component(GetPred_output$KL_GLOBAL)
+                    place_kl <- persistent_kl_component(GetPred_output$KL_PLACE)
+                  }
+                  else {
+                    local_kl <- zero_loss_component
+                    global_kl <- zero_loss_component
+                    place_kl <- zero_loss_component
+                  }
+                  unweighted_kl <- local_kl + global_kl + place_kl
+                  weighted_kl <- jnp$array(as.numeric(neuralode_kl_weight),
+                    dtype = GetPred_output$y_mu$dtype) * unweighted_kl
                   weighted_mean_loss <- jnp$array(ifelse(ModelType ==
                     "NeuralODE", neuralode_mean_loss_weight,
                     0), dtype = GetPred_output$y_mu$dtype) *
                     mean_squared_error
                   minThis <- likelihood_loss + weighted_kl +
                     weighted_mean_loss
+                  prediction_abs_mean <- jnp$sum(jnp$abs(solver_safe_y_mu) *
+                    observation_mask)/observation_count
+                  truth_abs_mean <- jnp$sum(jnp$abs(loss_y) *
+                    observation_mask)/observation_count
                 }
                 return(list(minThis, list(model_state = state,
-                  solver_diagnostics = solver_diagnostics)))
+                  solver_diagnostics = solver_diagnostics, loss_components = list(objective_data_loss = likelihood_loss,
+                    student_t_nll = student_t_nll, raw_mse = mean_squared_error,
+                    scaled_mse = scaled_mean_squared_error, kl_local = local_kl,
+                    kl_global = global_kl, kl_place = place_kl,
+                    kl_unweighted = unweighted_kl, kl_weighted = weighted_kl,
+                    auxiliary_mean_loss = weighted_mean_loss,
+                    prediction_abs_mean = prediction_abs_mean,
+                    truth_abs_mean = truth_abs_mean))))
             }
             GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(list(as.integer(VI_TotalTimesInLikelihood),
                 VI_SaveAt_ODE_optim))
@@ -3990,10 +4052,23 @@
         TRY_FLASH <- cuda_attention_available && tryCatch(!any(grepl("V100",
             sapply(selected_devices, function(d) d$device_kind))),
             error = function(e) FALSE)
-        EnableKVCaching <- backbone_runtime_get0("EnableKVCaching",
-            ifnotfound = FALSE)
-        EnableKVCaching <- isTRUE(EnableKVCaching) && (ModelType ==
+        EnableKVCachingRequested <- isTRUE(backbone_runtime_get0("EnableKVCaching",
+            ifnotfound = TRUE))
+        EnableKVCachingTrainingRequested <- isTRUE(backbone_runtime_get0("EnableKVCachingTraining",
+            ifnotfound = TRUE))
+        if (EnableKVCachingTrainingRequested && !EnableKVCachingRequested) {
+            stop("EnableKVCachingTraining=TRUE requires EnableKVCaching=TRUE.",
+                call. = FALSE)
+        }
+        EnableKVCaching <- EnableKVCachingRequested && (ModelType ==
             "DecoderOnly")
+        EnableKVCachingTraining <- EnableKVCaching && EnableKVCachingTrainingRequested
+        EnableKVCachingInferenceEffective <- EnableKVCaching
+        EnableKVCachingTrainingEffective <- EnableKVCachingTraining
+        print(sprintf(paste("KV cache policy: requested=%s; training_requested=%s;",
+            "inference_effective=%s; training_effective=%s"),
+            EnableKVCachingRequested, EnableKVCachingTrainingRequested,
+            EnableKVCachingInferenceEffective, EnableKVCachingTrainingEffective))
         UseFullAttentionResiduals <- isTRUE(backbone_runtime_get0("UseFullAttentionResiduals",
             ifnotfound = TRUE))
         FullAttentionResidualEps <- as.numeric(backbone_runtime_get0("FullAttentionResidualEps",
@@ -4455,6 +4530,11 @@
                   dtype <- token_in$dtype
                   layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
                   pos_i32 <- jnp$astype(pos, jnp$int32)
+                  cache_capacity <- cache[[1L]]$k$shape[[1]]
+                  pos_i32 <- eq$error_if(pos_i32, jnp$logical_or(jnp$less(pos_i32,
+                    jnp$array(0L, dtype = jnp$int32)), jnp$greater_equal(pos_i32,
+                    jnp$array(cache_capacity, dtype = jnp$int32))),
+                    "KV cache decode position is outside the allocated capacity.")
                   if (!isTRUE(UseFullAttentionResiduals)) {
                     xt <- token_in
                     for (l_ in seq_along(layer_names)) {
@@ -4475,9 +4555,7 @@
                       q_NH <- qk_normalize_heads(q_NH, L$Multihead$QNormScale)
                       k_KH <- qk_normalize_heads(k_KH, L$Multihead$KNormScale)
                       max_len <- cache[[l_]]$k$shape[[1]]
-                      pos_layer <- jnp$clip(pos_i32, jnp$array(0L,
-                        dtype = jnp$int32), jnp$array(max_len -
-                        1L, dtype = jnp$int32))
+                      pos_layer <- pos_i32
                       write_idx <- jnp$array(c(pos_layer, 0L,
                         0L), dtype = jnp$int32)
                       cache[[l_]]$k <- jax$lax$dynamic_update_slice(cache[[l_]]$k,
@@ -4555,9 +4633,7 @@
                         q_TNH <- qk_normalize_heads(q_TNH, L$Multihead$QNormScale)
                         k_KH <- qk_normalize_heads(k_KH, L$Multihead$KNormScale)
                         max_len <- cache_in[[branch_idx]]$k$shape[[1]]
-                        pos_layer <- jnp$clip(pos_i32, jnp$array(0L,
-                          dtype = jnp$int32), jnp$array(max_len -
-                          1L, dtype = jnp$int32))
+                        pos_layer <- pos_i32
                         write_idx <- jnp$array(c(pos_layer, 0L,
                           0L), dtype = jnp$int32)
                         cache_in[[branch_idx]]$k <- jax$lax$dynamic_update_slice(cache_in[[branch_idx]]$k,
@@ -4899,6 +4975,46 @@
     }
     stop(sprintf("ODE parser failed while %s: %s", context, detail),
         call. = FALSE)
+}, .ndm_import_numeric_ode_constants <- function(definitions,
+    jnp_module, converter, target_env = parent.frame()) {
+    if (!is.environment(target_env)) {
+        stop("`target_env` must be an environment.", call. = FALSE)
+    }
+    definitions <- as.character(definitions)
+    if (length(definitions) == 0L) {
+        return(character())
+    }
+    definition_parts <- strsplit(definitions, split = "\\\\leftarrow")
+    malformed <- lengths(definition_parts) != 2L
+    if (any(malformed)) {
+        stop(sprintf("Malformed ODE constant definition: `%s`.",
+            definitions[[which(malformed)[[1L]]]]), call. = FALSE)
+    }
+    constant_names <- vapply(definition_parts, function(parts) gsub("[[:space:]]+",
+        "", parts[[1L]]), character(1L))
+    valid_names <- grepl("^[[:alpha:]_][[:alnum:]_]*$", constant_names)
+    if (any(!valid_names)) {
+        stop(sprintf("Invalid ODE constant name: `%s`.", constant_names[[which(!valid_names)[[1L]]]]),
+            call. = FALSE)
+    }
+    if (anyDuplicated(constant_names)) {
+        stop("ODE constant names must be unique.", call. = FALSE)
+    }
+    constant_values <- vapply(definition_parts, function(parts) {
+        value_text <- gsub("[[:space:]]+", "", parts[[2L]])
+        value <- suppressWarnings(converter(value_text))
+        if (length(value) != 1L || is.na(value) || !is.finite(value)) {
+            stop(sprintf("ODE constant value must be a finite number: `%s`.",
+                value_text), call. = FALSE)
+        }
+        as.numeric(value)
+    }, numeric(1L))
+    for (constant_index in seq_along(constant_names)) {
+        assign(paste0("CONST_", constant_names[[constant_index]]),
+            jnp_module$array(constant_values[[constant_index]]),
+            envir = target_env)
+    }
+    unname(constant_names)
 }, {
     print("Sarting SuperLModel_ParseDynamicODE.R")
     gc()
@@ -4932,20 +5048,8 @@
         c(zer, NA)[2]
     }))))
     ConstantsDefs <- PriorText[grep(PriorText, pattern = "\\\\leftarrow")]
-    ConstantsNames <- unlist(lapply(strsplit(ConstantsDefs, split = "\\\\leftarrow"),
-        function(l_) {
-            name_ <- paste(gsub(l_[[1]], pattern = " ", replace = ""),
-                sep = "")
-        }))
-    lapply(strsplit(ConstantsDefs, split = "\\\\leftarrow"),
-        function(l_) {
-            name_ <- paste("CONST_", gsub(l_[[1]], pattern = " ",
-                replace = ""), sep = "")
-            eval_ <- paste("jnp$array(f2n(", gsub(l_[[2]], pattern = " ",
-                replace = ""), "))", collapse = "")
-            eval.parent(parse(text = sprintf("%s <<- %s", name_,
-                eval_)))
-        })
+    ConstantsNames <- .ndm_import_numeric_ode_constants(definitions = ConstantsDefs,
+        jnp_module = jnp, converter = f2n, target_env = environment())
     PriorDefinitions <- PriorText[grep(PriorText, pattern = "\\\\sim")]
     TexTransformationRules <- PriorText[grep(PriorText, pattern = "=")]
     TexTransformationRules <- gsub(TexTransformationRules, pattern = "\\\\",
@@ -5152,7 +5256,9 @@
                 length(uq_globalneural_vec), out_features = nDimODEOutput_ts_global,
                 use_bias = F, key = jax$random$PRNGKey(ai(4334L +
                   5642345L)))
-            VI_SaveAt_ODE_GlobalNeural <- diffrax$SaveAt(ts = jnp$array(0L:NTimeGlobalNeuralMax))
+            VI_SaveAt_ODE_GlobalNeural <- diffrax$SaveAt(ts = jnp$arange(start = 0L,
+                stop = as.integer(NTimeGlobalNeuralMax) + 1L,
+                dtype = jnp$int32))
         }
     }
     if (temporalModelType == "linearInterpolation") {
@@ -5912,7 +6018,7 @@
             updates_and_state[[1]]), model_arrays[[2]])
         list(loss = loss_and_state[[1]], state = loss_aux$model_state,
             solver_diagnostics = loss_aux$solver_diagnostics,
-            grad_norm = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)),
+            loss_components = loss_aux$loss_components, grad_norm = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)),
             model = updated_model, opt_state = updates_and_state[[2]],
             block_update_metrics = block_update_metrics)
     })
@@ -6202,12 +6308,45 @@
             log(n_steps, base = 10), length.out = n_checkpoints))
         sort(unique(c(as.integer(intermediate), n_steps)))
     }, CheckPointSaveAt <- checkpoint_save_steps(nSGD_MASTER,
-        nCheckpoints), training_telemetry <- data.frame(iteration = integer(),
+        nCheckpoints), KVCacheTrainingExercised <- isTRUE(get0("KVCacheTrainingExercised",
+        inherits = TRUE, ifnotfound = FALSE)), KVCacheInferenceExercised <- isTRUE(get0("KVCacheInferenceExercised",
+        inherits = TRUE, ifnotfound = FALSE)), print2(sprintf(paste("KV cache runtime: requested=%s; training_requested=%s;",
+        "inference_effective=%s; training_effective=%s"), isTRUE(get0("EnableKVCachingRequested",
+        inherits = TRUE, ifnotfound = FALSE)), isTRUE(get0("EnableKVCachingTrainingRequested",
+        inherits = TRUE, ifnotfound = FALSE)), isTRUE(get0("EnableKVCachingInferenceEffective",
+        inherits = TRUE, ifnotfound = FALSE)), isTRUE(get0("EnableKVCachingTrainingEffective",
+        inherits = TRUE, ifnotfound = FALSE)))), training_telemetry <- data.frame(iteration = integer(),
+        training_objective = character(), outcome_loss_scale = character(),
+        kv_cache_requested = logical(), kv_cache_training_requested = logical(),
+        kv_cache_inference_effective = logical(), kv_cache_training_effective = logical(),
+        kv_cache_inference_exercised = logical(), kv_cache_training_exercised = logical(),
         elapsed_seconds = numeric(), gradient_seconds = numeric(),
-        loss = numeric(), gradient_norm = numeric(), trainable_parameters = numeric(),
+        loss = numeric(), objective_data_loss = numeric(), student_t_nll = numeric(),
+        raw_mse = numeric(), scaled_mse = numeric(), kl_local = numeric(),
+        kl_global = numeric(), kl_place = numeric(), kl_unweighted = numeric(),
+        kl_weighted = numeric(), auxiliary_mean_loss = numeric(),
+        prediction_abs_mean = numeric(), truth_abs_mean = numeric(),
+        gradient_norm = numeric(), trainable_parameters = numeric(),
         solver_num_steps_max = integer(), solver_num_rejected_steps_max = integer(),
         solver_num_rejected_steps_total = integer(), stringsAsFactors = FALSE),
-    write_training_telemetry <- function() {
+    loss_component_names <- c("objective_data_loss", "student_t_nll",
+        "raw_mse", "scaled_mse", "kl_local", "kl_global", "kl_place",
+        "kl_unweighted", "kl_weighted", "auxiliary_mean_loss",
+        "prediction_abs_mean", "truth_abs_mean"), loss_components_to_host <- function(components) {
+        values <- stats::setNames(rep(NA_real_, length(loss_component_names)),
+            loss_component_names)
+        if (is.null(components)) {
+            return(values)
+        }
+        for (component_name in intersect(loss_component_names,
+            names(components))) {
+            value <- suppressWarnings(as.numeric(np$array(components[[component_name]])))
+            if (length(value)) {
+                values[[component_name]] <- value[[1L]]
+            }
+        }
+        values
+    }, write_training_telemetry <- function() {
         if (nrow(training_telemetry) == 0L) {
             return(invisible(NULL))
         }
@@ -6278,6 +6417,10 @@
                 if (i == 1) {
                   print2("At first gradLoss_jax()")
                 }
+                if (isTRUE(get0("EnableKVCachingTrainingEffective",
+                  inherits = TRUE, ifnotfound = FALSE))) {
+                  KVCacheTrainingExercised <- TRUE
+                }
                 iteration_key <- ndm_training_iteration_key(i)
                 keys_mat <- ndm_runtime_data_to_device(jax$random$split(iteration_key,
                   nBatch))
@@ -6296,6 +6439,7 @@
                   opt_state)
                 Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
                 GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
+                loss_components_i <- loss_components_to_host(train_step_result$loss_components)
                 solver_diagnostics_host <- solver_diagnostics_to_host(train_step_result$solver_diagnostics)
                 solver_diagnostics_host$location_id_numeric <- solver_batch_identifier(dat_$location_id_numeric,
                   "location_id_numeric", nrow(solver_diagnostics_host))
@@ -6450,8 +6594,34 @@
                     LastOutCor, Skill8SanityCheck, round(te_total,
                       2L), round(te_grads, 3L)))
                   training_telemetry <- rbind(training_telemetry,
-                    data.frame(iteration = as.integer(i), elapsed_seconds = te_total,
-                      gradient_seconds = te_grads, loss = Loss_i,
+                    data.frame(iteration = as.integer(i), training_objective = as.character(get0("training_objective",
+                      inherits = TRUE, ifnotfound = "student_t_nll")),
+                      outcome_loss_scale = paste(format(as.numeric(get0("outcome_loss_scale",
+                        inherits = TRUE, ifnotfound = NA_real_)),
+                        digits = 17L, scientific = TRUE, trim = TRUE),
+                        collapse = ";"), kv_cache_requested = isTRUE(get0("EnableKVCachingRequested",
+                        inherits = TRUE, ifnotfound = FALSE)),
+                      kv_cache_training_requested = isTRUE(get0("EnableKVCachingTrainingRequested",
+                        inherits = TRUE, ifnotfound = FALSE)),
+                      kv_cache_inference_effective = isTRUE(get0("EnableKVCachingInferenceEffective",
+                        inherits = TRUE, ifnotfound = FALSE)),
+                      kv_cache_training_effective = isTRUE(get0("EnableKVCachingTrainingEffective",
+                        inherits = TRUE, ifnotfound = FALSE)),
+                      kv_cache_inference_exercised = KVCacheInferenceExercised,
+                      kv_cache_training_exercised = KVCacheTrainingExercised,
+                      elapsed_seconds = te_total, gradient_seconds = te_grads,
+                      loss = Loss_i, objective_data_loss = loss_components_i[["objective_data_loss"]],
+                      student_t_nll = loss_components_i[["student_t_nll"]],
+                      raw_mse = loss_components_i[["raw_mse"]],
+                      scaled_mse = loss_components_i[["scaled_mse"]],
+                      kl_local = loss_components_i[["kl_local"]],
+                      kl_global = loss_components_i[["kl_global"]],
+                      kl_place = loss_components_i[["kl_place"]],
+                      kl_unweighted = loss_components_i[["kl_unweighted"]],
+                      kl_weighted = loss_components_i[["kl_weighted"]],
+                      auxiliary_mean_loss = loss_components_i[["auxiliary_mean_loss"]],
+                      prediction_abs_mean = loss_components_i[["prediction_abs_mean"]],
+                      truth_abs_mean = loss_components_i[["truth_abs_mean"]],
                       gradient_norm = GradNorm_i, trainable_parameters = as.numeric(nParams),
                       solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
                       solver_num_rejected_steps_max = solver_telemetry_i$solver_num_rejected_steps_max,
@@ -6465,10 +6635,36 @@
                     checkpoint_gradient_seconds <- as.numeric(difftime(Sys.time(),
                       gd_timer, units = "secs"))
                     training_telemetry <- rbind(training_telemetry,
-                      data.frame(iteration = as.integer(i), elapsed_seconds = checkpoint_total_seconds,
+                      data.frame(iteration = as.integer(i), training_objective = as.character(get0("training_objective",
+                        inherits = TRUE, ifnotfound = "student_t_nll")),
+                        outcome_loss_scale = paste(format(as.numeric(get0("outcome_loss_scale",
+                          inherits = TRUE, ifnotfound = NA_real_)),
+                          digits = 17L, scientific = TRUE, trim = TRUE),
+                          collapse = ";"), kv_cache_requested = isTRUE(get0("EnableKVCachingRequested",
+                          inherits = TRUE, ifnotfound = FALSE)),
+                        kv_cache_training_requested = isTRUE(get0("EnableKVCachingTrainingRequested",
+                          inherits = TRUE, ifnotfound = FALSE)),
+                        kv_cache_inference_effective = isTRUE(get0("EnableKVCachingInferenceEffective",
+                          inherits = TRUE, ifnotfound = FALSE)),
+                        kv_cache_training_effective = isTRUE(get0("EnableKVCachingTrainingEffective",
+                          inherits = TRUE, ifnotfound = FALSE)),
+                        kv_cache_inference_exercised = KVCacheInferenceExercised,
+                        kv_cache_training_exercised = KVCacheTrainingExercised,
+                        elapsed_seconds = checkpoint_total_seconds,
                         gradient_seconds = checkpoint_gradient_seconds,
-                        loss = Loss_i, gradient_norm = GradNorm_i,
-                        trainable_parameters = as.numeric(nParams),
+                        loss = Loss_i, objective_data_loss = loss_components_i[["objective_data_loss"]],
+                        student_t_nll = loss_components_i[["student_t_nll"]],
+                        raw_mse = loss_components_i[["raw_mse"]],
+                        scaled_mse = loss_components_i[["scaled_mse"]],
+                        kl_local = loss_components_i[["kl_local"]],
+                        kl_global = loss_components_i[["kl_global"]],
+                        kl_place = loss_components_i[["kl_place"]],
+                        kl_unweighted = loss_components_i[["kl_unweighted"]],
+                        kl_weighted = loss_components_i[["kl_weighted"]],
+                        auxiliary_mean_loss = loss_components_i[["auxiliary_mean_loss"]],
+                        prediction_abs_mean = loss_components_i[["prediction_abs_mean"]],
+                        truth_abs_mean = loss_components_i[["truth_abs_mean"]],
+                        gradient_norm = GradNorm_i, trainable_parameters = as.numeric(nParams),
                         solver_num_steps_max = solver_telemetry_i$solver_num_steps_max,
                         solver_num_rejected_steps_max = solver_telemetry_i$solver_num_rejected_steps_max,
                         solver_num_rejected_steps_total = solver_telemetry_i$solver_num_rejected_steps_total,
@@ -6528,6 +6724,11 @@
                     i, nSGD_model))
                   outSampCounter <- outSampCounter + 1
                   ndm_source_extracted("ResultsGet/SuperLModel_GetAnalytics.R")
+                  if (isTRUE(get0("EnableKVCachingInferenceEffective",
+                    inherits = TRUE, ifnotfound = FALSE))) {
+                    KVCacheInferenceExercised <- TRUE
+                    training_telemetry$kv_cache_inference_exercised <- TRUE
+                  }
                   write_training_telemetry()
                 }
             }
@@ -6868,8 +7069,18 @@
                   1:ncol(add_true_out), sep = ""))
                 colnames(add_true_prior) <- c(paste("PreviousSequenceTruth_l",
                   1:ncol(add_true_prior), sep = ""))
-                add_pred_out_baseline <- add_pred_out
-                add_pred_out_baseline[] <- NA
+                add_true_prior_matrix <- as.matrix(add_true_prior)
+                last_observed_context <- apply(add_true_prior_matrix,
+                  1L, function(values) {
+                    values <- values[is.finite(values)]
+                    if (length(values))
+                      tail(values, 1L)
+                    else NA_real_
+                  })
+                add_pred_out_baseline <- matrix(rep(last_observed_context,
+                  times = ncol(add_pred_out)), nrow = nrow(add_pred_out),
+                  ncol = ncol(add_pred_out))
+                colnames(add_pred_out_baseline) <- colnames(add_pred_out)
                 colnames(add_pred_out_baseline) <- gsub(colnames(add_pred_out_baseline),
                   pattern = "Pred", replace = "PredBase")
                 plot(add_true_out, add_pred_out, main = sprintf("%s [Cor: %.3f]",
@@ -6880,15 +7091,45 @@
                   time_anchor_id = np$array(batch_l$time_id_numeric),
                   cbind(add_true_out, add_pred_out, add_pred_out_baseline,
                     add_true_prior)))
-                print2(sprintf("Skill sanity: %.3f", (Skill8SanityCheck <- 1 -
-                  (sum((f2n(sl_dat[, "Truth_l8"]) - f2n(sl_dat[,
-                    "Pred_l8"]))^2) + 0.01)/(sum((f2n(sl_dat[,
-                    "Truth_l8"]) - f2n(sl_dat[, "Truth_l1"]))^2) +
-                    0.01))))
+                configured_horizon <- suppressWarnings(as.integer(if (exists("RealEntry",
+                  inherits = TRUE) && "evaluationHorizon" %in%
+                  names(RealEntry)) {
+                  RealEntry$evaluationHorizon[[1L]]
+                } else {
+                  ncol(add_pred_out)
+                }))
+                if (!is.finite(configured_horizon) || configured_horizon <
+                  1L) {
+                  configured_horizon <- ncol(add_pred_out)
+                }
+                available_horizons <- seq_len(min(configured_horizon,
+                  ncol(add_pred_out)))
+                truth_skill <- unlist(lapply(paste0("Truth_l",
+                  available_horizons), function(column) f2n(sl_dat[,
+                  column])), use.names = FALSE)
+                pred_skill <- unlist(lapply(paste0("Pred_l",
+                  available_horizons), function(column) f2n(sl_dat[,
+                  column])), use.names = FALSE)
+                baseline_skill <- unlist(lapply(paste0("PredBase_l",
+                  available_horizons), function(column) f2n(sl_dat[,
+                  column])), use.names = FALSE)
+                skill_cells <- is.finite(truth_skill) & is.finite(pred_skill) &
+                  is.finite(baseline_skill)
+                ForecastSkillSanityCheck <- if (any(skill_cells)) {
+                  1 - (sum((truth_skill[skill_cells] - pred_skill[skill_cells])^2) +
+                    0.01)/(sum((truth_skill[skill_cells] - baseline_skill[skill_cells])^2) +
+                    0.01)
+                }
+                else {
+                  NA_real_
+                }
+                Skill8SanityCheck <- ForecastSkillSanityCheck
+                print2(sprintf("Persistence skill sanity across %s horizon(s): %.3f",
+                  length(available_horizons), ForecastSkillSanityCheck))
             }
         }
     }
-    sl_dat <- eval(parse(text = sprintf("cbind(sl_dat,\n                    %s,\n                    \"modelingStrategy_name\" = modelingStrategyNameKey,\n                    \"nSGD\" = nSGD_model,\n                    \"nSGDPolicy\" = get0(\"nSGDPolicy\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorMaxSamplesTrain\" = get0(\"nSGDAnchorMaxSamplesTrain\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"nSGDAnchorScope\" = get0(\"nSGDAnchorScope\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorBatch\" = get0(\"nSGDAnchorBatch\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"inference_mc_draws_requested\" = inference_mc_draws_requested,\n                    \"inference_mc_draws_effective\" = inference_mc_draws_effective,\n                    \"inference_key_scheme\" = inference_key_scheme,\n                    \"nBatch\" = nBatch,\n                    \"maxTimesPast\" = maxTimesPast, # past context\n                    \"evaluationTime\" = evaluationTime,\n                    \"evaluationMethod\" = evaluationMethod,\n                    \"OUTER_ITERATION\" = OUTER_ITERATION,\n                    \"i_in_sgd\" = i,\n                    \"te_total\" = te_total, \n                    \"te_grads\" = te_grads, \n                    \"nTrainingSamplesSeen\" = i*nBatch, \n                    \"Skill8SanityCheck\" = Skill8SanityCheck, \n                    \"atEpoch\" = i*nBatch/nSamplesTrain, \n                    \"nParamsModel\" = nParamsModel, \n                    \"maxInSampleTime_id\" = max( input_df_red_in$time_id ),\n                    \"model_id\" = rlang::hash(modelingStrategyNameKey) )",
+    sl_dat <- eval(parse(text = sprintf("cbind(sl_dat,\n                    %s,\n                    \"modelingStrategy_name\" = modelingStrategyNameKey,\n                    \"nSGD\" = nSGD_model,\n                    \"nSGDPolicy\" = get0(\"nSGDPolicy\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorMaxSamplesTrain\" = get0(\"nSGDAnchorMaxSamplesTrain\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"nSGDAnchorScope\" = get0(\"nSGDAnchorScope\", inherits = TRUE, ifnotfound = NA_character_),\n                    \"nSGDAnchorBatch\" = get0(\"nSGDAnchorBatch\", inherits = TRUE, ifnotfound = NA_integer_),\n                    \"inference_mc_draws_requested\" = inference_mc_draws_requested,\n                    \"inference_mc_draws_effective\" = inference_mc_draws_effective,\n                    \"inference_key_scheme\" = inference_key_scheme,\n                    \"nBatch\" = nBatch,\n                    \"maxTimesPast\" = maxTimesPast, # past context\n                    \"evaluationTime\" = evaluationTime,\n                    \"evaluationMethod\" = evaluationMethod,\n                    \"OUTER_ITERATION\" = OUTER_ITERATION,\n                    \"i_in_sgd\" = i,\n                    \"te_total\" = te_total, \n                    \"te_grads\" = te_grads, \n                    \"nTrainingSamplesSeen\" = i*nBatch, \n                    \"Skill8SanityCheck\" = Skill8SanityCheck, \n                    \"ForecastSkillSanityCheck\" = get0(\"ForecastSkillSanityCheck\", inherits = TRUE, ifnotfound = NA_real_),\n                    \"atEpoch\" = i*nBatch/nSamplesTrain, \n                    \"nParamsModel\" = nParamsModel, \n                    \"maxInSampleTime_id\" = max( input_df_red_in$time_id ),\n                    \"model_id\" = rlang::hash(modelingStrategyNameKey) )",
         paste(paste("'", names(unlist(RealEntry)), "'='", unlist(RealEntry),
             "'", sep = ""), collapse = ","))))
     sl_dat <- as.data.frame(sl_dat)
@@ -6970,7 +7211,8 @@
         print2(sprintf("nj %s of %s in GetAnalytics_Sim.R", nj,
             nMonteEval))
         GetPredSaveAtInfo_inference <- list(tmp_ <- nTimesLookValidationInference,
-            diffrax$SaveAt(ts = jnp$array(0L:(tmp_ - 1L))))
+            diffrax$SaveAt(ts = jnp$arange(start = 0L, stop = as.integer(tmp_),
+                dtype = jnp$int32)))
         ok_ <- F
         ok_counter_ <- 0
         while (!ok_) {
@@ -9642,7 +9884,8 @@
     }
     for (name in c("dry_run", "run_figures", "respect_grid_model_type",
         "resave_tfrecords", "force_to_gpu", "enable_kv_cache",
-        "neuralode_variational", "help")) {
+        "enable_kv_cache_training", "neuralode_variational",
+        "help")) {
         if (!is.null(out[[name]])) {
             out[[name]] <- analysis2_parse_bool(out[[name]])
         }
@@ -9679,13 +9922,13 @@
 }, analysis2_supported_flags <- function(mode) {
     base <- c("config", "project_root", "analysis_name", "grid_file",
         "outer", "run_seed", "compute_backend", "force_to_gpu",
-        "gpu_mem_frac", "enable_kv_cache", "inference_mc_draws",
-        "observation_scale_floor", "initial_observation_scale",
+        "gpu_mem_frac", "enable_kv_cache", "enable_kv_cache_training",
+        "inference_mc_draws", "observation_scale_floor", "initial_observation_scale",
         "neuralode_variational", "neuralode_kl_weight", "neuralode_mean_loss_weight",
-        "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier",
-        "solver_profile", "model_type", "respect_grid_model_type",
-        "resave_tfrecords", "run_figures", "tfrecord_dir", "dry_run",
-        "help")
+        "training_objective", "outcome_loss_scale", "n_checkpoints",
+        "max_sgd_steps", "prior_sd_multiplier", "solver_profile",
+        "model_type", "respect_grid_model_type", "resave_tfrecords",
+        "run_figures", "tfrecord_dir", "dry_run", "help")
     extras <- switch(mode, real = c("raw_data_dir", "outcome_metric",
         "data_subset"), sim = character(), multidisease = c("outcome_metric",
         "data_subset", "disease_names", "data_format", "covariate_panel_file",
@@ -9717,7 +9960,8 @@
     }
     boolean_fields <- intersect(c("respect_grid_model_type",
         "resave_tfrecords", "run_figures", "force_to_gpu", "enable_kv_cache",
-        "neuralode_variational", "dry_run", "help"), names(manifest))
+        "enable_kv_cache_training", "neuralode_variational",
+        "dry_run", "help"), names(manifest))
     for (field in boolean_fields) {
         analysis2_parse_bool(manifest[[field]], field = field)
     }
@@ -9749,40 +9993,44 @@
 }, analysis2_mode_defaults <- function(mode) {
     switch(mode, real = list(mode = "real", analysis_name = "RealApril15",
         grid_file = NULL, outer = 3L, run_seed = NULL, compute_backend = "auto",
-        force_to_gpu = NULL, gpu_mem_frac = NULL, enable_kv_cache = FALSE,
-        inference_mc_draws = 5L, observation_scale_floor = 1e-05,
-        initial_observation_scale = 1, neuralode_variational = TRUE,
-        neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
-        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
-        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
-        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
-        raw_data_dir = "Data/MainData", tfrecord_dir = NULL,
-        outcome_metric = "inc_death", data_subset = "high_income",
+        force_to_gpu = NULL, gpu_mem_frac = NULL, enable_kv_cache = TRUE,
+        enable_kv_cache_training = TRUE, inference_mc_draws = 5L,
+        observation_scale_floor = 1e-05, initial_observation_scale = 1,
+        neuralode_variational = TRUE, neuralode_kl_weight = 1,
+        neuralode_mean_loss_weight = 0, training_objective = "student_t_nll",
+        outcome_loss_scale = NULL, n_checkpoints = 1L, max_sgd_steps = NULL,
+        prior_sd_multiplier = 1, solver_profile = "default",
+        model_type = NULL, respect_grid_model_type = TRUE, resave_tfrecords = FALSE,
+        run_figures = FALSE, project_root = NULL, raw_data_dir = "Data/MainData",
+        tfrecord_dir = NULL, outcome_metric = "inc_death", data_subset = "high_income",
         disease_names = NULL, data_format = NULL, dry_run = FALSE,
         help = FALSE), sim = list(mode = "sim", analysis_name = "BigSimsLatest",
         grid_file = NULL, outer = 1L, run_seed = NULL, compute_backend = "auto",
-        force_to_gpu = NULL, gpu_mem_frac = NULL, enable_kv_cache = FALSE,
-        inference_mc_draws = 5L, observation_scale_floor = 1e-05,
-        initial_observation_scale = 1, neuralode_variational = TRUE,
-        neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
-        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
-        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
-        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
-        raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = NULL,
-        data_subset = NULL, disease_names = NULL, data_format = NULL,
-        dry_run = FALSE, help = FALSE), multidisease = list(mode = "multidisease",
-        analysis_name = "RealLatest", grid_file = NULL, outer = 1L,
-        run_seed = NULL, compute_backend = "auto", force_to_gpu = NULL,
-        gpu_mem_frac = NULL, enable_kv_cache = FALSE, inference_mc_draws = 5L,
+        force_to_gpu = NULL, gpu_mem_frac = NULL, enable_kv_cache = TRUE,
+        enable_kv_cache_training = TRUE, inference_mc_draws = 5L,
         observation_scale_floor = 1e-05, initial_observation_scale = 1,
         neuralode_variational = TRUE, neuralode_kl_weight = 1,
-        neuralode_mean_loss_weight = 0, n_checkpoints = 1L, max_sgd_steps = NULL,
+        neuralode_mean_loss_weight = 0, training_objective = "student_t_nll",
+        outcome_loss_scale = NULL, n_checkpoints = 1L, max_sgd_steps = NULL,
         prior_sd_multiplier = 1, solver_profile = "default",
         model_type = NULL, respect_grid_model_type = TRUE, resave_tfrecords = FALSE,
         run_figures = FALSE, project_root = NULL, raw_data_dir = NULL,
-        tfrecord_dir = NULL, outcome_metric = "CountValue", data_subset = "all",
-        disease_names = c("Covid", "Flu"), data_format = "IHME",
-        covariate_panel_file = NULL, covariate_manifest_file = NULL,
+        tfrecord_dir = NULL, outcome_metric = NULL, data_subset = NULL,
+        disease_names = NULL, data_format = NULL, dry_run = FALSE,
+        help = FALSE), multidisease = list(mode = "multidisease",
+        analysis_name = "RealLatest", grid_file = NULL, outer = 1L,
+        run_seed = NULL, compute_backend = "auto", force_to_gpu = NULL,
+        gpu_mem_frac = NULL, enable_kv_cache = TRUE, enable_kv_cache_training = TRUE,
+        inference_mc_draws = 5L, observation_scale_floor = 1e-05,
+        initial_observation_scale = 1, neuralode_variational = TRUE,
+        neuralode_kl_weight = 1, neuralode_mean_loss_weight = 0,
+        training_objective = "student_t_nll", outcome_loss_scale = NULL,
+        n_checkpoints = 1L, max_sgd_steps = NULL, prior_sd_multiplier = 1,
+        solver_profile = "default", model_type = NULL, respect_grid_model_type = TRUE,
+        resave_tfrecords = FALSE, run_figures = FALSE, project_root = NULL,
+        raw_data_dir = NULL, tfrecord_dir = NULL, outcome_metric = "CountValue",
+        data_subset = "all", disease_names = c("Covid", "Flu"),
+        data_format = "IHME", covariate_panel_file = NULL, covariate_manifest_file = NULL,
         dry_run = FALSE, help = FALSE), stop("Unsupported Analysis2 mode: ",
         mode, call. = FALSE))
 }, analysis2_mode_default_grid_file <- function(mode, project_root,
@@ -9837,8 +10085,8 @@
     scalar_fields <- intersect(c("project_root", "analysis_name",
         "grid_file", "model_type", "compute_backend", "raw_data_dir",
         "tfrecord_dir", "outcome_metric", "data_subset", "data_format",
-        "covariate_panel_file", "covariate_manifest_file", "solver_profile"),
-        names(opts))
+        "covariate_panel_file", "covariate_manifest_file", "training_objective",
+        "solver_profile"), names(opts))
     for (field in scalar_fields) {
         overrides[[field]] <- analysis2_normalize_string(opts[[field]])
     }
@@ -9848,8 +10096,8 @@
     for (field in intersect(c("gpu_mem_frac", "inference_mc_draws",
         "observation_scale_floor", "initial_observation_scale",
         "neuralode_kl_weight", "neuralode_mean_loss_weight",
-        "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier"),
-        names(opts))) {
+        "outcome_loss_scale", "n_checkpoints", "max_sgd_steps",
+        "prior_sd_multiplier"), names(opts))) {
         overrides[[field]] <- opts[[field]]
     }
     if (!is.null(opts$outer) || length(opts$positional) > 0L) {
@@ -9860,8 +10108,8 @@
         overrides$disease_names <- analysis2_parse_csv(opts$disease_names)
     }
     for (field in c("respect_grid_model_type", "resave_tfrecords",
-        "run_figures", "force_to_gpu", "enable_kv_cache", "neuralode_variational",
-        "dry_run", "help")) {
+        "run_figures", "force_to_gpu", "enable_kv_cache", "enable_kv_cache_training",
+        "neuralode_variational", "dry_run", "help")) {
         if (!is.null(opts[[field]])) {
             overrides[[field]] <- analysis2_as_flag(opts[[field]])
         }
@@ -9908,8 +10156,16 @@
     spec$.compute_backend_supplied <- NULL
     spec$enable_kv_cache <- analysis2_parse_bool(spec$enable_kv_cache %||%
         defaults$enable_kv_cache, field = "enable_kv_cache")
+    spec$enable_kv_cache_training <- analysis2_parse_bool(spec$enable_kv_cache_training %||%
+        defaults$enable_kv_cache_training, field = "enable_kv_cache_training")
+    if (isTRUE(spec$enable_kv_cache_training) && !isTRUE(spec$enable_kv_cache)) {
+        stop("enable_kv_cache_training=TRUE requires enable_kv_cache=TRUE.",
+            call. = FALSE)
+    }
     spec$neuralode_variational <- analysis2_parse_bool(spec$neuralode_variational %||%
         defaults$neuralode_variational, field = "neuralode_variational")
+    spec$training_objective <- match.arg(tolower(analysis2_normalize_string(spec$training_objective %||%
+        defaults$training_objective)), c("student_t_nll", "scaled_mse"))
     resave_tfrecords <- analysis2_parse_bool(spec$resave_tfrecords %||%
         defaults$resave_tfrecords, field = "resave_tfrecords")
     if (!identical(resave_tfrecords, FALSE)) {
@@ -9994,6 +10250,45 @@
     if (length(spec$neuralode_mean_loss_weight) != 1L || !is.finite(spec$neuralode_mean_loss_weight) ||
         spec$neuralode_mean_loss_weight < 0) {
         stop("`neuralode_mean_loss_weight` must be one finite non-negative value.",
+            call. = FALSE)
+    }
+    if (!is.null(spec$outcome_loss_scale)) {
+        outcome_loss_scale <- spec$outcome_loss_scale
+        if (is.list(outcome_loss_scale)) {
+            outcome_loss_scale <- unlist(outcome_loss_scale,
+                recursive = TRUE, use.names = FALSE)
+        }
+        if (length(outcome_loss_scale) == 1L && is.character(outcome_loss_scale)) {
+            outcome_loss_scale <- strsplit(outcome_loss_scale,
+                ",", fixed = TRUE)[[1L]]
+        }
+        spec$outcome_loss_scale <- suppressWarnings(as.numeric(outcome_loss_scale))
+        if (!length(spec$outcome_loss_scale) || any(!is.finite(spec$outcome_loss_scale)) ||
+            any(spec$outcome_loss_scale <= 0)) {
+            stop("`outcome_loss_scale` must be NULL or a finite positive numeric vector.",
+                call. = FALSE)
+        }
+    }
+    if (identical(spec$training_objective, "scaled_mse")) {
+        if (is.null(spec$outcome_loss_scale)) {
+            stop("`outcome_loss_scale` is required for `training_objective = \"scaled_mse\"`.",
+                call. = FALSE)
+        }
+        if (any(spec$outcome_loss_scale < 1e-08)) {
+            stop("`outcome_loss_scale` values must be at least 1e-8 for scaled MSE.",
+                call. = FALSE)
+        }
+        if (isTRUE(spec$neuralode_variational) || spec$neuralode_kl_weight !=
+            0 || spec$neuralode_mean_loss_weight != 0 || spec$inference_mc_draws !=
+            1L) {
+            stop(paste("`training_objective = \"scaled_mse\"` requires",
+                "`neuralode_variational = FALSE`, `neuralode_kl_weight = 0`,",
+                "`neuralode_mean_loss_weight = 0`, and `inference_mc_draws = 1`."),
+                call. = FALSE)
+        }
+    }
+    else if (!is.null(spec$outcome_loss_scale)) {
+        stop("`outcome_loss_scale` is only valid with `training_objective = \"scaled_mse\"`.",
             call. = FALSE)
     }
     spec$n_checkpoints <- suppressWarnings(as.numeric(spec$n_checkpoints %||%
@@ -10111,12 +10406,13 @@
         "  --grid_file=PATH", "  --outer=1,2,3", "  --run_seed=INTEGER",
         "  --compute_backend=auto|cpu|gpu", "  --force_to_gpu=TRUE|FALSE",
         "  --gpu_mem_frac=NUMBER", "  --enable_kv_cache=TRUE|FALSE",
-        "  --inference_mc_draws=POSITIVE_INTEGER", "  --observation_scale_floor=POSITIVE_NUMBER",
-        "  --initial_observation_scale=NUMBER_GREATER_THAN_OBSERVATION_SCALE_FLOOR",
+        "  --enable_kv_cache_training=TRUE|FALSE", "  --inference_mc_draws=POSITIVE_INTEGER",
+        "  --observation_scale_floor=POSITIVE_NUMBER", "  --initial_observation_scale=NUMBER_GREATER_THAN_OBSERVATION_SCALE_FLOOR",
         "  --neuralode_variational=TRUE|FALSE", "  --neuralode_kl_weight=NUMBER",
-        "  --neuralode_mean_loss_weight=NUMBER", "  --n_checkpoints=POSITIVE_INTEGER",
-        "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)", "  --prior_sd_multiplier=POSITIVE_NUMBER",
-        "  --solver_profile=default|loose|tight|alternative",
+        "  --neuralode_mean_loss_weight=NUMBER", "  --training_objective=student_t_nll|scaled_mse",
+        "  --outcome_loss_scale=POSITIVE_NUMBER[,POSITIVE_NUMBER...]",
+        "  --n_checkpoints=POSITIVE_INTEGER", "  --max_sgd_steps=POSITIVE_INTEGER (pilots only)",
+        "  --prior_sd_multiplier=POSITIVE_NUMBER", "  --solver_profile=default|loose|tight|alternative",
         "  --model_type=DecoderOnly|NeuralODE", "  --respect_grid_model_type=TRUE|FALSE",
         "  --resave_tfrecords=FALSE (TRUE is unsupported; prepare inputs before training)",
         "  --run_figures=TRUE|FALSE", "  --tfrecord_dir=PATH",
@@ -10321,22 +10617,22 @@
         "core_pair_id", "ModelType", "ModelDepth", "ModelDims",
         "nSamplesTrain", "nObsInference", "floatType", "model_spec_name",
         "model_tex_loc", "run_seed", "compute_backend", "gpu_mem_frac",
-        "enable_kv_cache", "inference_mc_draws", "observation_scale_floor",
-        "initial_observation_scale", "neuralode_variational",
-        "neuralode_kl_weight", "neuralode_mean_loss_weight",
-        "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier",
-        "solver_profile", "addon_family", "ResaveThisTFRecord"),
-        sim = c("row_id", "pair_id", "core_row_id", "core_pair_id",
-            "ModelType", "ModelDepth", "ModelDims", "nSamplesTrain",
-            "floatType", "model_spec_name", "model_tex_loc",
-            "run_seed", "compute_backend", "gpu_mem_frac", "enable_kv_cache",
-            "inference_mc_draws", "observation_scale_floor",
-            "initial_observation_scale", "neuralode_variational",
-            "neuralode_kl_weight", "neuralode_mean_loss_weight",
-            "n_checkpoints", "max_sgd_steps", "prior_sd_multiplier",
-            "solver_profile", "addon_family", "ResaveThisTFRecord"),
-        stop("Unsupported Analysis2 mode for canonical TFRecord validation: ",
-            mode, call. = FALSE))
+        "enable_kv_cache", "enable_kv_cache_training", "inference_mc_draws",
+        "observation_scale_floor", "initial_observation_scale",
+        "neuralode_variational", "neuralode_kl_weight", "neuralode_mean_loss_weight",
+        "training_objective", "outcome_loss_scale", "n_checkpoints",
+        "max_sgd_steps", "prior_sd_multiplier", "solver_profile",
+        "addon_family", "ResaveThisTFRecord"), sim = c("row_id",
+        "pair_id", "core_row_id", "core_pair_id", "ModelType",
+        "ModelDepth", "ModelDims", "nSamplesTrain", "floatType",
+        "model_spec_name", "model_tex_loc", "run_seed", "compute_backend",
+        "gpu_mem_frac", "enable_kv_cache", "enable_kv_cache_training",
+        "inference_mc_draws", "observation_scale_floor", "initial_observation_scale",
+        "neuralode_variational", "neuralode_kl_weight", "neuralode_mean_loss_weight",
+        "training_objective", "outcome_loss_scale", "n_checkpoints",
+        "max_sgd_steps", "prior_sd_multiplier", "solver_profile",
+        "addon_family", "ResaveThisTFRecord"), stop("Unsupported Analysis2 mode for canonical TFRecord validation: ",
+        mode, call. = FALSE))
 }, analysis2_scalar_equal <- function(x, y) {
     if (is.null(x) || is.null(y)) {
         return(is.null(x) && is.null(y))
@@ -11430,11 +11726,13 @@
         atol = unname(tolerances[["atol"]]), dt0 = 0.001)
 }, analysis2_real_runtime_globals <- function(row_values, dataset_spec,
     training_spec, state, runtime_env, model_type, run_seed,
-    gpu_mem_frac = NULL, enable_kv_cache = FALSE, inference_mc_draws = 5L,
-    observation_scale_floor = 1e-05, initial_observation_scale = 1,
-    neuralode_variational = TRUE, analysis_name, analysis_date,
-    outer_iteration, holder_folder, tfrecord_dir, n_checkpoints = 1L,
-    prior_sd_multiplier = 1, solver_profile = "default", nsgd_calibration) {
+    gpu_mem_frac = NULL, enable_kv_cache = TRUE, enable_kv_cache_training = TRUE,
+    inference_mc_draws = 5L, observation_scale_floor = 1e-05,
+    initial_observation_scale = 1, neuralode_variational = TRUE,
+    training_objective = "student_t_nll", outcome_loss_scale = NULL,
+    analysis_name, analysis_date, outer_iteration, holder_folder,
+    tfrecord_dir, n_checkpoints = 1L, prior_sd_multiplier = 1,
+    solver_profile = "default", nsgd_calibration) {
     n_samples_train <- max(1L, analysis2_as_int(row_values$nSamplesTrain))
     n_batch <- min(32L, n_samples_train)
     n_sgd <- analysis2_as_int(nsgd_calibration$resolved_n_sgd)
@@ -11507,16 +11805,19 @@
         MaxTimeIndex = max_time_index, useLSTM = FALSE, doGrid = TRUE,
         nRealGridSeed = 128L, nExamplesPerCell = 10L, nRealGrid = nrow(state$truth_df_red),
         GPU_MEM_FRAC = gpu_mem_frac, EnableKVCaching = enable_kv_cache,
-        InferenceMCDraws = inference_mc_draws, ObservationScaleFloor = observation_scale_floor,
-        InitialObservationScale = initial_observation_scale,
-        neuralode_variational = neuralode_variational, AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita,
-            na.rm = TRUE), VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$array(1L:vi_total_times)),
+        EnableKVCachingTraining = enable_kv_cache_training, InferenceMCDraws = inference_mc_draws,
+        ObservationScaleFloor = observation_scale_floor, InitialObservationScale = initial_observation_scale,
+        neuralode_variational = neuralode_variational, training_objective = training_objective,
+        TrainingObjective = training_objective, outcome_loss_scale = outcome_loss_scale,
+        OutcomeLossScale = outcome_loss_scale, AVERAGE_TRUTH = mean(state$truth_df_red$ihme_true_value_per_capita,
+            na.rm = TRUE), VI_SaveAt_ODE = diffrax$SaveAt(ts = jnp$arange(start = 1L,
+            stop = vi_total_times + 1L, dtype = jnp$int32)),
         diff_eq_solver = diffrax$Dopri8(), VI_diff_eq_solver = diffrax$Dopri8(),
         stepsize_controller = diffrax$PIDController(rtol = 1e-07,
             atol = 1e-09), diffraxInterpolator = diffrax$LinearInterpolation,
-        VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim -
-            1L))), VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(vi_total_times -
-            1L))), VI_diff_eq_solver_optim = solver_settings$solver,
+        VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$arange(start = 0L,
+            stop = n_time_steps_sim, dtype = jnp$int32)), VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$arange(start = 0L,
+            stop = vi_total_times, dtype = jnp$int32)), VI_diff_eq_solver_optim = solver_settings$solver,
         VI_diff_eq_solver_dgp = diffrax$Tsit5(), dt0_init = 0.1,
         dt0_init_dgp = 0.001, dt0_init_optim = solver_settings$dt0,
         stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-06,
@@ -11539,8 +11840,10 @@
     globals
 }, analysis2_sim_runtime_globals <- function(row_values, dataset_spec,
     training_spec, runtime_env, model_type, run_seed, gpu_mem_frac = NULL,
-    enable_kv_cache = FALSE, inference_mc_draws = 5L, observation_scale_floor = 1e-05,
+    enable_kv_cache = TRUE, enable_kv_cache_training = TRUE,
+    inference_mc_draws = 5L, observation_scale_floor = 1e-05,
     initial_observation_scale = 1, neuralode_variational = TRUE,
+    training_objective = "student_t_nll", outcome_loss_scale = NULL,
     analysis_name, analysis_date, outer_iteration, holder_folder,
     tfrecord_dir, n_checkpoints = 1L, prior_sd_multiplier = 1,
     solver_profile = "default", sim_scaler, sim_outcome_sd, sim_covariates,
@@ -11593,18 +11896,20 @@
         GPU_MEM_FRAC = gpu_mem_frac, AppendTimeEmbeds = FALSE,
         AppendPlaceEmbeds = FALSE, AttentionHeadDim = 64L, AttentionKVHeads = NULL,
         endAppend = TRUE, EnableKVCaching = enable_kv_cache,
-        InferenceMCDraws = inference_mc_draws, ObservationScaleFloor = observation_scale_floor,
-        InitialObservationScale = initial_observation_scale,
-        neuralode_variational = neuralode_variational, MaxTimeIndex = max_time_index,
+        EnableKVCachingTraining = enable_kv_cache_training, InferenceMCDraws = inference_mc_draws,
+        ObservationScaleFloor = observation_scale_floor, InitialObservationScale = initial_observation_scale,
+        neuralode_variational = neuralode_variational, training_objective = training_objective,
+        TrainingObjective = training_objective, outcome_loss_scale = outcome_loss_scale,
+        OutcomeLossScale = outcome_loss_scale, MaxTimeIndex = max_time_index,
         nPlaces = 1L, nMonteEval = 1L, nBatch_SimGridGen = 8L,
         SimScalingOuterLoops = 1L, SimScalingInnerLoops = 2L,
         nTimesPast = n_times_past, nTimesLookahead = n_times_lookahead,
         nTimesTotal = n_times_total, nTimesThres = 10L, VI_TotalTimesInLikelihood = n_times_lookahead,
         nTimesInLikelihood = n_times_lookahead, NTimeSteps_SIM = n_time_steps_sim,
         nTimesLookValidationInference = n_times_lookahead, MaxSteps = as.integer(10^4),
-        VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$array(0L:(n_time_steps_sim -
-            1L))), VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$array(0L:(n_times_lookahead -
-            1L))), VI_diff_eq_solver_optim = solver_settings$solver,
+        VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$arange(start = 0L,
+            stop = n_time_steps_sim, dtype = jnp$int32)), VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$arange(start = 0L,
+            stop = n_times_lookahead, dtype = jnp$int32)), VI_diff_eq_solver_optim = solver_settings$solver,
         VI_diff_eq_solver_dgp = diffrax$Tsit5(), dt0_init_dgp = 0.001,
         stepsize_controller_dgp = diffrax$PIDController(rtol = 1e-06,
             atol = 1e-07), dt0_init_optim = solver_settings$dt0,
@@ -11699,11 +12004,13 @@
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType),
             compute_backend = spec$compute_backend, resave_tfrecords = FALSE,
             gpu_mem_frac = spec$gpu_mem_frac, enable_kv_cache = spec$enable_kv_cache,
+            enable_kv_cache_training = spec$enable_kv_cache_training,
             inference_mc_draws = spec$inference_mc_draws, observation_scale_floor = spec$observation_scale_floor,
             initial_observation_scale = spec$initial_observation_scale,
             neuralode_variational = isTRUE(spec$neuralode_variational) &&
                 identical(model_type, "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight,
-            neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight)
+            neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight,
+            training_objective = spec$training_objective, outcome_loss_scale = spec$outcome_loss_scale)
         runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
         analysis2_seed_backends(runtime_env, run_seed)
         state <- analysis2_prepare_real_state(ndmdatasets_pkg = ndmdatasets_pkg,
@@ -11716,10 +12023,13 @@
                 dataset_spec = dataset_spec, training_spec = training_spec,
                 state = state, runtime_env = runtime_env, model_type = model_type,
                 run_seed = run_seed, gpu_mem_frac = spec$gpu_mem_frac,
-                enable_kv_cache = config$enable_kv_cache, inference_mc_draws = config$inference_mc_draws,
+                enable_kv_cache = config$enable_kv_cache, enable_kv_cache_training = config$enable_kv_cache_training,
+                inference_mc_draws = config$inference_mc_draws,
                 observation_scale_floor = config$observation_scale_floor,
                 initial_observation_scale = config$initial_observation_scale,
                 neuralode_variational = config$neuralode_variational,
+                training_objective = config$training_objective,
+                outcome_loss_scale = config$outcome_loss_scale,
                 analysis_name = analysis_name, analysis_date = analysis_date,
                 outer_iteration = outer_iteration, holder_folder = run_holder_folder,
                 tfrecord_dir = tfrecord_dir, n_checkpoints = spec$n_checkpoints,
@@ -11833,11 +12143,13 @@
             analysis_root = paths$analysis_root, float_type = as.character(row_values$floatType),
             compute_backend = spec$compute_backend, resave_tfrecords = FALSE,
             gpu_mem_frac = spec$gpu_mem_frac, enable_kv_cache = spec$enable_kv_cache,
+            enable_kv_cache_training = spec$enable_kv_cache_training,
             inference_mc_draws = spec$inference_mc_draws, observation_scale_floor = spec$observation_scale_floor,
             initial_observation_scale = spec$initial_observation_scale,
             neuralode_variational = isTRUE(spec$neuralode_variational) &&
                 identical(model_type, "NeuralODE"), neuralode_kl_weight = spec$neuralode_kl_weight,
-            neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight)
+            neuralode_mean_loss_weight = spec$neuralode_mean_loss_weight,
+            training_objective = spec$training_objective, outcome_loss_scale = spec$outcome_loss_scale)
         runtime_env <- analysis2_prepare_runtime(ndm_pkg, config)
         analysis2_seed_backends(runtime_env, run_seed)
         artifact_key <- as.character(analysis2_as_int(row_values$BaseID))
@@ -11858,10 +12170,13 @@
                 dataset_spec = dataset_spec, training_spec = training_spec,
                 runtime_env = runtime_env, model_type = model_type,
                 run_seed = run_seed, gpu_mem_frac = spec$gpu_mem_frac,
-                enable_kv_cache = config$enable_kv_cache, inference_mc_draws = config$inference_mc_draws,
+                enable_kv_cache = config$enable_kv_cache, enable_kv_cache_training = config$enable_kv_cache_training,
+                inference_mc_draws = config$inference_mc_draws,
                 observation_scale_floor = config$observation_scale_floor,
                 initial_observation_scale = config$initial_observation_scale,
                 neuralode_variational = config$neuralode_variational,
+                training_objective = config$training_objective,
+                outcome_loss_scale = config$outcome_loss_scale,
                 analysis_name = analysis_name, analysis_date = analysis_date,
                 outer_iteration = outer_iteration, holder_folder = run_holder_folder,
                 tfrecord_dir = tfrecord_dir, n_checkpoints = spec$n_checkpoints,
@@ -12188,6 +12503,7 @@
                 ModelType <- analysis2_model_type(analysis2_multidisease_spec,
                   RealEntry$ModelType, default = "DecoderOnly")
                 EnableKVCaching <- analysis2_multidisease_spec$enable_kv_cache
+                EnableKVCachingTraining <- analysis2_multidisease_spec$enable_kv_cache_training
                 InferenceMCDraws <- analysis2_multidisease_spec$inference_mc_draws
                 ObservationScaleFloor <- analysis2_multidisease_spec$observation_scale_floor
                 InitialObservationScale <- analysis2_multidisease_spec$initial_observation_scale
@@ -12195,6 +12511,10 @@
                   identical(ModelType, "NeuralODE")
                 neuralode_kl_weight <- analysis2_multidisease_spec$neuralode_kl_weight
                 neuralode_mean_loss_weight <- analysis2_multidisease_spec$neuralode_mean_loss_weight
+                training_objective <- analysis2_multidisease_spec$training_objective
+                TrainingObjective <- training_objective
+                outcome_loss_scale <- analysis2_multidisease_spec$outcome_loss_scale
+                OutcomeLossScale <- outcome_loss_scale
                 print(sprintf("Using model type: %s", ModelType))
                 ndm_source_extracted("SetupEnv/SuperLModel_MasterImports.R")
                 solver_settings <- analysis2_solver_profile(environment(),
@@ -12220,16 +12540,19 @@
                   MaxSteps <- 100000L
                   dt0_init <- 10^(-1)
                   VI_TotalTimesInLikelihood <- nTimesLookahead
-                  VI_SaveAt_ODE <- diffrax$SaveAt(ts = jnp$array(1:VI_TotalTimesInLikelihood))
+                  VI_SaveAt_ODE <- diffrax$SaveAt(ts = jnp$arange(start = 1L,
+                    stop = as.integer(VI_TotalTimesInLikelihood) +
+                      1L, dtype = jnp$int32))
                   diff_eq_solver <- VI_diff_eq_solver <- diffrax$Dopri8()
                   stepsize_controller = diffrax$PIDController(rtol = 1e-07,
                     atol = 1e-09)
                   diffraxInterpolator <- diffrax$LinearInterpolation
                   MaxSteps <- ai(10^6)
-                  VI_SaveAt_ODE_sim <- diffrax$SaveAt(ts = jnp$array(0L:(NTimeSteps_SIM -
-                    1L)))
-                  VI_SaveAt_ODE_optim <- diffrax$SaveAt(ts = jnp$array(0L:(VI_TotalTimesInLikelihood -
-                    1L)))
+                  VI_SaveAt_ODE_sim <- diffrax$SaveAt(ts = jnp$arange(start = 0L,
+                    stop = as.integer(NTimeSteps_SIM), dtype = jnp$int32))
+                  VI_SaveAt_ODE_optim <- diffrax$SaveAt(ts = jnp$arange(start = 0L,
+                    stop = as.integer(VI_TotalTimesInLikelihood),
+                    dtype = jnp$int32))
                   VI_diff_eq_solver_dgp <- diffrax$Tsit5()
                   VI_diff_eq_solver_optim <- solver_settings$solver
                   dt0_init_dgp <- 0.001

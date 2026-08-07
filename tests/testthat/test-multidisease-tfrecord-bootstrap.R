@@ -512,6 +512,33 @@ test_that("multidisease expected producer has an explicit cross-process contract
     list(contract = "tb-rolling-origin-v1")
   )
 
+  pinned_row <- data.frame(
+    producer_contract = "tb-rolling-origin-v1",
+    experiment_version = "v2",
+    training_target_horizon = 4L,
+    stringsAsFactors = FALSE
+  )
+  expect_identical(
+    ndm:::.ndm_multidisease_expected_producer(
+      runtime_env,
+      row_values = pinned_row
+    ),
+    list(
+      contract = "tb-rolling-origin-v1",
+      design_version = "v2",
+      training_target_horizon = 4L
+    )
+  )
+  mismatched_row <- pinned_row
+  mismatched_row$producer_contract <- "other-v1"
+  expect_error(
+    ndm:::.ndm_multidisease_expected_producer(
+      runtime_env,
+      row_values = mismatched_row
+    ),
+    "does not match"
+  )
+
   runtime_env$ndm_tfrecord_producer <- list(contract = "runtime-v1")
   expect_identical(
     ndm:::.ndm_multidisease_expected_producer(runtime_env),
