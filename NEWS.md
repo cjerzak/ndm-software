@@ -1,5 +1,18 @@
 # ndm 0.5.0
 
+- Trajectory videos after every run. `ndm_run_real()`, `ndm_run_sim()` and
+  `ndm_run_multidisease()` (and the Analysis2 command-line runners, which
+  reach the same entry point) now call `ndmviz::ndm_viz_after_run()` when the
+  `ndmviz` package (https://github.com/cjerzak/ndm-viz) is installed, so each
+  fit's `trajectories/rolling.mp4` (and `training.mp4` when it kept several
+  checkpoints) appears in its result folder. Skipped for dry runs and when
+  `NDM_VIZ_AUTO=FALSE`; never fails a run; writes nothing an analysis reads.
+- Simulation analytics keep the evaluation batch's trajectories: every
+  checkpoint writes `trajectories_sim<af>_i<i>.csv` (past and future truth,
+  posterior-mean forecast, its scale, persistence) next to `res<af>_i<i>.csv`,
+  so simulation videos show trajectories rather than only skill curves. The
+  write is guarded and cannot affect the fit.
+
 - `enable_kv_cache_training` now defaults to `TRUE` across the config, run,
   Analysis2-spec, and runtime layers: DecoderOnly training uses the KV-cached
   rollout by default. The cached training path was verified gradient-equivalent

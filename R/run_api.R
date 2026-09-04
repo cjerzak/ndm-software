@@ -1151,13 +1151,87 @@ ndm_bootstrap_real_tfrecords <- function(project_root = getwd(),
   .ndm_validate_resave_tfrecords(mode, config$resave_tfrecords)
   api_env <- .ndm_legacy_run_env()
   run_fun <- get(.ndm_run_mode_fun_name(mode), envir = api_env, inherits = FALSE)
-  run_fun(.ndm_run_config_to_args(config))
+  started_at <- Sys.time()
+  result <- run_fun(.ndm_run_config_to_args(config))
+  .ndm_post_run_videos(
+    mode = mode,
+    project_root = config$project_root,
+    analysis_name = config$analysis_name,
+    outer = config$outer,
+    started_at = started_at,
+    dry_run = isTRUE(config$dry_run)
+  )
+  result
 }
 
 .ndm_invoke_legacy_analysis2_runner <- function(mode, args = commandArgs(TRUE)) {
   api_env <- .ndm_legacy_run_env()
   run_fun <- get(.ndm_run_mode_fun_name(mode), envir = api_env, inherits = FALSE)
-  run_fun(args)
+  started_at <- Sys.time()
+  result <- run_fun(args)
+  flag <- function(name) {
+    value <- sub(sprintf("^--%s=", name), "", grep(sprintf("^--%s=", name), args, value = TRUE))
+    if (length(value)) value[[length(value)]] else NULL
+  }
+  outer <- flag("outer")
+  .ndm_post_run_videos(
+    mode = mode,
+    project_root = flag("project_root") %||% getwd(),
+    analysis_name = flag("analysis_name"),
+    outer = if (!is.null(outer)) suppressWarnings(as.integer(strsplit(outer, ",", fixed = TRUE)[[1L]])) else NULL,
+    started_at = started_at,
+    dry_run = isTRUE(tolower(flag("dry_run") %||% "false") %in% c("true", "t", "1", "yes")),
+    help = any(args %in% c("--help", "--help=TRUE"))
+  )
+  result
+}
+
+#' Trajectory videos after a run
+#'
+#' After every `ndm_run_real()`, `ndm_run_sim()` and `ndm_run_multidisease()`
+#' call (and after the Analysis2 command-line runners, which reach the same
+#' entry point), `ndm` asks the `ndmviz` package to render the trajectory
+#' videos of the fits the run just wrote, next to their result files in
+#' `<fit folder>/trajectories/`. The step is skipped when `ndmviz` is not
+#' installed, when the run was a dry run, or when the environment variable
+#' `NDM_VIZ_AUTO` is `FALSE`; it never fails the run (problems are reported
+#' as warnings) and it never changes a run's result files.
+#'
+#' @param mode `"real"`, `"sim"` or `"multidisease"`.
+#' @param project_root,analysis_name The run's project root and analysis label.
+#' @param outer The outer rows the run fitted.
+#' @param started_at When the run started; only files written since then are
+#'   rendered.
+#' @param dry_run,help Skip when the run did not fit anything.
+#'
+#' @returns Invisibly, the table returned by `ndmviz::ndm_viz_after_run()`,
+#'   or `NULL` when the step was skipped.
+#' @keywords internal
+.ndm_post_run_videos <- function(mode, project_root, analysis_name, outer = NULL, started_at = NULL,
+                                 dry_run = FALSE, help = FALSE) {
+  enabled <- !tolower(Sys.getenv("NDM_VIZ_AUTO", unset = "TRUE")) %in% c("false", "f", "0", "no", "n")
+  if (!enabled || isTRUE(dry_run) || isTRUE(help) || is.null(analysis_name)) {
+    return(invisible(NULL))
+  }
+  if (!requireNamespace("ndmviz", quietly = TRUE)) {
+    message("ndm: the `ndmviz` package is not installed; no trajectory videos were rendered (set NDM_VIZ_AUTO=FALSE to silence).")
+    return(invisible(NULL))
+  }
+  render <- getExportedValue("ndmviz", "ndm_viz_after_run")
+  result <- tryCatch(
+    render(
+      mode = mode,
+      project_root = project_root,
+      analysis_name = analysis_name,
+      since = started_at,
+      outer = outer
+    ),
+    error = function(e) {
+      warning("ndm: trajectory videos were not rendered: ", conditionMessage(e), call. = FALSE)
+      NULL
+    }
+  )
+  invisible(result)
 }
 
 #' @param config A package-native run configuration created by the matching

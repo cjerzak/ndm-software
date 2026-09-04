@@ -44,6 +44,12 @@ if(SimMode == T){
     )
   }
   res_list <- replicate({list()}, n = nMonteEval)
+  # Trajectories of every evaluation batch, kept for the trajectory videos
+  # (ndmviz): the past and future truth, the posterior-mean forecast, its
+  # scale and the persistence baseline, one row per simulated epidemic and
+  # time. Written once per checkpoint as trajectories_sim<af>_i<i>.csv; a
+  # failure here never affects the run.
+  ndm_viz_trajectory_rows <- list()
   for(nj in 1:nMonteEval){
   print2( sprintf("nj %s of %s in GetAnalytics_Sim.R", nj, nMonteEval  )) 
   #GetPredSaveAtInfo_inference <- list(jnp$array(tmp_ <- nTimesTotal-nTimesLookahead+nTimesLookValidation),
@@ -101,6 +107,31 @@ if(SimMode == T){
                                 pred_l_baselineVal
   LastOutCor <- cor(c(l_true),c(pred_l_mean))
   # plot(c(l_true),c(pred_l_mean_full));abline(a=0,b=1)
+  ndm_viz_trajectory_rows[[nj]] <- try({
+    y_all <- np$asanyarray( batch_l$YTrue )[,,1]
+    n_past <- ncol(y_all) - ncol(l_true)
+    pred_cols <- if(ncol(pred_l_mean) == ncol(y_all)){ (n_past + 1L):ncol(y_all) } else { seq_len(ncol(l_true)) }
+    pred_h <- pred_l_mean[, pred_cols, drop = FALSE]
+    sd_h <- if(all(dim(pred_l_sd) == dim(pred_l_mean))){ pred_l_sd[, pred_cols, drop = FALSE] } else { pred_h * NA_real_ }
+    n_units <- nrow(y_all); n_times <- ncol(y_all)
+    data.table::data.table(
+      monte_eval = nj,
+      unit = rep(seq_len(n_units), times = n_times),
+      t = rep(seq_len(n_times), each = n_units),
+      is_future = rep(seq_len(n_times) > n_past, each = n_units),
+      y_true = as.vector(y_all),
+      y_model = as.vector(cbind(matrix(NA_real_, n_units, n_past), pred_h)),
+      y_sd = as.vector(cbind(matrix(NA_real_, n_units, n_past), sd_h)),
+      y_persist = as.vector(cbind(matrix(NA_real_, n_units, n_past), pred_l_baselineVal_mat)),
+      sim_index = af,
+      i_in_sgd = i,
+      nSGD = nSGD_model,
+      nParamsModel = nParamsModel,
+      ModelType = ModelType,
+      model_spec_name = if(is.null(SimEntry$model_spec_name)){ NA_character_ } else { as.character(SimEntry$model_spec_name) },
+      analysis_name = AnalysisName
+    )
+  }, silent = TRUE)
   
   ##############################
   # R-squared analysis
@@ -446,6 +477,16 @@ if(SimMode == T){
   res_list[[nj]] <- c(do.call(c,tmp), skill_vec, RSS_pred, RSS_baseline, PolicyScenarioSkillRes, PolicyScenarioSkillBaselineRes)
   }
   
+  try({
+    ndm_viz_trajectory_rows <- ndm_viz_trajectory_rows[!vapply(ndm_viz_trajectory_rows, inherits, logical(1), "try-error")]
+    if(length(ndm_viz_trajectory_rows) > 0L){
+      data.table::fwrite(
+        data.table::rbindlist(ndm_viz_trajectory_rows),
+        file = file.path(HolderFolder, sprintf("trajectories_sim%s_i%s.csv", af, i))
+      )
+    }
+  }, silent = TRUE)
+
   #  write loss fig for debugging 
   pdf(file.path(HolderFolder, sprintf("diagnostics%s.pdf", af)), height = 10, width = 5)
   {

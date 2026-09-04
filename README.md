@@ -233,3 +233,13 @@ Equivalent run helpers exist for each orchestration mode:
 - `ndm_create_real_run_config()` + `ndm_run_real()`
 - `ndm_create_sim_run_config()` + `ndm_run_sim()`
 - `ndm_create_multidisease_run_config()` + `ndm_run_multidisease()`
+
+## Trajectory videos
+
+With the companion package [`ndmviz`](https://github.com/cjerzak/ndm-viz)
+installed, every non-dry `ndm_run_*()` call ends by rendering the trajectory
+videos of the fits it wrote (`<fit folder>/trajectories/rolling.mp4`, plus
+`training.mp4` when several checkpoints were kept, each with a `.png` still
+and a `manifest.json`). Set `NDM_VIZ_AUTO=FALSE` to skip the step; a missing
+`ndmviz` only prints a note. Past runs can be rendered with
+`Rscript ndm-viz/scripts/trajectory_video.R --dir=<SavedResults/...>`.
