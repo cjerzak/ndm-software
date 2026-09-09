@@ -368,6 +368,17 @@ if(backbonePath == "initialize"){
         jnp$einsum("nt,ntd->td", weights, sources_f32)$astype(buffer$dtype)
       }
 
+      full_attnres_output <- function(buffer, source_count, TransformerList) {
+        output_params <- TransformerList$AttnResOutput
+        if (is.null(output_params)) {
+          stop("Full attention residual models require AttnResOutput; rebuild models created before the final aggregation was added.", call. = FALSE)
+        }
+        full_attnres_reduce_buffer(
+          buffer, source_count,
+          output_params$PseudoQuery, output_params$NormScale
+        )
+      }
+
       rope_freqs <- jnp$array(
         1 / (10000^(seq(0, as.integer(head_dim %/% 2L) - 1L) / as.integer(head_dim %/% 2L))),
         dtype = jnp$float32
@@ -594,7 +605,7 @@ if(backbonePath == "initialize"){
           xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
         )
         final_carry <- scan_result[[1]]
-        xt_final <- final_carry[[1]]
+        xt_final <- full_attnres_output(final_carry[[2]], final_carry[[3]], TransformerList)
         cache_final <- final_carry[[4]]
         xt_last <- jnp$take(xt_final, safe_last_valid, axis = 0L)
         list(
@@ -816,7 +827,8 @@ if(backbonePath == "initialize"){
           xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
         )
         final_carry <- scan_result[[1]]
-        list("token_out" = jnp$squeeze(final_carry[[1]], 0L), "cache" = final_carry[[4]])
+        xt_final <- full_attnres_output(final_carry[[2]], final_carry[[3]], TransformerList)
+        list("token_out" = jnp$squeeze(xt_final, 0L), "cache" = final_carry[[4]])
       }
       
       # Utility: mask rows of a [T, ...] tensor while keeping static T.
@@ -971,7 +983,8 @@ if(backbonePath == "initialize"){
       init = carry_init,
       xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
     )
-    scan_result[[1]][[1]]
+    final_carry <- scan_result[[1]]
+    full_attnres_output(final_carry[[2]], final_carry[[3]], TransformerList)
   }
 
   RunTransformerBackbone <- function(xt, x_mask, TransformerList) {
@@ -1097,6 +1110,12 @@ if(backbonePath == "initialize"){
                                                                   scale =  0.0000001)$sample( list(ModelDims), seed =4003L+ key)$astype(jaxFloatType),1L))
   }
   names(TransformerList) <- paste0("d",as.character( 1L:length(TransformerList) ))
+  if (isTRUE(UseFullAttentionResiduals)) {
+    TransformerList$AttnResOutput <- list(
+      "PseudoQuery" = jnp$zeros(list(ModelDims), dtype = jaxFloatType),
+      "NormScale" = jnp$ones(list(ModelDims), dtype = jaxFloatType)
+    )
+  }
   print("Generating decoder head...")
   TransformerList$DecoderProj <- eq$nn$Linear(in_features = ModelDims,
                                               out_features = ai(nOutcomes),

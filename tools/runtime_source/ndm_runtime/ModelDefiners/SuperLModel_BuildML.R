@@ -353,11 +353,15 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             subkey <- jax$random$fold_in(key, ai(k-1L))
             # Initialize (in_channels, out_channels) orthogonally
             if (in_channels <= out_channels) {
-              #mat <- jax$random$orthogonal(subkey, n = out_channels, shape = list())[0:in_channels, ]
-              mat <- jax$random$orthogonal(subkey, n = out_channels)[0:in_channels, ]
+              mat <- jnp$take(
+                jax$random$orthogonal(subkey, n = out_channels),
+                jnp$arange(as.integer(in_channels), dtype = jnp$int32), axis = 0L
+              )
             } else {
-              #mat <- jnp$transpose(jax$random$orthogonal(subkey, n = in_channels, shape = list()))[, 1:out_channels]
-              mat <- jnp$transpose(jax$random$orthogonal(subkey, n = in_channels))[, 1:out_channels]
+              mat <- jnp$take(
+                jnp$transpose(jax$random$orthogonal(subkey, n = in_channels)),
+                jnp$arange(as.integer(out_channels), dtype = jnp$int32), axis = 1L
+              )
             }
             kernels[[k]] <- mat
           }
@@ -2085,8 +2089,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             jnp$sum(observation_mask),
             jnp$array(1., dtype = GetPred_output$y_mu$dtype)
           )
+          # Mask targets before arithmetic: multiplying NaN/Inf by zero does
+          # not remove it, including in the backward pass.
+          mse_y <- jnp$where(solver_safe_loss_mask, loss_y, solver_safe_y_mu)
           mean_squared_error <- jnp$sum(
-            jnp$square(solver_safe_y_mu - loss_y) * observation_mask
+            jnp$square(solver_safe_y_mu - mse_y) * observation_mask
           ) / observation_count
           if(identical(training_objective, "scaled_mse")){
             loss_scale <- jnp$array(
@@ -2094,7 +2101,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               dtype = GetPred_output$y_mu$dtype
             )
             scaled_mean_squared_error <- jnp$sum(
-              jnp$square((solver_safe_y_mu - loss_y) / loss_scale) *
+              jnp$square((solver_safe_y_mu - mse_y) / loss_scale) *
                 observation_mask
             ) / observation_count
             student_t_nll <- jnp$array(
@@ -2150,16 +2157,18 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             as.numeric(neuralode_kl_weight),
             dtype = GetPred_output$y_mu$dtype
           ) * unweighted_kl
-          weighted_mean_loss <- jnp$array(
-            ifelse(ModelType == "NeuralODE", neuralode_mean_loss_weight, 0.0),
-            dtype = GetPred_output$y_mu$dtype
-          ) * mean_squared_error
+          weighted_mean_loss <- if (ModelType == "NeuralODE" && neuralode_mean_loss_weight > 0) {
+            jnp$array(neuralode_mean_loss_weight, dtype = GetPred_output$y_mu$dtype) *
+              mean_squared_error
+          } else {
+            zero_loss_component
+          }
           minThis <- likelihood_loss + weighted_kl + weighted_mean_loss
           prediction_abs_mean <- jnp$sum(
             jnp$abs(solver_safe_y_mu) * observation_mask
           ) / observation_count
           truth_abs_mean <- jnp$sum(
-            jnp$abs(loss_y) * observation_mask
+            jnp$abs(mse_y) * observation_mask
           ) / observation_count
         }
         return(list(

@@ -82,7 +82,7 @@ test_that("runtime likelihood and NeuralODE MSE share selected targets", {
   )
   expect_match(
     loss_source,
-    "jnp$square(solver_safe_y_mu - loss_y) * observation_mask",
+    "jnp$square(solver_safe_y_mu - mse_y) * observation_mask",
     fixed = TRUE
   )
   expect_false(grepl("(^|\\n)[[:space:]]*y <- model_targets\\$y", loss_source))

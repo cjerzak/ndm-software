@@ -1,17 +1,54 @@
 # Content of SuperLModel_TrainDefine.R
+ndm_training_lr_schedule <- function(n_steps, peak_value) {
+  # Optax's decay_steps includes warmup. Reserve at least one post-warmup
+  # update for short runs; a single-update run uses the requested peak rate.
+  if (n_steps == 1L) {
+    return(optax$constant_schedule(peak_value))
+  }
+  warmup_steps <- as.integer(min(n_steps - 1L, max(min(100L, n_steps), 0.1 * n_steps)))
+  optax$warmup_cosine_decay_schedule(
+    warmup_steps = warmup_steps,
+    decay_steps = as.integer(n_steps),
+    init_value = peak_value / 100,
+    peak_value = peak_value,
+    end_value = peak_value / 100
+  )
+}
+
+ndm_training_clip_mask <- function(params) {
+  mask <- jax$tree_util$tree_map(function(leaf) TRUE, params)
+  # Pseudo-queries must start at zero for uniform residual mixing. Relative
+  # clipping would suppress their gradients precisely while they learn to
+  # leave zero; retain clipping for all other parameter leaves.
+  backbone <- mask$TSList$TSBackbone
+  for (layer_name in grep("^d[0-9]+$", names(backbone), value = TRUE)) {
+    for (residual_name in c("AttnRes1", "AttnRes2")) {
+      if (!is.null(backbone[[layer_name]][[residual_name]])) {
+        backbone[[layer_name]][[residual_name]]$PseudoQuery <- FALSE
+      }
+    }
+  }
+  if (!is.null(backbone$AttnResOutput)) {
+    backbone$AttnResOutput$PseudoQuery <- FALSE
+  }
+  mask$TSList$TSBackbone <- backbone
+  mask
+}
+
+ndm_training_optimizer <- function(learning_rate) {
+  optax$chain(
+    optax$masked(optax$adaptive_grad_clip(0.1, eps = 0.0001), ndm_training_clip_mask),
+    optax$adabelief(learning_rate = learning_rate, eps = 1e-6, eps_root = 1e-6)
+  )
+}
+
 {
   print("Sarting SuperLModel_TrainDefine.R")
   # sort( sapply(ls(), function(zr){ object.size(eval(parse(text = zr))) }) )
   # if(!SimMode){ save(input_df_red_full, file = "./tmp_input_df_red_full.Rdata"); rm ( input_df_red_full ) }
   saveCheckpointCounter <- outSampCounter <- 0;
-  nRestarts <- 1L; LR_schedule <- optax$warmup_cosine_decay_schedule(warmup_steps = 
-                                                                      (nWarmup <- max(c(min(c(100L,
-                                                                                              nSGD_DefiningLRSeq)),
-                                                                                              0.1*nSGD_DefiningLRSeq))),
-                                                                     decay_steps = max(c(101L,nSGD_DefiningLRSeq-nWarmup)),
-                                                                     init_value = LEARNING_RATE_MAX/100, 
-                                                                     peak_value = LEARNING_RATE_MAX, 
-                                                                     end_value =  LEARNING_RATE_MAX/100)
+  nRestarts <- 1L
+  LR_schedule <- ndm_training_lr_schedule(nSGD_DefiningLRSeq, LEARNING_RATE_MAX)
   if(nRestarts %in% c(2,3)){ stop("Case not implemented in TrainDefine.R") } 
   if(nRestarts > 3){
     LR_schedule <- c(replicate(nRestarts-2L,
@@ -24,15 +61,10 @@
   }
   nSGD_MASTER <- nSGD_DefiningLRSeq
   #LR_schedule_vec <- np$array(  LR_schedule(jnp$array(1L:as.integer(nSGD_DefiningLRSeq) ) ))
-  LR_schedule_vec <- sapply(1:nSGD_MASTER, function(x_){ np$array(  LR_schedule(jnp$array(x_) ))})
+  LR_schedule_vec <- sapply(seq_len(nSGD_MASTER) - 1L, function(x_){ np$array(  LR_schedule(jnp$array(x_) ))})
 
   if(T == T){ 
-  optax_optimizer <-  optax$chain(
-    #optax$clip(1),
-    optax$adaptive_grad_clip( 0.1, eps = 0.0001 ),
-    optax$adabelief( learning_rate = LR_schedule, eps = 1e-6, eps_root = 1e-6 ) 
-    #optax$adamw( learning_rate = LR_schedule  ) 
-  )
+  optax_optimizer <- ndm_training_optimizer(LR_schedule)
   }
   if(T == F){ 
     optax_shampoo <- import("optax_shampoo")

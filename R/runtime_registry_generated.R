@@ -2588,12 +2588,14 @@
                     subkey <- jax$random$fold_in(key, ai(k -
                       1L))
                     if (in_channels <= out_channels) {
-                      mat <- jax$random$orthogonal(subkey, n = out_channels)[0:in_channels,
-                        ]
+                      mat <- jnp$take(jax$random$orthogonal(subkey,
+                        n = out_channels), jnp$arange(as.integer(in_channels),
+                        dtype = jnp$int32), axis = 0L)
                     }
                     else {
-                      mat <- jnp$transpose(jax$random$orthogonal(subkey,
-                        n = in_channels))[, 1:out_channels]
+                      mat <- jnp$take(jnp$transpose(jax$random$orthogonal(subkey,
+                        n = in_channels)), jnp$arange(as.integer(out_channels),
+                        dtype = jnp$int32), axis = 1L)
                     }
                     kernels[[k]] <- mat
                   }
@@ -3935,13 +3937,15 @@
                   observation_mask <- solver_safe_loss_mask$astype(GetPred_output$y_mu$dtype)
                   observation_count <- jnp$maximum(jnp$sum(observation_mask),
                     jnp$array(1, dtype = GetPred_output$y_mu$dtype))
+                  mse_y <- jnp$where(solver_safe_loss_mask, loss_y,
+                    solver_safe_y_mu)
                   mean_squared_error <- jnp$sum(jnp$square(solver_safe_y_mu -
-                    loss_y) * observation_mask)/observation_count
+                    mse_y) * observation_mask)/observation_count
                   if (identical(training_objective, "scaled_mse")) {
                     loss_scale <- jnp$array(outcome_loss_scale,
                       dtype = GetPred_output$y_mu$dtype)
                     scaled_mean_squared_error <- jnp$sum(jnp$square((solver_safe_y_mu -
-                      loss_y)/loss_scale) * observation_mask)/observation_count
+                      mse_y)/loss_scale) * observation_mask)/observation_count
                     student_t_nll <- jnp$array(0, dtype = GetPred_output$y_mu$dtype)
                     likelihood_loss <- scaled_mean_squared_error
                   }
@@ -3978,15 +3982,19 @@
                   unweighted_kl <- local_kl + global_kl + place_kl
                   weighted_kl <- jnp$array(as.numeric(neuralode_kl_weight),
                     dtype = GetPred_output$y_mu$dtype) * unweighted_kl
-                  weighted_mean_loss <- jnp$array(ifelse(ModelType ==
-                    "NeuralODE", neuralode_mean_loss_weight,
-                    0), dtype = GetPred_output$y_mu$dtype) *
-                    mean_squared_error
+                  weighted_mean_loss <- if (ModelType == "NeuralODE" &&
+                    neuralode_mean_loss_weight > 0) {
+                    jnp$array(neuralode_mean_loss_weight, dtype = GetPred_output$y_mu$dtype) *
+                      mean_squared_error
+                  }
+                  else {
+                    zero_loss_component
+                  }
                   minThis <- likelihood_loss + weighted_kl +
                     weighted_mean_loss
                   prediction_abs_mean <- jnp$sum(jnp$abs(solver_safe_y_mu) *
                     observation_mask)/observation_count
-                  truth_abs_mean <- jnp$sum(jnp$abs(loss_y) *
+                  truth_abs_mean <- jnp$sum(jnp$abs(mse_y) *
                     observation_mask)/observation_count
                 }
                 return(list(minThis, list(model_state = state,
@@ -4328,6 +4336,16 @@
                   weights <- jax$nn$softmax(logits, axis = 0L)
                   jnp$einsum("nt,ntd->td", weights, sources_f32)$astype(buffer$dtype)
                 }
+                full_attnres_output <- function(buffer, source_count,
+                  TransformerList) {
+                  output_params <- TransformerList$AttnResOutput
+                  if (is.null(output_params)) {
+                    stop("Full attention residual models require AttnResOutput; rebuild models created before the final aggregation was added.",
+                      call. = FALSE)
+                  }
+                  full_attnres_reduce_buffer(buffer, source_count,
+                    output_params$PseudoQuery, output_params$NormScale)
+                }
                 rope_freqs <- jnp$array(1/(10000^(seq(0, as.integer(head_dim%/%2L) -
                   1L)/as.integer(head_dim%/%2L))), dtype = jnp$float32)
                 apply_rope_batched <- function(x_tnh, pos_ids,
@@ -4517,7 +4535,8 @@
                     init = carry_init, xs = jnp$arange(start = 0L,
                       stop = as.integer(ModelDepth), dtype = jnp$int32))
                   final_carry <- scan_result[[1]]
-                  xt_final <- final_carry[[1]]
+                  xt_final <- full_attnres_output(final_carry[[2]],
+                    final_carry[[3]], TransformerList)
                   cache_final <- final_carry[[4]]
                   xt_last <- jnp$take(xt_final, safe_last_valid,
                     axis = 0L)
@@ -4686,8 +4705,10 @@
                     init = carry_init, xs = jnp$arange(start = 0L,
                       stop = as.integer(ModelDepth), dtype = jnp$int32))
                   final_carry <- scan_result[[1]]
-                  list(token_out = jnp$squeeze(final_carry[[1]],
-                    0L), cache = final_carry[[4]])
+                  xt_final <- full_attnres_output(final_carry[[2]],
+                    final_carry[[3]], TransformerList)
+                  list(token_out = jnp$squeeze(xt_final, 0L),
+                    cache = final_carry[[4]])
                 }
                 mask_prefix_rows <- function(x_T_any, mask_rows_bool) {
                   jnp$where(jnp$expand_dims(mask_rows_bool, 1L),
@@ -4810,7 +4831,9 @@
             scan_result <- jax$lax$scan(f = scan_body, init = carry_init,
                 xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth),
                   dtype = jnp$int32))
-            scan_result[[1]][[1]]
+            final_carry <- scan_result[[1]]
+            full_attnres_output(final_carry[[2]], final_carry[[3]],
+                TransformerList)
         }
         RunTransformerBackbone <- function(xt, x_mask, TransformerList) {
             if (isTRUE(UseFullAttentionResiduals)) {
@@ -4914,6 +4937,11 @@
                 key)$astype(jaxFloatType), 1L))
         }
         names(TransformerList) <- paste0("d", as.character(1L:length(TransformerList)))
+        if (isTRUE(UseFullAttentionResiduals)) {
+            TransformerList$AttnResOutput <- list(PseudoQuery = jnp$zeros(list(ModelDims),
+                dtype = jaxFloatType), NormScale = jnp$ones(list(ModelDims),
+                dtype = jaxFloatType))
+        }
         print("Generating decoder head...")
         TransformerList$DecoderProj <- eq$nn$Linear(in_features = ModelDims,
             out_features = ai(nOutcomes), use_bias = T, key = 993L +
@@ -5894,14 +5922,40 @@
     print2("Done initializing ParseDynamicODE.R")
 })
 
-.ndm_stage_expr_ModelTrainers_SuperLModel_TrainDefine <- expression({
+.ndm_stage_expr_ModelTrainers_SuperLModel_TrainDefine <- expression(ndm_training_lr_schedule <- function(n_steps, peak_value) {
+    if (n_steps == 1L) {
+        return(optax$constant_schedule(peak_value))
+    }
+    warmup_steps <- as.integer(min(n_steps - 1L, max(min(100L,
+        n_steps), 0.1 * n_steps)))
+    optax$warmup_cosine_decay_schedule(warmup_steps = warmup_steps,
+        decay_steps = as.integer(n_steps), init_value = peak_value/100,
+        peak_value = peak_value, end_value = peak_value/100)
+}, ndm_training_clip_mask <- function(params) {
+    mask <- jax$tree_util$tree_map(function(leaf) TRUE, params)
+    backbone <- mask$TSList$TSBackbone
+    for (layer_name in grep("^d[0-9]+$", names(backbone), value = TRUE)) {
+        for (residual_name in c("AttnRes1", "AttnRes2")) {
+            if (!is.null(backbone[[layer_name]][[residual_name]])) {
+                backbone[[layer_name]][[residual_name]]$PseudoQuery <- FALSE
+            }
+        }
+    }
+    if (!is.null(backbone$AttnResOutput)) {
+        backbone$AttnResOutput$PseudoQuery <- FALSE
+    }
+    mask$TSList$TSBackbone <- backbone
+    mask
+}, ndm_training_optimizer <- function(learning_rate) {
+    optax$chain(optax$masked(optax$adaptive_grad_clip(0.1, eps = 1e-04),
+        ndm_training_clip_mask), optax$adabelief(learning_rate = learning_rate,
+        eps = 1e-06, eps_root = 1e-06))
+}, {
     print("Sarting SuperLModel_TrainDefine.R")
     saveCheckpointCounter <- outSampCounter <- 0
     nRestarts <- 1L
-    LR_schedule <- optax$warmup_cosine_decay_schedule(warmup_steps = (nWarmup <- max(c(min(c(100L,
-        nSGD_DefiningLRSeq)), 0.1 * nSGD_DefiningLRSeq))), decay_steps = max(c(101L,
-        nSGD_DefiningLRSeq - nWarmup)), init_value = LEARNING_RATE_MAX/100,
-        peak_value = LEARNING_RATE_MAX, end_value = LEARNING_RATE_MAX/100)
+    LR_schedule <- ndm_training_lr_schedule(nSGD_DefiningLRSeq,
+        LEARNING_RATE_MAX)
     if (nRestarts %in% c(2, 3)) {
         stop("Case not implemented in TrainDefine.R")
     }
@@ -5914,13 +5968,11 @@
             1:(nRestarts - 1)))))
     }
     nSGD_MASTER <- nSGD_DefiningLRSeq
-    LR_schedule_vec <- sapply(1:nSGD_MASTER, function(x_) {
+    LR_schedule_vec <- sapply(seq_len(nSGD_MASTER) - 1L, function(x_) {
         np$array(LR_schedule(jnp$array(x_)))
     })
     if (T == T) {
-        optax_optimizer <- optax$chain(optax$adaptive_grad_clip(0.1,
-            eps = 1e-04), optax$adabelief(learning_rate = LR_schedule,
-            eps = 1e-06, eps_root = 1e-06))
+        optax_optimizer <- ndm_training_optimizer(LR_schedule)
     }
     if (T == F) {
         optax_shampoo <- import("optax_shampoo")

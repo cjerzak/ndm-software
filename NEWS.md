@@ -1,5 +1,15 @@
 # ndm 0.5.0
 
+- Full attention residual transformers now aggregate all residual sources at
+  the output, including in cached decoding. This adds `AttnResOutput`
+  parameters; earlier full attention residual checkpoints must be rebuilt.
+  Zero-initialized residual-attention queries are excluded from adaptive
+  gradient clipping so their initial updates are not suppressed.
+- Fixed convolution initialization when input channels exceed model width,
+  masked non-finite targets contaminating MSE and disabled auxiliary losses,
+  and cosine learning-rate decay ending one warmup period too early. Learning
+  rate telemetry now uses the optimizer's zero-based update count.
+
 - Trajectory videos after every run. `ndm_run_real()`, `ndm_run_sim()` and
   `ndm_run_multidisease()` (and the Analysis2 command-line runners, which
   reach the same entry point) now call `ndmviz::ndm_viz_after_run()` when the
