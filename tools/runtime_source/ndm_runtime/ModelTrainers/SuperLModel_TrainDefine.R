@@ -42,6 +42,15 @@ ndm_training_optimizer <- function(learning_rate) {
   )
 }
 
+ndm_training_tree_finite <- function(tree) {
+  finite <- jnp$array(TRUE)
+  for (leaf in jax$tree_util$tree_leaves(tree)) {
+    if (eq$is_inexact_array(leaf)) finite <- jnp$logical_and(finite, jnp$all(jnp$isfinite(leaf)))
+  }
+  finite
+}
+
+
 {
   print("Sarting SuperLModel_TrainDefine.R")
   # sort( sapply(ls(), function(zr){ object.size(eval(parse(text = zr))) }) )
@@ -153,7 +162,7 @@ ndm_training_optimizer <- function(learning_rate) {
   }
   jit_apply_updates <- eq$filter_jit(optax$apply_updates)
   jit_get_update <- eq$filter_jit(optax_optimizer$update)
-  train_step_compiled <- switch_filter_jit(function(ModelList,
+  train_step_impl <- function(ModelList,
                                                     batch_pkg,
                                                     y_true,
                                                     y_mask,
@@ -208,21 +217,48 @@ ndm_training_optimizer <- function(learning_rate) {
     } else {
       NULL
     }
-    updated_model <- eq$combine(
-      optax$apply_updates(model_array_tree, updates_and_state[[1]]),
-      model_arrays[[2]]
+    candidate_arrays <- optax$apply_updates(model_array_tree, updates_and_state[[1]])
+    grad_norm <- optax$global_norm(jax$tree_util$tree_leaves(grad_arrays))
+    accepted <- jnp$logical_and(jnp$isfinite(loss_and_state[[1]]), jnp$isfinite(grad_norm))
+    accepted <- jnp$logical_and(accepted, jnp$all(loss_aux$solver_diagnostics$success))
+    accepted <- jnp$logical_and(accepted, ndm_training_tree_finite(
+      list(candidate_arrays, updates_and_state[[2]], loss_aux$model_state)
+    ))
+    # Donation consumes the input handles even on rejection. Return unchanged
+    # values through the compiled boundary so R can still diagnose failures.
+    chosen <- jax$lax$cond(
+      accepted, function(pair) pair[[1L]], function(pair) pair[[2L]],
+      list(list(candidate_arrays, updates_and_state[[2]]), list(model_array_tree, opt_state))
     )
+    updated_model <- eq$combine(chosen[[1L]], model_arrays[[2]])
     list(
       "loss" = loss_and_state[[1]],
       "state" = loss_aux$model_state,
       "solver_diagnostics" = loss_aux$solver_diagnostics,
       "loss_components" = loss_aux$loss_components,
-      "grad_norm" = optax$global_norm(jax$tree_util$tree_leaves(grad_arrays)),
+      "grad_norm" = grad_norm,
+      "update_accepted" = accepted,
       "model" = updated_model,
-      "opt_state" = updates_and_state[[2]],
+      "opt_state" = chosen[[2L]],
       "block_update_metrics" = block_update_metrics
     )
-  })
+  }
+  DonateTrainingState <- get0("DonateTrainingState", inherits = TRUE, ifnotfound = TRUE)
+  if (!is.logical(DonateTrainingState) || length(DonateTrainingState) != 1L || is.na(DonateTrainingState)) {
+    stop("DonateTrainingState must be one non-missing logical value.", call. = FALSE)
+  }
+  train_step_owned_compiled <- switch_filter_jit(function(fixed, owned) {
+    do.call(train_step_impl, c(list(ModelList = owned$model), fixed, list(opt_state = owned$opt_state)))
+  }, donate = if (DonateTrainingState) "all-except-first" else "none")
+  train_step_compiled <- function(ModelList, batch_pkg, y_true, y_mask, iteration,
+                                  state, PriorList, PolicyList, GetPredSaveAtInfo, seed, opt_state) {
+    train_step_owned_compiled(
+      list(batch_pkg = batch_pkg, y_true = y_true, y_mask = y_mask, iteration = iteration,
+           state = state, PriorList = PriorList, PolicyList = PolicyList,
+           GetPredSaveAtInfo = GetPredSaveAtInfo, seed = seed),
+      list(model = ModelList, opt_state = opt_state)
+    )
+  }
 }
 
 # perform main training sequence

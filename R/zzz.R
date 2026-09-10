@@ -251,6 +251,15 @@ ndm_print <- function(text, quiet = FALSE) {
 #' @param compute_backend Compute device policy: `"auto"` selects a supported
 #'   JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`
 #'   require the named backend.
+#' @param transformer_compute_dtype Transformer activation precision. `"auto"`
+#'   uses BF16 for FP32 CUDA models and native precision otherwise. `"native"`,
+#'   `"bfloat16"`, and `"float32"` are explicit overrides. Master parameters,
+#'   optimizer moments, prediction heads, and ODE arithmetic retain `float_type`.
+#' @param transformer_activation_checkpointing Recompute transformer sublayer
+#'   intermediates during backpropagation to reduce activation memory.
+#' @param donate_training_state Allow compiled updates to reuse parameter and
+#'   optimizer buffers. Rejected updates return the original values in fresh
+#'   usable state handles for diagnostics.
 #' @param ... Additional named values appended to the configuration object.
 #'
 #' @returns `ndm_create_config()` returns an object of class `ndm_config`.
@@ -286,10 +295,20 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               training_objective = c("student_t_nll", "scaled_mse"),
                               outcome_loss_scale = NULL,
                               compute_backend = c("auto", "cpu", "gpu"),
+                              transformer_compute_dtype = c("auto", "native", "bfloat16", "float32"),
+                              transformer_activation_checkpointing = TRUE,
+                              donate_training_state = TRUE,
                               ...) {
   compute_backend_supplied <- !missing(compute_backend)
   model_type <- match.arg(model_type)
   float_type <- match.arg(float_type)
+  transformer_compute_dtype <- match.arg(transformer_compute_dtype)
+  for (control in c("transformer_activation_checkpointing", "donate_training_state")) {
+    value <- get(control)
+    if (!is.logical(value) || length(value) != 1L || is.na(value)) {
+      stop(sprintf("`%s` must be one non-missing logical value.", control), call. = FALSE)
+    }
+  }
   neuralode_optim_solver <- match.arg(neuralode_optim_solver)
   neuralode_optim_controller <- match.arg(neuralode_optim_controller)
   training_objective <- match.arg(training_objective)
@@ -400,6 +419,9 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     model_type = model_type,
     backbone = backbone,
     float_type = float_type,
+    transformer_compute_dtype = transformer_compute_dtype,
+    transformer_activation_checkpointing = transformer_activation_checkpointing,
+    donate_training_state = donate_training_state,
     force_to_gpu = force_to_gpu_compat,
     compute_backend = compute_backend,
     resave_tfrecords = isTRUE(resave_tfrecords),

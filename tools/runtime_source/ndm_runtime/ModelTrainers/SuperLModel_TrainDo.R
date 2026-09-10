@@ -493,6 +493,16 @@ ndm_training_iteration_key <- function(iteration) {
     as.integer(iteration)
   )
 }
+if (identical(get0("TrainingStateUsable", ifnotfound = TRUE), FALSE)) {
+  stop("A donated training call failed before returning state; restore a checkpoint before retrying.", call. = FALSE)
+}
+if (isTRUE(DonateTrainingState) && i_ <= nSGD_model) {
+  # Own each leaf once at entry: caller snapshots and repeated initialization
+  # leaves must not alias buffers that the optimizer is permitted to consume.
+  own_leaf <- function(x) if (eq$is_array(x)) jnp$array(x, copy = TRUE) else x
+  ModelList <- jax$tree_util$tree_map(own_leaf, ModelList)
+  opt_state <- jax$tree_util$tree_map(own_leaf, opt_state)
+}
 for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
   i_ <- i; fulliter_timer <- Sys.time()
   if(i %% 10 == 0){  print(i); gc(); py_gc$collect() }
@@ -545,6 +555,7 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
     } else {
       GetPredSaveAtInfo_default
     }
+    TrainingStateUsable <- !isTRUE(DonateTrainingState)
     train_step_result <- train_step_compiled(
       ModelList,
       batch_pkg,
@@ -558,6 +569,12 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
       keys_mat,
       opt_state
     )
+    # Surface asynchronous device errors before declaring donated state usable.
+    train_step_result <- jax$block_until_ready(train_step_result)
+    # These handles hold the original values when the compiled update rejects.
+    ModelList <- train_step_result$model
+    opt_state <- train_step_result$opt_state
+    TrainingStateUsable <- TRUE
     Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
     GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
     loss_components_i <- loss_components_to_host(train_step_result$loss_components)
@@ -634,7 +651,8 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
       solver_diagnostics_host
     )
 
-    UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i)
+    UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i) &
+      isTRUE(as.logical(np$array(train_step_result$update_accepted)))
     if(! UpdateParametersCond ){
       nonfinite_capture <- capture_nonfinite_report(
         batch_l = dat_,

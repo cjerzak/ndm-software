@@ -68,155 +68,72 @@ if(backbonePath == "initialize"){
     stop("Transformer query heads must be divisible by KV heads.", call. = FALSE)
   }
   
-  # --- Unified dot-product attention helper (flash or XLA) ----------------------
-  if (!exists(".__unified_attn_defined", inherits = FALSE)) {
-    print("Defining Unified dot-product attention helper...")
-    # Decide implementation once per host (not traced)
-    choose_attention_impl <- function(prefer = "auto"){
-      if (prefer == "xla")   return("xla")
-      # cuDNN is a CUDA-only implementation. An explicit preference must still
-      # fall back to portable XLA on CPU and non-CUDA JAX GPU plugins.
-      if (prefer == "cudnn") {
-        return(if (isTRUE(cuda_attention_available) && isTRUE(TRY_FLASH)) "cudnn" else "xla")
-      }
-      if (isTRUE(cuda_attention_available) && isTRUE(TRY_FLASH)) "cudnn" else "xla"
-    }
-    
-    # Normalize masks: accept numeric/bool; pass through existing broadcast shapes.
-    # We don't reshape aggressively to avoid surprises—your code already forms [N,T,S] or [1,N,1,S].
-    normalize_mask_for_dpa <- function(mask){
-      if (is.null(mask)) return(NULL)
-      # ensure boolean
-      if (mask$dtype$`__str__`() != "bool"){ mask <- jnp$greater(mask, 0) }
-      return( mask ) 
-    }
-    
-    # q,k,v expected as [T, N, H] (your current convention) or [B, T, N, H]
-    # If mask != NULL we use XLA path (flash_jax doesn’t support arbitrary masks);
-    # if mask == NULL we use flash on GPU, XLA otherwise.
-    dot_product_attention_unified <- function(q, k, v, 
-                                              mask = NULL, 
-                                              is_causal = FALSE, 
-                                              prefer = "auto"){
-      
-      # try automatic routing of attention type 
-      impl <- choose_attention_impl( prefer )
-      
-      # Route: force XLA when a mask is provided + on flash-flash branch (not cudnn-flash branch)
-      #if (!is.null(mask)){ impl <- "xla" } 
-      
-      if (impl == "cudnn"){
-        if(FALSE){  
-          # flash-flash path (doesn't allow masking)
-          # Flash/cuDNN path (no mask): compute in fp16 for speed, cast back to input dtype
-          # Notes: also supports sliding/ring attention for long series 
-          # Notes: mask
-          # Note: remove padding by flattening tokens from every batch into a single (total_tokens, n_heads, head_dim) tensor and pass cu_seqlens (cumulative lengths). 
-          # The official FlashAttention API supports this (and it's what gives you both correctness and speed). The flash_attn_jax repo exposes flash MHA functionality
-          
-          # Support both [T,N,H] and [B,T,N,H]; vmap over batch if needed.
-          if (length(q$shape) == 3L) {
-            # requires fp16, then cast back
-            out <- flash_mha(q$astype(jnp$float16), 
-                             k$astype(jnp$float16), 
-                             v$astype(jnp$float16), is_causal = is_causal)
-          }
-          if (length(q$shape) != 3L) {
-            vmap_flash <- jax$vmap(flash_one <- function(qb, kb, vb) flash_mha(qb, kb, vb, is_causal = is_causal), 
-                                   in_axes = list(0L, 0L, 0L))
-            out <- vmap_flash(q$astype(jnp$float16),
-                              k$astype(jnp$float16),
-                              v$astype(jnp$float16))
-          }
-        }
-        if(FALSE){ 
-          # cudnn-flash path: supports masks; requires fp16, then cast back
-          # no padding 
-          mask_dpa <- normalize_mask_for_dpa(mask)
-          out <- jax$nn$dot_product_attention(
-            q$astype(jnp$float16),
-            k$astype(jnp$float16),
-            v$astype(jnp$float16),
-            mask = mask_dpa,
-            is_causal = is_causal,
-            implementation = "cudnn"
-          )
-        }
-        if(TRUE){
-          # cudnn-flash path: supports masks; requires fp16, then cast back
-          # with padding 
-          next8 <- function(n) as.integer(((n + 7L) %/% 8L) * 8L)
-          pad_TNH <- function(x, newT){
-            pad <- newT - x$shape[[1]]
-            if (pad <= 0L) return(x)
-            jnp$pad(x, list(c(0L, pad), c(0L, 0L), c(0L, 0L)))
-          }
-          
-          Tq <- as.integer(ifelse(length(q$shape) == 3L, yes =q$shape[[1]],no = q$shape[[2]]))
-          Sk <- as.integer(ifelse(length(k$shape) == 3L, yes = k$shape[[1]],no= k$shape[[2]]))
-          Tq8 <- next8(Tq); Sk8 <- next8(Sk)
-          
-          # Pad Q/K/V
-          q_pad <- pad_TNH(q, Tq8)
-          k_pad <- pad_TNH(k, Sk8)
-          v_pad <- pad_TNH(v, Sk8)
-          
-          # Pad mask on the S axis if present
-          if (!is.null(mask)) {
-            pad_S <- Sk8 - Sk
-            if( pad_S > 0L ) {
-              if( Tq != 1 ){ 
-                mask <- jnp$pad(mask,
-                        list(c(0L, 0L), c(0L, pad_S), c(0L, pad_S)),
-                        mode = "constant", 
-                        constant_values = FALSE)
-              }
-              if( Tq==1 ){ 
-                mask <- jnp$pad(mask,
-                                list(c(0L, 0L), c(0L, 0L), c(0L, pad_S)),
-                                mode = "constant", 
-                                constant_values = FALSE)
-              }
-            }
-          }
-          
-          out <- jax$nn$dot_product_attention(
-            q_pad$astype(jnp$float16),
-            k_pad$astype(jnp$float16),
-            v_pad$astype(jnp$float16),
-            mask = mask,
-            implementation = "cudnn",
-            is_causal = is_causal
-          )
-          
-          # Slice back to original T
-          out <- jnp$take(out, jnp$arange(Tq, dtype = jnp$int32), axis = 0L)
-        }
-        return(out$astype(k$dtype))
-      }
-      if (impl != "cudnn"){
-        # XLA path: supports masks; requires fp32, then cast back
-        mask_dpa <- normalize_mask_for_dpa(mask)
-        out <- jax$nn$dot_product_attention(
-          q$astype(jnp$float32),
-          k$astype(jnp$float32),
-          v$astype(jnp$float32),
-          mask = mask_dpa,
-          is_causal = is_causal,
-          implementation = "xla"
-        )
-        return(out$astype(k$dtype))
-      }
-    }
-    
-    .__unified_attn_defined <- TRUE
+  # Keep master parameters and ODE arithmetic at jaxFloatType. Only the
+  # transformer projections, residual sources and K/V caches use this dtype.
+  TransformerComputeDtype <- match.arg(backbone_runtime_get0(
+    "TransformerComputeDtype", "auto"
+  ), c("auto", "native", "bfloat16", "float32"))
+  native_dtype <- jnp$dtype(jaxFloatType)$name
+  TransformerComputeDtypeResolved <- if (TransformerComputeDtype == "auto") {
+    if (cuda_attention_available && native_dtype == "float32") "bfloat16" else native_dtype
+  } else if (TransformerComputeDtype == "native") native_dtype else TransformerComputeDtype
+  transformer_dtype <- jnp$dtype(TransformerComputeDtypeResolved)
+  TransformerActivationCheckpointing <- backbone_runtime_get0("TransformerActivationCheckpointing", TRUE)
+  if (!is.logical(TransformerActivationCheckpointing) ||
+      length(TransformerActivationCheckpointing) != 1L || is.na(TransformerActivationCheckpointing)) {
+    stop("TransformerActivationCheckpointing must be one non-missing logical value.", call. = FALSE)
   }
-  
-  # Kv cache helpers
-  {
-    if (!exists(".__kv_helpers_defined", inherits = FALSE)) {
-      print("Defining KV cache helpers...")
-      # Single-position rotary embedding (RoPE) for [H]-dim token vector
+  transformer_checkpoint <- function(f, prevent_cse = TRUE) {
+    # Layers are unrolled: prevent compiler CSE from retaining recomputed
+    # intermediates. A surrounding recurrent scan can omit that barrier.
+    if (TransformerActivationCheckpointing) eq$filter_checkpoint(f, prevent_cse = prevent_cse) else f
+  }
+
+  choose_attention_impl <- function(prefer = "auto") {
+    # CPU and non-CUDA devices always fall back to portable XLA.
+    if (prefer == "xla" || !cuda_attention_available || !TRY_FLASH) "xla" else "cudnn"
+  }
+  normalize_mask_for_dpa <- function(mask) {
+    if (is.null(mask)) NULL else jnp$greater(mask, 0)
+  }
+  dot_product_attention_unified <- function(q, k, v, mask = NULL,
+                                            is_causal = FALSE, prefer = "auto") {
+    impl <- choose_attention_impl(prefer)
+    mask <- normalize_mask_for_dpa(mask)
+    # Native GQA accepts fewer K/V heads than query heads. Never tile K/V.
+    dtype <- if (q$dtype$name == "bfloat16") jnp$bfloat16 else if (impl == "cudnn") jnp$float16 else jnp$float32
+    if (impl == "cudnn") {
+      seq_axis <- length(q$shape) - 2L
+      tq <- as.integer(q$shape[[seq_axis]])
+      sk <- as.integer(k$shape[[seq_axis]])
+      tq_pad <- as.integer((8L - tq %% 8L) %% 8L)
+      sk_pad <- as.integer((8L - sk %% 8L) %% 8L)
+      pad_sequence <- function(x, amount) {
+        pads <- rep(list(c(0L, 0L)), length(x$shape))
+        pads[[seq_axis]] <- c(0L, amount)
+        jnp$pad(x, pads)
+      }
+      q <- pad_sequence(q, tq_pad)
+      k <- pad_sequence(k, sk_pad)
+      v <- pad_sequence(v, sk_pad)
+      if (!is.null(mask)) {
+        pads <- rep(list(c(0L, 0L)), length(mask$shape))
+        if (mask$shape[[length(pads) - 1L]] != 1L) pads[[length(pads) - 1L]] <- c(0L, tq_pad)
+        pads[[length(pads)]] <- c(0L, sk_pad)
+        mask <- jnp$pad(mask, pads, constant_values = FALSE)
+      } else if (sk_pad > 0L) {
+        mask <- jnp$less(jnp$arange(sk + sk_pad), sk)
+        mask <- jnp$reshape(mask, list(1L, 1L, sk + sk_pad))
+      }
+    }
+    out <- jax$nn$dot_product_attention(
+      q$astype(dtype), k$astype(dtype), v$astype(dtype), mask = mask,
+      is_causal = is_causal, implementation = impl
+    )
+    if (impl == "cudnn") out <- jnp$take(out, jnp$arange(tq, dtype = jnp$int32), axis = as.integer(seq_axis - 1L))
+    out$astype(q$dtype)
+  }
+
       rope_apply_single <- function(x_d, pos, head_dim) {
         # x_d: [H] for one head (not all heads), H == head_dim
         # Split into even/odd (cos/sin) halves
@@ -400,7 +317,7 @@ if(backbonePath == "initialize"){
         s_ <- jnp$expand_dims(jnp$sin(angles), 1L)
         x_rot_even <- x_even * c_ - x_odd * s_
         x_rot_odd <- x_even * s_ + x_odd * c_
-        jnp$concatenate(list(x_rot_even, x_rot_odd), axis = 2L)
+        jnp$concatenate(list(x_rot_even, x_rot_odd), axis = 2L)$astype(x_tnh$dtype)
       }
       
       # Allocate KV cache: per layer, K/V are [max_len, num_kv_heads, head_dim].
@@ -423,599 +340,121 @@ if(backbonePath == "initialize"){
         out
       }
       
-      # Prefill K/V at their physical sequence positions. The actual input mask
-      # defines cache validity; this preserves left padding and any masked holes.
-      # Returns the last valid physical position and the next writable position.
-      transformer_prefill_kv <- function(xt, x_mask, TransformerList) {
-        T_full <- xt$shape[[1]]
-        D <- xt$shape[[2]]
-        dtype <- xt$dtype
-        layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
-        pos_ids <- jnp$arange(T_full, dtype = jnp$int32)
 
-        cache <- kv_cache_allocate(
-          max_len = T_full,
-          num_layers = ModelDepth,
-          num_kv_heads = num_kv_heads,
-          head_dim = head_dim,
-          dtype = dtype
-        )
-
-        cache_valid <- jnp$greater(jnp$squeeze(x_mask, 1L), 0)
-        last_valid <- jnp$max(jnp$where(
-          cache_valid,
-          pos_ids,
-          jnp$array(-1L, dtype = jnp$int32)
-        ))
-        safe_last_valid <- jnp$maximum(
-          last_valid,
-          jnp$array(0L, dtype = jnp$int32)
-        )
-        next_pos <- jnp$add(last_valid, jnp$array(1L, dtype = jnp$int32))
-        xt <- mask_prefix_rows(xt, cache_valid)
-        mask_keys_prefill <- jnp$expand_dims(cache_valid, 0L)
-        mask_keys_prefill <- jnp$expand_dims(mask_keys_prefill, 0L)
-        mask_keys_prefill <- jnp$broadcast_to(mask_keys_prefill, list(num_heads, T_full, T_full))
-        q_mask_T11 <- jnp$expand_dims(jnp$expand_dims(cache_valid, 1L), 2L)
-        is_causal_flag <- (ModelType == "DecoderOnly")
-
-        if (!isTRUE(UseFullAttentionResiduals)) {
-          for (l_ in seq_along(layer_names)) {
-            L <- TransformerList[[layer_names[[l_]]]]
-            xt <- jnp$multiply(NormFxn(xtminu1 <- xt), L$NormScalerInput)
-            q <- jnp$dot(xt, L$Multihead$W_q)
-            k <- jnp$dot(xt, L$Multihead$W_k)
-            v <- jnp$dot(xt, L$Multihead$W_v)
-            qh <- jnp$reshape(q, list(T_full, num_heads, head_dim))
-            kh_kv <- jnp$reshape(k, list(T_full, num_kv_heads, head_dim))
-            vh_kv <- jnp$reshape(v, list(T_full, num_kv_heads, head_dim))
-            qh <- apply_rope_batched(qh, pos_ids, head_dim)
-            kh_kv <- apply_rope_batched(kh_kv, pos_ids, head_dim)
-            qh <- qk_normalize_heads(qh, L$Multihead$QNormScale)
-            kh_kv <- qk_normalize_heads(kh_kv, L$Multihead$KNormScale)
-            cache[[l_]]$k <- jax$lax$dynamic_update_slice(
-              cache[[l_]]$k,
-              kh_kv,
-              jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
-            )
-            cache[[l_]]$v <- jax$lax$dynamic_update_slice(
-              cache[[l_]]$v,
-              vh_kv,
-              jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
-            )
-            cache[[l_]]$valid <- cache_valid
-            kh <- repeat_kv_heads(kh_kv, kv_group_size)
-            vh <- repeat_kv_heads(vh_kv, kv_group_size)
-            attn_out <- dot_product_attention_unified(
-              qh,
-              kh,
-              vh,
-              mask = mask_keys_prefill,
-              is_causal = is_causal_flag,
-              prefer = "auto"
-            )$astype(dtype)
-            attn_out <- jnp$where(q_mask_T11, attn_out, jnp$zeros_like(attn_out))
-            attn_TD <- jnp$reshape(attn_out, list(T_full, num_heads * head_dim))
-            attn_proj <- jnp$dot(attn_TD, L$Multihead$W_o)
-            xt <- (xtminu1 * jax$nn$softplus(L$ResidCon1$WtSkipPath)) +
-              (attn_proj * jax$nn$softplus(L$ResidCon1$WtResidPath))
-            xt <- NormFxn(xtminu1 <- xt) * L$NormScalerPostMultiHead
-            xt <- jax$nn$swish(ffmap(L$FFN$WideProj1, xt)) *
-              ffmap(L$FFN$WideProj2, xt)
-            xt <- ffmap(L$FFN$OutProj1, xt)
-            xt <- (xtminu1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
-              (xt * jax$nn$softplus(L$ResidCon2$WtResidPath))
-            xt <- mask_prefix_rows(xt, cache_valid)
-          }
-
-          xt_last <- jnp$take(xt, safe_last_valid, axis = 0L)
-          return(list(
-            "xt_last" = xt_last,
-            "cache" = cache,
-            "last_valid" = last_valid,
-            "next_pos" = next_pos
-          ))
-        }
-
-        initial_append <- attnres_append(
-          attnres_init_buffer(T_full, D, dtype),
-          jnp$array(0L, dtype = jnp$int32),
-          xt
-        )
-        carry_init <- list(xt, initial_append$buffer, initial_append$count, cache)
-        layer_branches <- lapply(seq_along(layer_names), function(branch_idx) {
-          L <- TransformerList[[layer_names[[branch_idx]]]]
-          function(carry_in) {
-            xt_in <- carry_in[[1]]
-            source_buffer <- carry_in[[2]]
-            source_count <- carry_in[[3]]
-            cache_in <- carry_in[[4]]
-
-            attn_source <- full_attnres_reduce_buffer(
-              source_buffer,
-              source_count,
-              L$AttnRes1$PseudoQuery,
-              L$AttnRes1$NormScale
-            )
-            xt_norm <- jnp$multiply(NormFxn(attn_source), L$NormScalerInput)
-            q <- jnp$dot(xt_norm, L$Multihead$W_q)
-            k <- jnp$dot(xt_norm, L$Multihead$W_k)
-            v <- jnp$dot(xt_norm, L$Multihead$W_v)
-            qh <- jnp$reshape(q, list(T_full, num_heads, head_dim))
-            kh_kv <- jnp$reshape(k, list(T_full, num_kv_heads, head_dim))
-            vh_kv <- jnp$reshape(v, list(T_full, num_kv_heads, head_dim))
-            qh <- apply_rope_batched(qh, pos_ids, head_dim)
-            kh_kv <- apply_rope_batched(kh_kv, pos_ids, head_dim)
-            qh <- qk_normalize_heads(qh, L$Multihead$QNormScale)
-            kh_kv <- qk_normalize_heads(kh_kv, L$Multihead$KNormScale)
-
-            cache_in[[branch_idx]]$k <- jax$lax$dynamic_update_slice(
-              cache_in[[branch_idx]]$k,
-              kh_kv,
-              jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
-            )
-            cache_in[[branch_idx]]$v <- jax$lax$dynamic_update_slice(
-              cache_in[[branch_idx]]$v,
-              vh_kv,
-              jnp$array(c(0L, 0L, 0L), dtype = jnp$int32)
-            )
-            cache_in[[branch_idx]]$valid <- cache_valid
-
-            kh <- repeat_kv_heads(kh_kv, kv_group_size)
-            vh <- repeat_kv_heads(vh_kv, kv_group_size)
-            attn_out <- dot_product_attention_unified(
-              qh,
-              kh,
-              vh,
-              mask = mask_keys_prefill,
-              is_causal = is_causal_flag,
-              prefer = "auto"
-            )$astype(dtype)
-            attn_out <- jnp$where(q_mask_T11, attn_out, jnp$zeros_like(attn_out))
-            attn_proj <- jnp$dot(
-              jnp$reshape(attn_out, list(T_full, num_heads * head_dim)),
-              L$Multihead$W_o
-            )
-            attn_proj <- mask_prefix_rows(attn_proj, cache_valid)
-            attn_append <- attnres_append(source_buffer, source_count, attn_proj)
-
-            mlp_source <- full_attnres_reduce_buffer(
-              attn_append$buffer,
-              attn_append$count,
-              L$AttnRes2$PseudoQuery,
-              L$AttnRes2$NormScale
-            )
-            xt_out <- NormFxn(mlp_source) * L$NormScalerPostMultiHead
-            xt_out <- jax$nn$swish(ffmap(L$FFN$WideProj1, xt_out)) *
-              ffmap(L$FFN$WideProj2, xt_out)
-            xt_out <- ffmap(L$FFN$OutProj1, xt_out)
-            xt_out <- mask_prefix_rows(xt_out, cache_valid)
-            ffn_append <- attnres_append(attn_append$buffer, attn_append$count, xt_out)
-
-            list(xt_out, ffn_append$buffer, ffn_append$count, cache_in)
-          }
-        })
-        scan_body <- function(carry_in, i) {
-          carry_next <- jax$lax$switch(index = i, branches = layer_branches, operand = carry_in)
-          list(carry_next, jnp$array(0L, dtype = jnp$int32))
-        }
-        scan_result <- jax$lax$scan(
-          f = scan_body,
-          init = carry_init,
-          xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
-        )
-        final_carry <- scan_result[[1]]
-        xt_final <- full_attnres_output(final_carry[[2]], final_carry[[3]], TransformerList)
-        cache_final <- final_carry[[4]]
-        xt_last <- jnp$take(xt_final, safe_last_valid, axis = 0L)
-        list(
-          "xt_last" = xt_last,
-          "cache" = cache_final,
-          "last_valid" = last_valid,
-          "next_pos" = next_pos
-        )
-      }
-      
-      # Single decode step with KV cache update for position `pos`
-      # token_in: [D] (embedding at index pos), returns: list("token_out"=[D], "cache"=updated)
-      transformer_decode_step_kv <- function(token_in, pos, TransformerList, cache) {
-        D <- token_in$shape[[1]]
-        dtype <- token_in$dtype
-        layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
-        pos_i32 <- jnp$astype(pos, jnp$int32)
-        cache_capacity <- cache[[1L]]$k$shape[[1]]
-        pos_i32 <- eq$error_if(
-          pos_i32,
-          jnp$logical_or(
-            jnp$less(pos_i32, jnp$array(0L, dtype = jnp$int32)),
-            jnp$greater_equal(
-              pos_i32,
-              jnp$array(cache_capacity, dtype = jnp$int32)
-            )
-          ),
-          "KV cache decode position is outside the allocated capacity."
-        )
-
-        if (!isTRUE(UseFullAttentionResiduals)) {
-          xt <- token_in
-          for (l_ in seq_along(layer_names)) {
-            L <- TransformerList[[layer_names[[l_]]]]
-            xt <- jnp$multiply(
-              NormFxn(xtminus1 <- xt),
-              jnp$squeeze(L$NormScalerInput, 0L)
-            )
-            q_full <- jnp$dot(xt, L$Multihead$W_q)
-            k_full <- jnp$dot(xt, L$Multihead$W_k)
-            v_full <- jnp$dot(xt, L$Multihead$W_v)
-            q_NH <- jnp$squeeze(
-              apply_rope_batched(
-                jnp$reshape(q_full, list(1L, num_heads, head_dim)),
-                jnp$reshape(pos_i32, list(1L)),
-                head_dim
-              ),
-              0L
-            )
-            k_KH <- jnp$squeeze(
-              apply_rope_batched(
-                jnp$reshape(k_full, list(1L, num_kv_heads, head_dim)),
-                jnp$reshape(pos_i32, list(1L)),
-                head_dim
-              ),
-              0L
-            )
-            v_KH <- jnp$reshape(v_full, list(num_kv_heads, head_dim))
-            q_NH <- qk_normalize_heads(q_NH, L$Multihead$QNormScale)
-            k_KH <- qk_normalize_heads(k_KH, L$Multihead$KNormScale)
-
-            max_len <- cache[[l_]]$k$shape[[1]]
-            pos_layer <- pos_i32
-            write_idx <- jnp$array(c(pos_layer, 0L, 0L), dtype = jnp$int32)
-            cache[[l_]]$k <- jax$lax$dynamic_update_slice(
-              cache[[l_]]$k,
-              jnp$expand_dims(k_KH, 0L),
-              write_idx
-            )
-            cache[[l_]]$v <- jax$lax$dynamic_update_slice(
-              cache[[l_]]$v,
-              jnp$expand_dims(v_KH, 0L),
-              write_idx
-            )
-            cache[[l_]]$valid <- jax$lax$dynamic_update_slice(
-              cache[[l_]]$valid,
-              jnp$greater(
-                jnp$ones(list(1L), dtype = jnp$int32),
-                jnp$array(0L, dtype = jnp$int32)
-              ),
-              jnp$reshape(pos_layer, list(1L))
-            )
-
-            q_TNH <- jnp$expand_dims(q_NH, 0L)
-            K_SNH <- repeat_kv_heads(cache[[l_]]$k, kv_group_size)
-            V_SNH <- repeat_kv_heads(cache[[l_]]$v, kv_group_size)
-            idx_full <- jnp$arange(max_len, dtype = jnp$int32)
-            keys_mask_1d <- jnp$logical_and(
-              cache[[l_]]$valid,
-              jnp$less_equal(idx_full, pos_layer)
-            )
-            mask_keys_decode <- jnp$expand_dims(keys_mask_1d, 0L)
-            mask_keys_decode <- jnp$expand_dims(mask_keys_decode, 0L)
-            mask_keys_decode <- jnp$broadcast_to(mask_keys_decode, list(num_heads, 1L, max_len))
-            attn <- dot_product_attention_unified(
-              q = q_TNH,
-              k = K_SNH,
-              v = V_SNH,
-              mask = mask_keys_decode,
-              is_causal = FALSE,
-              prefer = "xla"
-            )$astype(dtype)
-            mha_out <- jnp$dot(
-              jnp$squeeze(jnp$reshape(attn, list(1L, num_heads * head_dim)), 0L),
-              L$Multihead$W_o
-            )
-            xt <- (xtminus1 * jax$nn$softplus(L$ResidCon1$WtSkipPath)) +
-              (mha_out * jax$nn$softplus(L$ResidCon1$WtResidPath))
-            xt <- NormFxn(xtminus1 <- xt) * jnp$squeeze(L$NormScalerPostMultiHead, 0L)
-            xt <- jax$nn$swish(L$FFN$WideProj1(xt)) * L$FFN$WideProj2(xt)
-            xt <- L$FFN$OutProj1(xt)
-            xt <- (xtminus1 * jax$nn$softplus(L$ResidCon2$WtSkipPath)) +
-              (xt * jax$nn$softplus(L$ResidCon2$WtResidPath))
-          }
-          return(list("token_out" = xt, "cache" = cache))
-        }
-
-        xt <- jnp$expand_dims(token_in, 0L)
-        initial_append <- attnres_append(
-          attnres_init_buffer(1L, D, dtype),
-          jnp$array(0L, dtype = jnp$int32),
-          xt
-        )
-        carry_init <- list(xt, initial_append$buffer, initial_append$count, cache)
-        layer_branches <- lapply(seq_along(layer_names), function(branch_idx) {
-          L <- TransformerList[[layer_names[[branch_idx]]]]
-          function(carry_in) {
-            xt_in <- carry_in[[1]]
-            source_buffer <- carry_in[[2]]
-            source_count <- carry_in[[3]]
-            cache_in <- carry_in[[4]]
-
-            attn_source <- full_attnres_reduce_buffer(
-              source_buffer,
-              source_count,
-              L$AttnRes1$PseudoQuery,
-              L$AttnRes1$NormScale
-            )
-            xt_norm <- jnp$multiply(NormFxn(attn_source), L$NormScalerInput)
-            q_full <- jnp$dot(xt_norm, L$Multihead$W_q)
-            k_full <- jnp$dot(xt_norm, L$Multihead$W_k)
-            v_full <- jnp$dot(xt_norm, L$Multihead$W_v)
-            q_TNH <- jnp$reshape(q_full, list(1L, num_heads, head_dim))
-            k_KH <- jnp$reshape(k_full, list(1L, num_kv_heads, head_dim))
-            v_KH <- jnp$reshape(v_full, list(1L, num_kv_heads, head_dim))
-            q_TNH <- apply_rope_batched(q_TNH, jnp$reshape(pos_i32, list(1L)), head_dim)
-            k_KH <- apply_rope_batched(k_KH, jnp$reshape(pos_i32, list(1L)), head_dim)
-            q_TNH <- qk_normalize_heads(q_TNH, L$Multihead$QNormScale)
-            k_KH <- qk_normalize_heads(k_KH, L$Multihead$KNormScale)
-
-            max_len <- cache_in[[branch_idx]]$k$shape[[1]]
-            pos_layer <- pos_i32
-            write_idx <- jnp$array(c(pos_layer, 0L, 0L), dtype = jnp$int32)
-            cache_in[[branch_idx]]$k <- jax$lax$dynamic_update_slice(
-              cache_in[[branch_idx]]$k,
-              k_KH,
-              write_idx
-            )
-            cache_in[[branch_idx]]$v <- jax$lax$dynamic_update_slice(
-              cache_in[[branch_idx]]$v,
-              v_KH,
-              write_idx
-            )
-            cache_in[[branch_idx]]$valid <- jax$lax$dynamic_update_slice(
-              cache_in[[branch_idx]]$valid,
-              jnp$greater(
-                jnp$ones(list(1L), dtype = jnp$int32),
-                jnp$array(0L, dtype = jnp$int32)
-              ),
-              jnp$reshape(pos_layer, list(1L))
-            )
-
-            K_SNH <- repeat_kv_heads(cache_in[[branch_idx]]$k, kv_group_size)
-            V_SNH <- repeat_kv_heads(cache_in[[branch_idx]]$v, kv_group_size)
-            idx_full <- jnp$arange(max_len, dtype = jnp$int32)
-            keys_mask_1d <- jnp$logical_and(
-              cache_in[[branch_idx]]$valid,
-              jnp$less_equal(idx_full, pos_layer)
-            )
-            mask_keys_decode <- jnp$expand_dims(keys_mask_1d, 0L)
-            mask_keys_decode <- jnp$expand_dims(mask_keys_decode, 0L)
-            mask_keys_decode <- jnp$broadcast_to(mask_keys_decode, list(num_heads, 1L, max_len))
-            attn <- dot_product_attention_unified(
-              q = q_TNH,
-              k = K_SNH,
-              v = V_SNH,
-              mask = mask_keys_decode,
-              is_causal = FALSE,
-              prefer = "xla"
-            )$astype(dtype)
-            attn_proj <- jnp$dot(
-              jnp$reshape(attn, list(1L, num_heads * head_dim)),
-              L$Multihead$W_o
-            )
-            attn_append <- attnres_append(source_buffer, source_count, attn_proj)
-
-            mlp_source <- full_attnres_reduce_buffer(
-              attn_append$buffer,
-              attn_append$count,
-              L$AttnRes2$PseudoQuery,
-              L$AttnRes2$NormScale
-            )
-            xt_out <- NormFxn(mlp_source) * L$NormScalerPostMultiHead
-            xt_out <- jax$nn$swish(ffmap(L$FFN$WideProj1, xt_out)) *
-              ffmap(L$FFN$WideProj2, xt_out)
-            xt_out <- ffmap(L$FFN$OutProj1, xt_out)
-            ffn_append <- attnres_append(attn_append$buffer, attn_append$count, xt_out)
-
-            list(xt_out, ffn_append$buffer, ffn_append$count, cache_in)
-          }
-        })
-        scan_body <- function(carry_in, i) {
-          carry_next <- jax$lax$switch(index = i, branches = layer_branches, operand = carry_in)
-          list(carry_next, jnp$array(0L, dtype = jnp$int32))
-        }
-        scan_result <- jax$lax$scan(
-          f = scan_body,
-          init = carry_init,
-          xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
-        )
-        final_carry <- scan_result[[1]]
-        xt_final <- full_attnres_output(final_carry[[2]], final_carry[[3]], TransformerList)
-        list("token_out" = jnp$squeeze(xt_final, 0L), "cache" = final_carry[[4]])
-      }
-      
-      # Utility: mask rows of a [T, ...] tensor while keeping static T.
-      mask_prefix_rows <- function(x_T_any, mask_rows_bool){
-        # x_T_any: [T, ...], mask_rows_bool: [T] bool
-        jnp$where(
-          jnp$expand_dims(mask_rows_bool, 1L),
-          x_T_any,
-          jnp$zeros_like(x_T_any)
-        )
-      }
-      .__kv_helpers_defined <- TRUE
+  # Stack sources *inside* rematerialization. The backward pass retains the
+  # individual layer outputs, not a full [2*depth+1,T,D] buffer per layer.
+  full_attnres_reduce_sources <- transformer_checkpoint(function(sources, query, scale) {
+    full_attnres_reduce_buffer(
+      jnp$stack(sources, axis = 0L), jnp$array(as.integer(length(sources)), dtype = jnp$int32),
+      query, scale
+    )
+  })
+  transformer_norm <- function(x) {
+    if (x$dtype$name == "bfloat16") NormFxn(x$astype(jnp$float32))$astype(x$dtype) else NormFxn(x)
+  }
+  transformer_linear <- function(x, layer) {
+    y <- jnp$dot(x, jnp$transpose(layer$weight$astype(x$dtype)))
+    if (!is.null(layer$bias)) y <- y + layer$bias$astype(x$dtype)
+    y$astype(x$dtype)
+  }
+  transformer_ffn <- transformer_checkpoint(function(x, L) {
+    x <- transformer_norm(x) * L$NormScalerPostMultiHead$astype(x$dtype)
+    x <- jax$nn$swish(transformer_linear(x, L$FFN$WideProj1)) *
+      transformer_linear(x, L$FFN$WideProj2)
+    transformer_linear(x, L$FFN$OutProj1)
+  })
+  transformer_attention <- transformer_checkpoint(function(x, L, positions, mask,
+                                                            causal, prefer, cache, pos) {
+    dtype <- x$dtype
+    x <- transformer_norm(x) * L$NormScalerInput$astype(dtype)
+    project <- function(w, heads) jnp$reshape(jnp$dot(x, w$astype(dtype)), list(x$shape[[1]], heads, head_dim))
+    q <- qk_normalize_heads(apply_rope_batched(project(L$Multihead$W_q, num_heads), positions, head_dim), L$Multihead$QNormScale)
+    k <- qk_normalize_heads(apply_rope_batched(project(L$Multihead$W_k, num_kv_heads), positions, head_dim), L$Multihead$KNormScale)
+    v <- project(L$Multihead$W_v, num_kv_heads)
+    if (!is.null(cache)) {
+      write_pos <- if (is.null(pos)) jnp$array(0L, dtype = jnp$int32) else pos
+      idx <- jnp$array(c(write_pos, 0L, 0L), dtype = jnp$int32)
+      cache$k <- jax$lax$dynamic_update_slice(cache$k, k, idx)
+      cache$v <- jax$lax$dynamic_update_slice(cache$v, v, idx)
     }
+    if (!is.null(pos)) {
+      k <- cache$k
+      v <- cache$v
+    }
+    out <- dot_product_attention_unified(q, k, v, mask, causal, prefer)$astype(dtype)
+    list(value = jnp$dot(jnp$reshape(out, list(x$shape[[1]], num_heads * head_dim)), L$Multihead$W_o$astype(dtype)), cache = cache)
+  })
+  transformer_skip <- function(x, branch, weights) {
+    x * jax$nn$softplus(weights$WtSkipPath$astype(x$dtype)) +
+      branch * jax$nn$softplus(weights$WtResidPath$astype(x$dtype))
   }
 
-  TransformerStep_NoCache <- function(xt, TransformerList_d, x_mask_attn) {
-    xt <- jnp$multiply(NormFxn(xtm1 <- xt), TransformerList_d$NormScalerInput)
-
-    if (UseLatentAttention) {
-      stop("Latent Attention not double checked -- do not use")
+  transformer_run <- function(xt, x_mask, TransformerList, mode = "full", cache = NULL, pos = NULL, max_len = NULL) {
+    xt <- xt$astype(transformer_dtype)
+    rows <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
+    positions <- if (mode == "decode") jnp$reshape(pos, list(1L)) else jnp$arange(xt$shape[[1]], dtype = jnp$int32)
+    xt <- mask_sequence_rows_2d(xt, rows)
+    if (mode == "prefill") {
+      if (is.null(max_len)) max_len <- as.integer(xt$shape[[1]])
+      if (max_len < xt$shape[[1]]) stop("KV cache capacity must cover the prefill context.", call. = FALSE)
+      cache <- kv_cache_allocate(max_len, ModelDepth, num_kv_heads, head_dim, xt$dtype)
     }
-
-    q_ <- jnp$dot(xt, TransformerList_d$Multihead$W_q)
-    k_ <- jnp$dot(xt, TransformerList_d$Multihead$W_k)
-    v_ <- jnp$dot(xt, TransformerList_d$Multihead$W_v)
-
-    q_ <- jnp$reshape(q_, list(q_$shape[[1]], num_heads, head_dim))
-    k_ <- jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, head_dim))
-    v_ <- jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, head_dim))
-
-    pos_ids <- jnp$arange(q_$shape[[1]], dtype = jnp$int32)
-    q_ <- apply_rope_batched(q_, pos_ids, head_dim)
-    k_ <- apply_rope_batched(k_, pos_ids, head_dim)
-    q_ <- qk_normalize_heads(q_, TransformerList_d$Multihead$QNormScale)
-    k_ <- qk_normalize_heads(k_, TransformerList_d$Multihead$KNormScale)
-    k_ <- repeat_kv_heads(k_, kv_group_size)
-    v_ <- repeat_kv_heads(v_, kv_group_size)
-
-    mask_bool <- jnp$greater(x_mask_attn, 0)
-    mask_bool <- jnp$broadcast_to(
-      mask_bool,
-      list(num_heads, mask_bool$shape[[1]], mask_bool$shape[[2]])
-    )
-
-    xt_attn <- dot_product_attention_unified(
-      q = q_,
-      k = k_,
-      v = v_,
-      mask = mask_bool,
-      is_causal = (ModelType == "DecoderOnly"),
-      prefer = "auto"
-    )$astype(k_$dtype)
-
-    xt_attn <- jnp$reshape(xt_attn, list(xt_attn$shape[[1]], num_heads * head_dim))
-    xt <- jnp$dot(xt_attn, TransformerList_d$Multihead$W_o)
-    xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon1$WtSkipPath) +
-      xt * jax$nn$softplus(TransformerList_d$ResidCon1$WtResidPath)
-    xt <- NormFxn(xt) * TransformerList_d$NormScalerPostMultiHead
-    xt <- jax$nn$swish(ffmap(TransformerList_d$FFN$WideProj1, xt)) *
-      ffmap(TransformerList_d$FFN$WideProj2, xt)
-    xt <- ffmap(TransformerList_d$FFN$OutProj1, xt)
-    xt <- xtm1 <- xtm1 * jax$nn$softplus(TransformerList_d$ResidCon2$WtSkipPath) +
-      xt * jax$nn$softplus(TransformerList_d$ResidCon2$WtResidPath)
-    xt
-  }
-
-  RunTransformerBackbone_FullAttnRes <- function(xt, x_mask, TransformerList) {
-    if (UseLatentAttention) {
-      stop("Latent Attention not double checked -- do not use")
-    }
-
-    row_mask_bool <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
-    x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
-    mask_bool <- jnp$greater(x_mask_attn, 0)
-    mask_bool <- jnp$broadcast_to(
-      mask_bool,
-      list(num_heads, mask_bool$shape[[1]], mask_bool$shape[[2]])
-    )
-    xt <- mask_sequence_rows_2d(xt, row_mask_bool)
-    layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
-    pos_ids <- jnp$arange(xt$shape[[1]], dtype = jnp$int32)
-    initial_append <- attnres_append(
-      attnres_init_buffer(xt$shape[[1]], xt$shape[[2]], xt$dtype),
-      jnp$array(0L, dtype = jnp$int32),
-      xt
-    )
-    carry_init <- list(xt, initial_append$buffer, initial_append$count)
-    layer_branches <- lapply(layer_names, function(layer_name) {
+    sources <- list(xt)
+    for (layer_name in paste0("d", seq_len(ModelDepth))) {
       L <- TransformerList[[layer_name]]
-      function(carry_in) {
-        source_buffer <- carry_in[[2]]
-        source_count <- carry_in[[3]]
-
-        attn_source <- full_attnres_reduce_buffer(
-          source_buffer,
-          source_count,
-          L$AttnRes1$PseudoQuery,
-          L$AttnRes1$NormScale
-        )
-        xt_norm <- jnp$multiply(NormFxn(attn_source), L$NormScalerInput)
-        q_ <- jnp$dot(xt_norm, L$Multihead$W_q)
-        k_ <- jnp$dot(xt_norm, L$Multihead$W_k)
-        v_ <- jnp$dot(xt_norm, L$Multihead$W_v)
-        q_ <- jnp$reshape(q_, list(q_$shape[[1]], num_heads, head_dim))
-        k_ <- jnp$reshape(k_, list(k_$shape[[1]], num_kv_heads, head_dim))
-        v_ <- jnp$reshape(v_, list(v_$shape[[1]], num_kv_heads, head_dim))
-        q_ <- apply_rope_batched(q_, pos_ids, head_dim)
-        k_ <- apply_rope_batched(k_, pos_ids, head_dim)
-        q_ <- qk_normalize_heads(q_, L$Multihead$QNormScale)
-        k_ <- qk_normalize_heads(k_, L$Multihead$KNormScale)
-        k_ <- repeat_kv_heads(k_, kv_group_size)
-        v_ <- repeat_kv_heads(v_, kv_group_size)
-
-        xt_attn <- dot_product_attention_unified(
-          q = q_,
-          k = k_,
-          v = v_,
-          mask = mask_bool,
-          is_causal = (ModelType == "DecoderOnly"),
-          prefer = "auto"
-        )$astype(k_$dtype)
-
-        attn_proj <- jnp$dot(
-          jnp$reshape(xt_attn, list(xt_attn$shape[[1]], num_heads * head_dim)),
-          L$Multihead$W_o
-        )
-        attn_proj <- mask_sequence_rows_2d(attn_proj, row_mask_bool)
-        attn_append <- attnres_append(source_buffer, source_count, attn_proj)
-
-        mlp_source <- full_attnres_reduce_buffer(
-          attn_append$buffer,
-          attn_append$count,
-          L$AttnRes2$PseudoQuery,
-          L$AttnRes2$NormScale
-        )
-        xt_out <- NormFxn(mlp_source) * L$NormScalerPostMultiHead
-        xt_out <- jax$nn$swish(ffmap(L$FFN$WideProj1, xt_out)) *
-          ffmap(L$FFN$WideProj2, xt_out)
-        xt_out <- ffmap(L$FFN$OutProj1, xt_out)
-        xt_out <- mask_sequence_rows_2d(xt_out, row_mask_bool)
-        ffn_append <- attnres_append(attn_append$buffer, attn_append$count, xt_out)
-
-        list(xt_out, ffn_append$buffer, ffn_append$count)
+      source <- if (UseFullAttentionResiduals) full_attnres_reduce_sources(sources, L$AttnRes1$PseudoQuery, L$AttnRes1$NormScale) else xt
+      layer_cache <- if (mode == "full") NULL else cache[[layer_name]]
+      if (mode == "prefill") {
+        layer_cache$valid <- jax$lax$dynamic_update_slice(layer_cache$valid, rows, list(0L))
       }
-    })
-    scan_body <- function(carry_in, i) {
-      carry_next <- jax$lax$switch(index = i, branches = layer_branches, operand = carry_in)
-      list(carry_next, jnp$array(0L, dtype = jnp$int32))
+      if (mode == "decode") {
+        layer_cache$valid <- jax$lax$dynamic_update_slice(layer_cache$valid, jnp$ones(list(1L), dtype = jnp$bool_), jnp$reshape(pos, list(1L)))
+        valid_keys <- jnp$logical_and(layer_cache$valid, jnp$less_equal(jnp$arange(layer_cache$k$shape[[1]]), pos))
+      } else valid_keys <- rows
+      mask <- jnp$reshape(valid_keys, list(1L, 1L, valid_keys$shape[[1]]))
+      attention <- transformer_attention(source, L, positions, mask,
+        ModelType == "DecoderOnly" && mode != "decode", if (mode == "decode") "xla" else "auto",
+        layer_cache, if (mode == "decode") pos else NULL)
+      if (mode != "full") cache[[layer_name]] <- attention$cache
+      branch <- mask_sequence_rows_2d(attention$value, rows)
+      if (UseFullAttentionResiduals) {
+        sources[[length(sources) + 1L]] <- branch
+        source <- full_attnres_reduce_sources(sources, L$AttnRes2$PseudoQuery, L$AttnRes2$NormScale)
+      } else {
+        xt <- transformer_skip(xt, branch, L$ResidCon1)
+        source <- xt
+      }
+      branch <- mask_sequence_rows_2d(transformer_ffn(source, L), rows)
+      if (UseFullAttentionResiduals) sources[[length(sources) + 1L]] <- branch else xt <- transformer_skip(xt, branch, L$ResidCon2)
     }
-    scan_result <- jax$lax$scan(
-      f = scan_body,
-      init = carry_init,
-      xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
-    )
-    final_carry <- scan_result[[1]]
-    full_attnres_output(final_carry[[2]], final_carry[[3]], TransformerList)
+    if (UseFullAttentionResiduals) {
+      output <- TransformerList$AttnResOutput
+      if (is.null(output)) stop("Full attention residual models require AttnResOutput; rebuild models created before the final aggregation was added.", call. = FALSE)
+      xt <- full_attnres_reduce_sources(sources, output$PseudoQuery, output$NormScale)
+    }
+    list(xt = xt, cache = cache)
   }
-
   RunTransformerBackbone <- function(xt, x_mask, TransformerList) {
-    if (isTRUE(UseFullAttentionResiduals)) {
-      return(RunTransformerBackbone_FullAttnRes(
-        xt = xt,
-        x_mask = x_mask,
-        TransformerList = TransformerList
-      ))
-    }
-
-    x_mask_attn <- jnp$matmul(x_mask, jnp$transpose(x_mask))
-    layer_names <- paste0("d", as.character(seq_len(ModelDepth)))
-    layer_branches <- lapply(layer_names, function(layer_name) {
-      layer_params <- TransformerList[[layer_name]]
-      function(xt_in) TransformerStep_NoCache(xt_in, layer_params, x_mask_attn)
-    })
-    if (length(layer_branches) == 0L) {
-      return(xt)
-    }
-    scan_body <- function(carry_xt, i) {
-      xt_next <- jax$lax$switch(index = i, branches = layer_branches, operand = carry_xt)
-      list(xt_next, jnp$array(0L, dtype = jnp$int32))
-    }
-    jax$lax$scan(
-      f = scan_body,
-      init = xt,
-      xs = jnp$arange(start = 0L, stop = as.integer(ModelDepth), dtype = jnp$int32)
-    )[[1]]
+    transformer_run(xt, x_mask, TransformerList)$xt
   }
-  
+  RunTransformerBackbone_FullAttnRes <- RunTransformerBackbone
+  transformer_prefill_kv <- function(xt, x_mask, TransformerList, max_len = NULL) {
+    result <- transformer_run(xt, x_mask, TransformerList, mode = "prefill", max_len = max_len)
+    valid <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
+    last_valid <- jnp$max(jnp$where(valid, jnp$arange(xt$shape[[1]], dtype = jnp$int32), -1L))
+    next_pos <- last_valid + 1L
+    list(xt_last = jnp$take(result$xt, jnp$maximum(last_valid, 0L), axis = 0L), cache = result$cache,
+         "last_valid" = last_valid, "next_pos" = next_pos)
+  }
+  transformer_decode_step_kv <- function(token_in, pos, TransformerList, cache) {
+    pos <- jnp$astype(pos, jnp$int32)
+    pos <- eq$error_if(pos, jnp$logical_or(pos < 0L, pos >= cache[[1L]]$k$shape[[1]]),
+                      "KV cache decode position is outside the allocated capacity.")
+    result <- transformer_run(jnp$expand_dims(token_in, 0L), jnp$ones(list(1L, 1L)), TransformerList,
+                              mode = "decode", cache = cache, pos = pos)
+    list(token_out = jnp$squeeze(result$xt, 0L), cache = result$cache)
+  }
+
   print("Generating TransformerList objects...")
   for(l_ in 1L:length(TransformerList)){
     if( UseLatentAttention ){ 

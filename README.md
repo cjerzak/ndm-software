@@ -212,6 +212,24 @@ Transformer backbones now use Full Attention Residuals by default. Set the
 runtime global `UseFullAttentionResiduals = FALSE` if you need the legacy
 additive residual path for compatibility or comparison runs.
 
+Transformer training recomputes sublayer intermediates during backpropagation,
+uses native grouped-query attention, and prefills only context tokens while
+reserving cache capacity for forecasts. Full Attention Residuals retain the
+individual layer outputs rather than a separate padded history at every layer.
+Compiled optimizer updates donate parameter and optimizer buffers; rejected
+updates return unchanged values through usable handles for failure diagnostics.
+
+For new FP32 CUDA models, transformer activations and K/V caches use BF16 by
+default. Master parameters, optimizer moments, prediction heads, and ODE
+arithmetic keep their configured precision. CPU and FP64 models keep native
+transformer precision by default. `ndm_create_config()` exposes
+`transformer_compute_dtype = "auto"` (also `"native"`, `"bfloat16"`, or
+`"float32"`), `transformer_activation_checkpointing = TRUE`, and
+`donate_training_state = TRUE`. Their runtime-global equivalents are
+`TransformerComputeDtype`, `TransformerActivationCheckpointing`, and
+`DonateTrainingState`. Artifacts retain the resolved transformer precision;
+artifacts saved before these controls use native precision when restored.
+
 Trained low-level models can also be persisted as versioned artifacts and
 restored later. These helpers assume that `ndm_initialize_backend()` has
 already run for the active conda environment and that `trained_model` came from

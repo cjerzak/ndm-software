@@ -32,6 +32,9 @@ ndm_create_config(
   training_objective = c("student_t_nll", "scaled_mse"),
   outcome_loss_scale = NULL,
   compute_backend = c("auto", "cpu", "gpu"),
+  transformer_compute_dtype = c("auto", "native", "bfloat16", "float32"),
+  transformer_activation_checkpointing = TRUE,
+  donate_training_state = TRUE,
   ...
 )
 
@@ -127,6 +130,18 @@ It is required for scaled MSE and otherwise must be `NULL`.}
 \item{compute_backend}{Compute device policy: `"auto"` selects a supported
 JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`
 require the named backend.}
+
+\item{transformer_compute_dtype}{Transformer activation precision. `"auto"`
+uses BF16 for FP32 CUDA models and native precision otherwise. `"native"`,
+`"bfloat16"`, and `"float32"` are explicit overrides. Master parameters,
+optimizer moments, prediction heads, and ODE arithmetic retain `float_type`.}
+
+\item{transformer_activation_checkpointing}{Recompute transformer sublayer
+intermediates during backpropagation to reduce activation memory.}
+
+\item{donate_training_state}{Allow compiled updates to reuse parameter and
+optimizer buffers. Rejected updates return the original values in fresh
+usable state handles for diagnostics.}
 
 \item{...}{Unused; included for S3 method compatibility.}
 

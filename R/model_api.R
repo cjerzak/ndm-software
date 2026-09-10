@@ -63,6 +63,9 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
     list(
       EnableKVCaching = config$enable_kv_cache %||% TRUE,
       EnableKVCachingTraining = config$enable_kv_cache_training %||% TRUE,
+      TransformerComputeDtype = config$transformer_compute_dtype %||% "auto",
+      TransformerActivationCheckpointing = config$transformer_activation_checkpointing %||% TRUE,
+      DonateTrainingState = config$donate_training_state %||% TRUE,
       InferenceMCDraws = config$inference_mc_draws %||% 5L,
       ObservationScaleFloor = config$observation_scale_floor %||% 1e-5,
       InitialObservationScale = config$initial_observation_scale %||% 1.0,
@@ -396,6 +399,8 @@ ndm_build_model <- function(runtime_env,
       device_count = backend_modules$device_count %||%
         backend_modules$device_provenance$device_count,
       is_cuda = isTRUE(backend_modules$is_cuda),
+      NDM_CUDA_ATTENTION_AVAILABLE = isTRUE(backend_modules$is_cuda) &&
+        identical(backend_modules$accelerator_runtime, "cuda"),
       device_provenance = backend_modules$device_provenance,
       send2device = backend_modules$send2device,
       send2cpu = backend_modules$send2cpu,

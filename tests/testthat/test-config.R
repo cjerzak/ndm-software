@@ -13,6 +13,9 @@ test_that("configuration objects preserve requested modeling defaults", {
       "model_type",
       "backbone",
       "float_type",
+      "transformer_compute_dtype",
+      "transformer_activation_checkpointing",
+      "donate_training_state",
       "force_to_gpu",
       "compute_backend",
       "resave_tfrecords",
@@ -59,6 +62,21 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_equal(cfg$neuralode_mean_loss_weight, 0)
   expect_identical(cfg$training_objective, "student_t_nll")
   expect_null(cfg$outcome_loss_scale)
+  expect_identical(cfg$transformer_compute_dtype, "auto")
+  expect_true(cfg$transformer_activation_checkpointing)
+  expect_true(cfg$donate_training_state)
+})
+
+test_that("transformer memory controls validate explicit overrides", {
+  cfg <- ndm_create_config(transformer_compute_dtype = "bfloat16",
+                           transformer_activation_checkpointing = FALSE,
+                           donate_training_state = FALSE)
+  expect_identical(cfg$transformer_compute_dtype, "bfloat16")
+  expect_false(cfg$transformer_activation_checkpointing)
+  expect_false(cfg$donate_training_state)
+  expect_error(ndm_create_config(transformer_compute_dtype = "float16"), "arg")
+  expect_error(ndm_create_config(transformer_activation_checkpointing = NA), "non-missing logical")
+  expect_error(ndm_create_config(donate_training_state = 1), "non-missing logical")
 })
 
 test_that("public config constructors share the unit observation-scale default", {

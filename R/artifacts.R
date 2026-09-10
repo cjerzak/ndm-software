@@ -89,7 +89,15 @@ ndm_load_model <- function(path,
     runtime_env = ndm_new_runtime_env()
   )
 
-  ndm_set_runtime_globals(runtime_env, .ndm_collect_artifact_globals(files$runtime))
+  saved_globals <- .ndm_collect_artifact_globals(files$runtime)
+  # Old artifacts predate mixed neural precision. Preserve their predictions;
+  # newer artifacts pin the resolved dtype even when moved between devices.
+  saved_globals$TransformerComputeDtype <- saved_globals$TransformerComputeDtypeResolved %||%
+    saved_globals$TransformerComputeDtype %||% "native"
+  if (identical(saved_globals$TransformerComputeDtype, "float64")) {
+    saved_globals$TransformerComputeDtype <- "native"
+  }
+  ndm_set_runtime_globals(runtime_env, saved_globals)
   ndm_build_model(
     runtime_env = runtime_env,
     model_type = metadata$model_type,

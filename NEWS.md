@@ -1,5 +1,13 @@
 # ndm 0.5.0
 
+- Reduced transformer training memory with rematerialized sublayers and
+  residual-source aggregation, native grouped-query attention, context-only
+  decoder prefill, and parameter/optimizer buffer donation. Update rejection
+  remains inside the compiled step and preserves state for diagnostics.
+  New FP32 CUDA models default to BF16 transformer activations and K/V caches,
+  retaining master, optimizer, prediction-head, and ODE precision. Configs expose
+  precision/checkpointing/donation controls and artifacts preserve their
+  resolved transformer precision across devices.
 - Full attention residual transformers now aggregate all residual sources at
   the output, including in cached decoding. This adds `AttnResOutput`
   parameters; earlier full attention residual checkpoints must be rebuilt.

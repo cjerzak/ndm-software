@@ -236,6 +236,13 @@ test_that("ndm_load_model rebuilds the runtime and restores checkpoint payloads"
   expect_equal(built$model_type, "DecoderOnly")
   expect_equal(restored$state$stage, "trained")
   expect_equal(restored$env$nTimesPast, 8L)
+  expect_identical(restored$env$TransformerComputeDtype, "native")
+
+  saved_globals <- readRDS(file.path(artifact_path, "runtime_globals.rds"))
+  saved_globals$TransformerComputeDtypeResolved <- "bfloat16"
+  saveRDS(saved_globals, file.path(artifact_path, "runtime_globals.rds"))
+  restored_bf16 <- ndm_load_model(artifact_path)
+  expect_identical(restored_bf16$env$TransformerComputeDtype, "bfloat16")
 })
 
 test_that("ndm_resume_training auto-loads bundle refs and continues with run_define disabled", {

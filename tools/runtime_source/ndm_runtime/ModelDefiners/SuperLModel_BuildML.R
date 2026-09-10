@@ -589,7 +589,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       
       print2("Obtaining approximate parameter count...")
       nParamsModel <- sum(unlist(lapply(jax$tree$leaves(eq$partition(ModelList, eq$is_array)[[1]]), function(zer){zer$size})))
-      rm( list = names(ListIndices) )
+      # ModelList owns the initialized weights. Do not retain a second root to
+      # the original backbone after training switches to donated buffers.
+      rm(list = c(names(ListIndices), "TransformerList"))
   }
 
   print2("Define functional components of model...")
@@ -700,6 +702,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     
   # define dense + ts functions
   DecoderBackboneToOutput <- function(TSList, hidden_state){
+    # Return to master precision before the prediction head / ODE interface.
+    hidden_state <- hidden_state$astype(TSList$FinalNormScaler$dtype)
     hidden_state <- jnp$squeeze(
       LayerNorm(jnp$expand_dims(hidden_state, 0L)) * TSList$FinalNormScaler
     )
@@ -1231,13 +1235,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           }
           UseKVCachingForCall <- isTRUE(EnableKVCaching) &&
             (isTRUE(inference) || isTRUE(EnableKVCachingTraining))
-          xt_running <- list(
-            jnp$concatenate(list(x[[1]], jnp$zeros(list(GEN_CAP, x[[1]]$shape[[2]]))), 0L),  # [T_total, D]
-            jnp$concatenate(list(x[[2]], jnp$zeros(list(GEN_CAP, 1L))), 0L)                  # [T_total, 1]
-          )
           
           # When KV caching cannot be used, fall back to original full pass/scan
           if (!UseKVCachingForCall) {
+            xt_running <- list(
+              jnp$concatenate(list(x[[1]], jnp$zeros(list(GEN_CAP, x[[1]]$shape[[2]]), dtype = x[[1]]$dtype)), 0L),
+              jnp$concatenate(list(x[[2]], jnp$zeros(list(GEN_CAP, 1L), dtype = x[[2]]$dtype)), 0L)
+            )
             # ---- ORIGINAL PATH (unchanged) ----
             decoder_step <- function(xt_running, t_){
               xt_new <- Encoder2Output(
@@ -1287,9 +1291,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             #    positions. The actual mask, rather than its count, preserves
             #    left padding and keeps the most recent observed token.
             prefill_ret <- transformer_prefill_kv(
-              xt        = xt_running[[1]],
-              x_mask    = xt_running[[2]],
-              TransformerList = ModelList$TSList$TSBackbone
+              xt        = x[[1]],
+              x_mask    = x[[2]],
+              TransformerList = ModelList$TSList$TSBackbone,
+              max_len = as.integer(oldx + GEN_CAP)
             )
             kv_cache   <- prefill_ret$cache
             xt_last_raw <- prefill_ret$xt_last
@@ -1342,7 +1347,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
               decoder_head_input_all <- jnp$expand_dims(xt_last, 0L)
             } else {
               scan_out2 <- jax$lax$scan(
-                f = decode_step_cached,
+                f = transformer_checkpoint(decode_step_cached, prevent_cse = FALSE),
                 init = list(xt_last, kv_cache, insert_pos),
                 xs = jnp$arange(
                   start = 0L,
