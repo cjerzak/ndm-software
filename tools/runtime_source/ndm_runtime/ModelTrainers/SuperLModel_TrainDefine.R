@@ -50,6 +50,47 @@ ndm_training_tree_finite <- function(tree) {
   finite
 }
 
+# Field orders shared with the host-side unpackers in SuperLModel_TrainDo.R.
+ndm_training_solver_diagnostic_fields <- c(
+  "success", "failure_stage_code", "prediction_finite",
+  "global_attempted", "global_result_success", "global_state_finite", "global_result_code",
+  "global_num_steps", "global_num_accepted_steps", "global_num_rejected_steps", "global_max_steps",
+  "local_attempted", "local_result_success", "local_state_finite", "local_result_code",
+  "local_num_steps", "local_num_accepted_steps", "local_num_rejected_steps", "local_max_steps"
+)
+ndm_training_loss_component_fields <- c(
+  "objective_data_loss", "student_t_nll", "raw_mse", "scaled_mse",
+  "kl_local", "kl_global", "kl_place", "kl_unweighted", "kl_weighted",
+  "auxiliary_mean_loss", "prediction_abs_mean", "truth_abs_mean"
+)
+
+# Pack the per-example solver diagnostics into one [batch, field] int32 array so
+# the host fetches them in a single transfer instead of one per field. Returns
+# NULL when any field is absent, which keeps reduced test doubles on the
+# unpacked path.
+ndm_training_pack_diagnostics <- function(diagnostics) {
+  if (!all(ndm_training_solver_diagnostic_fields %in% names(diagnostics))) return(NULL)
+  columns <- lapply(ndm_training_solver_diagnostic_fields, function(field) {
+    jnp$reshape(diagnostics[[field]]$astype(jnp$int32), list(-1L))
+  })
+  jnp$stack(columns, axis = 1L)
+}
+
+ndm_training_pack_scalars <- function(values, fields, dtype) {
+  if (!all(fields %in% names(values))) return(NULL)
+  jnp$stack(lapply(fields, function(field) jnp$reshape(values[[field]]$astype(dtype), list())), axis = 0L)
+}
+
+# TRUE when every example's observation mask is finite and has at least one
+# observed entry; scalar masks (test doubles) are treated as valid.
+ndm_training_observation_mask_valid <- function(mask) {
+  if (length(mask$shape) < 2L) return(jnp$array(TRUE))
+  rows <- jnp$reshape(mask$astype(jnp$float32), list(mask$shape[[1]], -1L))
+  finite <- jnp$all(jnp$isfinite(rows), axis = 1L)
+  nonzero <- jnp$any(jnp$not_equal(rows, 0), axis = 1L)
+  jnp$all(jnp$logical_and(finite, nonzero))
+}
+
 
 {
   print("Sarting SuperLModel_TrainDefine.R")
@@ -70,7 +111,10 @@ ndm_training_tree_finite <- function(tree) {
   }
   nSGD_MASTER <- nSGD_DefiningLRSeq
   #LR_schedule_vec <- np$array(  LR_schedule(jnp$array(1L:as.integer(nSGD_DefiningLRSeq) ) ))
-  LR_schedule_vec <- sapply(seq_len(nSGD_MASTER) - 1L, function(x_){ np$array(  LR_schedule(jnp$array(x_) ))})
+  # optax schedules are vectorized, so evaluate the whole table in one call.
+  # The per-step sapply cost 0.33 ms/step through reticulate (about 33 s per
+  # 100k steps) for values only used in telemetry.
+  LR_schedule_vec <- as.numeric(np$array(LR_schedule(jnp$arange(as.integer(nSGD_MASTER)))))
 
   if(T == T){ 
   optax_optimizer <- ndm_training_optimizer(LR_schedule)
@@ -224,6 +268,11 @@ ndm_training_tree_finite <- function(tree) {
     accepted <- jnp$logical_and(accepted, ndm_training_tree_finite(
       list(candidate_arrays, updates_and_state[[2]], loss_aux$model_state)
     ))
+    # Observation masks are validated on the device. A batch with a non-finite
+    # or all-zero mask is rejected in-graph, and the host raises the detailed
+    # error only then, instead of copying the mask back every iteration.
+    observation_mask_valid <- ndm_training_observation_mask_valid(y_mask)
+    accepted <- jnp$logical_and(accepted, observation_mask_valid)
     # Donation consumes the input handles even on rejection. Return unchanged
     # values through the compiled boundary so R can still diagnose failures.
     chosen <- jax$lax$cond(
@@ -240,7 +289,19 @@ ndm_training_tree_finite <- function(tree) {
       "update_accepted" = accepted,
       "model" = updated_model,
       "opt_state" = chosen[[2L]],
-      "block_update_metrics" = block_update_metrics
+      "block_update_metrics" = block_update_metrics,
+      # Packed copies of the per-step scalars and diagnostics: the host reads
+      # these in three transfers rather than one per field.
+      "solver_diagnostics_packed" = ndm_training_pack_diagnostics(loss_aux$solver_diagnostics),
+      "loss_components_packed" = ndm_training_pack_scalars(
+        loss_aux$loss_components, ndm_training_loss_component_fields, loss_and_state[[1]]$dtype
+      ),
+      "scalars_packed" = jnp$stack(list(
+        loss_and_state[[1]]$astype(jnp$float32),
+        grad_norm$astype(jnp$float32),
+        accepted$astype(jnp$float32),
+        observation_mask_valid$astype(jnp$float32)
+      ), axis = 0L)
     )
   }
   DonateTrainingState <- get0("DonateTrainingState", inherits = TRUE, ifnotfound = TRUE)

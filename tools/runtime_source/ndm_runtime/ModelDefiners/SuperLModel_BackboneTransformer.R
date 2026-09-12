@@ -78,7 +78,7 @@ if(backbonePath == "initialize"){
     if (cuda_attention_available && native_dtype == "float32") "bfloat16" else native_dtype
   } else if (TransformerComputeDtype == "native") native_dtype else TransformerComputeDtype
   transformer_dtype <- jnp$dtype(TransformerComputeDtypeResolved)
-  TransformerActivationCheckpointing <- backbone_runtime_get0("TransformerActivationCheckpointing", TRUE)
+  TransformerActivationCheckpointing <- backbone_runtime_get0("TransformerActivationCheckpointing", FALSE)
   if (!is.logical(TransformerActivationCheckpointing) ||
       length(TransformerActivationCheckpointing) != 1L || is.na(TransformerActivationCheckpointing)) {
     stop("TransformerActivationCheckpointing must be one non-missing logical value.", call. = FALSE)
@@ -341,13 +341,43 @@ if(backbonePath == "initialize"){
       }
       
 
-  # Stack sources *inside* rematerialization. The backward pass retains the
-  # individual layer outputs, not a full [2*depth+1,T,D] buffer per layer.
-  full_attnres_reduce_sources <- transformer_checkpoint(function(sources, query, scale) {
-    full_attnres_reduce_buffer(
-      jnp$stack(sources, axis = 0L), jnp$array(as.integer(length(sources)), dtype = jnp$int32),
-      query, scale
+  # A residual source carries its inverse RMS from creation, computed once in
+  # float32. Every later aggregation reuses it, so the normalised keys are
+  # never materialised: logits = (source . (scale * query)) * inv_rms.
+  attnres_source <- function(x, eps = FullAttentionResidualEps) {
+    x_f32 <- x$astype(jnp$float32)
+    mean_square <- jnp$mean(jnp$square(x_f32), axis = -1L)
+    inv_rms <- jnp$reciprocal(jnp$sqrt(mean_square + jnp$array(as.numeric(eps), dtype = jnp$float32)))
+    list("value" = x, "inv_rms" = inv_rms)
+  }
+  # Aggregate residual sources without a [2*depth+1, T, D] stack: one matvec
+  # per source for the logits (the source is upcast for that matvec; a
+  # bfloat16 dot loses gradient precision) and a fused weighted sum.
+  full_attnres_combine <- function(sources, pseudo_query, norm_scale) {
+    if (length(sources) == 0L) {
+      stop("Full attention residual aggregation needs at least one source.", call. = FALSE)
+    }
+    width <- as.integer(sources[[1L]]$value$shape[[2L]])
+    query_scaled <- jnp$multiply(
+      resolve_attnres_norm_scale(norm_scale, width, dtype = jnp$float32),
+      pseudo_query$astype(jnp$float32)
     )
+    logits <- jnp$stack(lapply(sources, function(s) {
+      jnp$multiply(jnp$matmul(s$value$astype(jnp$float32), query_scaled), s$inv_rms)
+    }), axis = 0L)
+    weights <- jax$nn$softmax(logits, axis = 0L)
+    out <- NULL
+    for (n in seq_along(sources)) {
+      term <- jnp$multiply(
+        jnp$expand_dims(jnp$take(weights, n - 1L, axis = 0L), 1L),
+        sources[[n]]$value$astype(jnp$float32)
+      )
+      out <- if (is.null(out)) term else jnp$add(out, term)
+    }
+    out$astype(sources[[1L]]$value$dtype)
+  }
+  full_attnres_reduce_sources <- transformer_checkpoint(function(sources, query, scale) {
+    full_attnres_combine(sources, query, scale)
   })
   transformer_norm <- function(x) {
     if (x$dtype$name == "bfloat16") NormFxn(x$astype(jnp$float32))$astype(x$dtype) else NormFxn(x)
@@ -389,7 +419,29 @@ if(backbonePath == "initialize"){
       branch * jax$nn$softplus(weights$WtResidPath$astype(x$dtype))
   }
 
-  transformer_run <- function(xt, x_mask, TransformerList, mode = "full", cache = NULL, pos = NULL, max_len = NULL) {
+  # Restrict a residual source, the running state and the row mask to one
+  # sequence position. Every remaining computation (FFN, residual skip, source
+  # aggregation) is position-wise, so the result at that position is unchanged.
+  attnres_select_position <- function(sources, xt, rows, position) {
+    index <- jnp$reshape(position$astype(jnp$int32), list(1L))
+    list(
+      sources = lapply(sources, function(s) list(
+        "value" = jnp$take(s$value, index, axis = 0L),
+        "inv_rms" = jnp$take(s$inv_rms, index, axis = 0L)
+      )),
+      xt = jnp$take(xt, index, axis = 0L),
+      rows = jnp$take(rows, index, axis = 0L)
+    )
+  }
+
+  # `select_position`: when given, only that sequence position is carried past
+  # the last layer's attention (whose K/V come from the layer's input and are
+  # written to the cache before the slice), so the final FFN and output
+  # aggregation run on one token instead of the whole sequence. Callers that
+  # consume a single token use this; RunTransformerBackbone keeps the full
+  # sequence. The returned `xt` then has one row.
+  transformer_run <- function(xt, x_mask, TransformerList, mode = "full", cache = NULL, pos = NULL, max_len = NULL,
+                              select_position = NULL) {
     xt <- xt$astype(transformer_dtype)
     rows <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
     positions <- if (mode == "decode") jnp$reshape(pos, list(1L)) else jnp$arange(xt$shape[[1]], dtype = jnp$int32)
@@ -399,7 +451,7 @@ if(backbonePath == "initialize"){
       if (max_len < xt$shape[[1]]) stop("KV cache capacity must cover the prefill context.", call. = FALSE)
       cache <- kv_cache_allocate(max_len, ModelDepth, num_kv_heads, head_dim, xt$dtype)
     }
-    sources <- list(xt)
+    sources <- if (UseFullAttentionResiduals) list(attnres_source(xt)) else list()
     for (layer_name in paste0("d", seq_len(ModelDepth))) {
       L <- TransformerList[[layer_name]]
       source <- if (UseFullAttentionResiduals) full_attnres_reduce_sources(sources, L$AttnRes1$PseudoQuery, L$AttnRes1$NormScale) else xt
@@ -417,15 +469,22 @@ if(backbonePath == "initialize"){
         layer_cache, if (mode == "decode") pos else NULL)
       if (mode != "full") cache[[layer_name]] <- attention$cache
       branch <- mask_sequence_rows_2d(attention$value, rows)
+      if (!is.null(select_position) && layer_name == paste0("d", ModelDepth)) {
+        selected <- attnres_select_position(sources, xt, rows, select_position)
+        sources <- selected$sources
+        xt <- selected$xt
+        rows <- selected$rows
+        branch <- jnp$take(branch, jnp$reshape(select_position$astype(jnp$int32), list(1L)), axis = 0L)
+      }
       if (UseFullAttentionResiduals) {
-        sources[[length(sources) + 1L]] <- branch
+        sources[[length(sources) + 1L]] <- attnres_source(branch)
         source <- full_attnres_reduce_sources(sources, L$AttnRes2$PseudoQuery, L$AttnRes2$NormScale)
       } else {
         xt <- transformer_skip(xt, branch, L$ResidCon1)
         source <- xt
       }
       branch <- mask_sequence_rows_2d(transformer_ffn(source, L), rows)
-      if (UseFullAttentionResiduals) sources[[length(sources) + 1L]] <- branch else xt <- transformer_skip(xt, branch, L$ResidCon2)
+      if (UseFullAttentionResiduals) sources[[length(sources) + 1L]] <- attnres_source(branch) else xt <- transformer_skip(xt, branch, L$ResidCon2)
     }
     if (UseFullAttentionResiduals) {
       output <- TransformerList$AttnResOutput
@@ -439,12 +498,20 @@ if(backbonePath == "initialize"){
   }
   RunTransformerBackbone_FullAttnRes <- RunTransformerBackbone
   transformer_prefill_kv <- function(xt, x_mask, TransformerList, max_len = NULL) {
-    result <- transformer_run(xt, x_mask, TransformerList, mode = "prefill", max_len = max_len)
     valid <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
     last_valid <- jnp$max(jnp$where(valid, jnp$arange(xt$shape[[1]], dtype = jnp$int32), -1L))
     next_pos <- last_valid + 1L
-    list(xt_last = jnp$take(result$xt, jnp$maximum(last_valid, 0L), axis = 0L), cache = result$cache,
+    # Only the last valid token's output is used, so the final layer's FFN and
+    # output aggregation run on that one position.
+    result <- transformer_run(xt, x_mask, TransformerList, mode = "prefill", max_len = max_len,
+                              select_position = jnp$maximum(last_valid, 0L))
+    list(xt_last = jnp$squeeze(result$xt, 0L), cache = result$cache,
          "last_valid" = last_valid, "next_pos" = next_pos)
+  }
+  # One-token backbone output for encoders that keep a single position
+  # (SelectBackboneOutputToken semantics), without computing the rest.
+  RunTransformerBackboneAt <- function(xt, x_mask, TransformerList, position) {
+    jnp$squeeze(transformer_run(xt, x_mask, TransformerList, select_position = position)$xt, 0L)
   }
   transformer_decode_step_kv <- function(token_in, pos, TransformerList, cache) {
     pos <- jnp$astype(pos, jnp$int32)

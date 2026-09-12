@@ -51,6 +51,35 @@ next_train_batch <- function(max_attempts = 100L){
     call. = FALSE
   )
 }
+stop_on_invalid_observation_masks <- function(batch){
+  # Rare path: the compiled step already flagged the batch. Copy the mask to
+  # the host only now, to name the offending examples in the error.
+  observation_mask_host <- as.array(np$array(batch$YTrue_out_mask))
+  if (length(dim(observation_mask_host)) == 0L) {
+    observation_mask_host <- array(
+      observation_mask_host,
+      dim = c(length(observation_mask_host), 1L)
+    )
+  }
+  observation_mask_matrix <- matrix(
+    as.numeric(observation_mask_host),
+    nrow = dim(observation_mask_host)[[1L]]
+  )
+  invalid_mask_examples <- which(
+    !apply(is.finite(observation_mask_matrix), 1L, all) |
+      rowSums(observation_mask_matrix != 0) == 0
+  )
+  if (length(invalid_mask_examples) > 0L) {
+    stop(
+      sprintf(
+        "Training batch contains non-finite or all-zero observation masks for example(s): %s.",
+        paste(invalid_mask_examples, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(NULL)
+}
 save_eqx_enabled <- isTRUE(get0("SaveEqx", ifnotfound = TRUE))
 recover_checkpoint_at <- get0("RecoverCheckpointAt", ifnotfound = NULL)
 if(isTRUE(recover_checkpoint_at)){
@@ -150,7 +179,7 @@ solver_batch_identifier <- function(value, name, expected_length) {
   }
   host_value
 }
-solver_diagnostics_to_host <- function(diagnostics) {
+solver_diagnostics_to_host <- function(diagnostics, packed = NULL) {
   required_fields <- c(
     "success",
     "failure_stage_code",
@@ -192,13 +221,29 @@ solver_diagnostics_to_host <- function(diagnostics) {
     "local_result_success",
     "local_state_finite"
   )
-  host_fields <- lapply(required_fields, function(field_name) {
-    value <- as.vector(as.array(np$array(diagnostics[[field_name]])))
-    if (field_name %in% boolean_fields) {
-      return(as.logical(value))
+  if (!is.null(packed)) {
+    # One device-to-host transfer for the whole [batch, field] table, packed in
+    # `required_fields` order by ndm_training_pack_diagnostics().
+    packed_host <- as.matrix(np$array(packed))
+    if (length(dim(packed_host)) != 2L || ncol(packed_host) != length(required_fields)) {
+      stop("Packed solver diagnostics do not match the expected field layout.", call. = FALSE)
     }
-    as.integer(value)
-  })
+    host_fields <- lapply(seq_along(required_fields), function(field_index) {
+      column <- as.vector(packed_host[, field_index])
+      if (required_fields[[field_index]] %in% boolean_fields) {
+        return(as.logical(column))
+      }
+      as.integer(column)
+    })
+  } else {
+    host_fields <- lapply(required_fields, function(field_name) {
+      value <- as.vector(as.array(np$array(diagnostics[[field_name]])))
+      if (field_name %in% boolean_fields) {
+        return(as.logical(value))
+      }
+      as.integer(value)
+    })
+  }
   names(host_fields) <- required_fields
   field_lengths <- vapply(host_fields, length, integer(1L))
   if (length(unique(field_lengths)) != 1L || field_lengths[[1L]] < 1L) {
@@ -380,6 +425,15 @@ checkpoint_save_steps <- function(n_steps, n_checkpoints) {
   sort(unique(c(as.integer(intermediate), n_steps)))
 }
 CheckPointSaveAt <- checkpoint_save_steps(nSGD_MASTER, nCheckpoints)
+# Explicit collection (R gc plus a full Python gc.collect()) costs about
+# 200 ms per call, so it runs at checkpoints and every TrainingGcInterval
+# iterations rather than every ten.
+training_gc_interval <- suppressWarnings(as.integer(
+  get0("TrainingGcInterval", inherits = TRUE, ifnotfound = 200L)
+))
+if (length(training_gc_interval) != 1L || is.na(training_gc_interval) || training_gc_interval < 1L) {
+  stop("TrainingGcInterval must be one positive integer.", call. = FALSE)
+}
 KVCacheTrainingExercised <- isTRUE(get0(
   "KVCacheTrainingExercised", inherits = TRUE, ifnotfound = FALSE
 ))
@@ -433,8 +487,17 @@ loss_component_names <- c(
   "kl_local", "kl_global", "kl_place", "kl_unweighted", "kl_weighted",
   "auxiliary_mean_loss", "prediction_abs_mean", "truth_abs_mean"
 )
-loss_components_to_host <- function(components) {
+loss_components_to_host <- function(components, packed = NULL) {
   values <- stats::setNames(rep(NA_real_, length(loss_component_names)), loss_component_names)
+  if (!is.null(packed)) {
+    # One transfer, packed in `loss_component_names` order by
+    # ndm_training_pack_scalars().
+    packed_host <- suppressWarnings(as.numeric(np$array(packed)))
+    if (length(packed_host) == length(loss_component_names)) {
+      values[] <- packed_host
+      return(values)
+    }
+  }
   if (is.null(components)) {
     return(values)
   }
@@ -505,36 +568,15 @@ if (isTRUE(DonateTrainingState) && i_ <= nSGD_model) {
 }
 for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
   i_ <- i; fulliter_timer <- Sys.time()
-  if(i %% 10 == 0){  print(i); gc(); py_gc$collect() }
+  if(i %% 10 == 0){ print(i) }
+  if((i %% training_gc_interval == 0L) || (i %in% CheckPointSaveAt)){ gc(); py_gc$collect() }
 
   # get batch
   if(nSGD_pretrain > 0L | nSGD_posttrain > 0){ 
   dat_ <- next_train_batch()
 
-  observation_mask_host <- as.array(np$array(dat_$YTrue_out_mask))
-  if (length(dim(observation_mask_host)) == 0L) {
-    observation_mask_host <- array(
-      observation_mask_host,
-      dim = c(length(observation_mask_host), 1L)
-    )
-  }
-  observation_mask_matrix <- matrix(
-    as.numeric(observation_mask_host),
-    nrow = dim(observation_mask_host)[[1L]]
-  )
-  invalid_mask_examples <- which(
-    !apply(is.finite(observation_mask_matrix), 1L, all) |
-      rowSums(observation_mask_matrix != 0) == 0
-  )
-  if (length(invalid_mask_examples) > 0L) {
-    stop(
-      sprintf(
-        "Training batch contains non-finite or all-zero observation masks for example(s): %s.",
-        paste(invalid_mask_examples, collapse = ", ")
-      ),
-      call. = FALSE
-    )
-  }
+  # Observation masks are validated inside the compiled step; see the
+  # `observation_mask_valid_i` check after it.
 
   # update step
   {
@@ -575,12 +617,37 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
     ModelList <- train_step_result$model
     opt_state <- train_step_result$opt_state
     TrainingStateUsable <- TRUE
-    Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
-    GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
-    loss_components_i <- loss_components_to_host(train_step_result$loss_components)
+    # One transfer for loss, gradient norm, acceptance and mask validity. A
+    # step function without the packed outputs (a custom or test double) falls
+    # back to the individual fields and to the host-side mask check.
+    step_scalars <- if (is.null(train_step_result$scalars_packed)) {
+      NULL
+    } else {
+      suppressWarnings(as.numeric(np$array(train_step_result$scalars_packed)))
+    }
+    if (length(step_scalars) == 4L) {
+      Loss_i <- step_scalars[[1L]]
+      GradNorm_i <- step_scalars[[2L]]
+      update_accepted_i <- isTRUE(step_scalars[[3L]] > 0.5)
+      if (!isTRUE(step_scalars[[4L]] > 0.5)) {
+        stop_on_invalid_observation_masks(dat_)
+      }
+    } else {
+      Loss_i <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
+      GradNorm_i <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
+      update_accepted_i <- isTRUE(as.logical(np$array(train_step_result$update_accepted)))
+      stop_on_invalid_observation_masks(dat_)
+    }
+    in_loss_vec[i] <- Loss_i
+    grad_norm_vec[i] <- GradNorm_i
+    loss_components_i <- loss_components_to_host(
+      train_step_result$loss_components,
+      packed = train_step_result$loss_components_packed
+    )
 
     solver_diagnostics_host <- solver_diagnostics_to_host(
-      train_step_result$solver_diagnostics
+      train_step_result$solver_diagnostics,
+      packed = train_step_result$solver_diagnostics_packed
     )
     solver_diagnostics_host$location_id_numeric <- solver_batch_identifier(
       dat_$location_id_numeric,
@@ -651,8 +718,7 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
       solver_diagnostics_host
     )
 
-    UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i) &
-      isTRUE(as.logical(np$array(train_step_result$update_accepted)))
+    UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i) & update_accepted_i
     if(! UpdateParametersCond ){
       nonfinite_capture <- capture_nonfinite_report(
         batch_l = dat_,

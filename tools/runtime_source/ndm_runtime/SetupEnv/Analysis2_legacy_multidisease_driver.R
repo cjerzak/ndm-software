@@ -339,7 +339,7 @@ for(OUTER_ITERATION in OUTER_ITERATION_SEQUENCE){
      stepsize_controller = diffrax$PIDController(rtol = 1e-7, atol = 1e-9)
      diffraxInterpolator <- diffrax$LinearInterpolation
      
-     MaxSteps <- ai( 10^6 )
+     MaxSteps <- ai( 4096 )
      VI_SaveAt_ODE_sim <- diffrax$SaveAt(ts = jnp$arange(
        start = 0L,
        stop = as.integer(NTimeSteps_SIM),

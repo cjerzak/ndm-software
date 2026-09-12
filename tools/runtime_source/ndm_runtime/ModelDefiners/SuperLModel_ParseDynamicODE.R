@@ -322,11 +322,14 @@
       
       LocalNeuralMLP <- list(
                           "WideProj1" = eq$nn$Linear(
-                              in_features = inputDim_nODE_local <- ai(length(encneural_base_inputs)) + 
-                                       ai(LocalNeuralEmbedDim + 
-                                           length(uq_encneural_vec) +
-                                           length(encneural_extra_inputs) +
-                                          nOutcomes+2*grepl(model_tex_loc,pattern="DynamicBeta_DynamicGlobal")# understand why needed better 
+                              # Width of the vector the field concatenates below: the whole
+                              # Neural1 state (nDimODEOutput_ts_mean = LocalNeuralEmbedDim +
+                              # length(uq_encneural_vec) + nOutcomes), plus one scalar per base
+                              # state input and one per extra (global) input. Deriving it from
+                              # nDimODEOutput_ts_mean keeps it tied to the concatenation itself.
+                              in_features = inputDim_nODE_local <- ai(nDimODEOutput_ts_mean +
+                                           length(encneural_base_inputs) +
+                                           length(encneural_extra_inputs)
                                           ),
                               out_features = ai(nWidthODEHidden_ts_local),
                               use_bias = F,

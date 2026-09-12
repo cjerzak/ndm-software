@@ -599,4 +599,74 @@ robust_cut <- function(x, n_bins = 2L){
   }
 }
 
+# Fixed-step RK4 integration on the integer save grid, as a lax.scan.
+#
+# Used for the training loss/gradient path in place of diffrax. The adaptive
+# diffrax solve spends about 7x its forward cost in the adjoint (checkpointed
+# while-loop machinery); a plain scan with ordinary reverse-mode AD has the
+# usual ~3.5x ratio and a cheaper forward. Prediction and analytics keep the
+# adaptive solver. `field(t, y, args)` is the same function diffrax wraps, with
+# `y` a named list; `y0` is a named list; `save_ts` are the integer save
+# times starting at t0. Returns ts, ys (stacked along a new leading axis, like
+# diffrax) and the same eight diagnostics fields ndm reads from a diffrax
+# solution. Fixed steps never reject, so success means every saved state is
+# finite.
+ndm_runtime_fixed_step_solve <- function(field, y0, args, save_ts, substeps = 1L) {
+  substeps <- as.integer(substeps)
+  if (length(substeps) != 1L || is.na(substeps) || substeps < 1L) {
+    stop("Fixed-step integration needs at least one substep per unit interval.", call. = FALSE)
+  }
+  n_save <- as.integer(save_ts$shape[[1L]])
+  ts <- save_ts$astype(jnp$float32)
+  dt <- jnp$array(1.0 / substeps, dtype = jnp$float32)
+  axpy <- function(a, k, y) jax$tree_util$tree_map(function(ki, yi) yi + a * ki, k, y)
+  rk4_step <- function(y, t) {
+    k1 <- field(t, y, args)
+    k2 <- field(t + dt / 2, axpy(dt / 2, k1, y), args)
+    k3 <- field(t + dt / 2, axpy(dt / 2, k2, y), args)
+    k4 <- field(t + dt, axpy(dt, k3, y), args)
+    increment <- jax$tree_util$tree_map(
+      function(a, b, c, d) (a + 2 * b + 2 * c + d) * (dt / 6),
+      k1, k2, k3, k4
+    )
+    jax$tree_util$tree_map(function(yi, inc) yi + inc, y, increment)
+  }
+  unit_interval <- function(y, t_start) {
+    sub_ts <- t_start + dt * jnp$arange(substeps, dtype = jnp$float32)
+    out <- jax$lax$scan(function(carry, t) list(rk4_step(carry, t), NULL), y, sub_ts)
+    list(out[[1L]], out[[1L]])
+  }
+  scanned <- if (n_save > 1L) {
+    jax$lax$scan(unit_interval, y0, jnp$take(ts, jnp$arange(n_save - 1L), axis = 0L))
+  } else {
+    list(y0, NULL)
+  }
+  ys <- if (n_save > 1L) {
+    jax$tree_util$tree_map(
+      function(first, rest) jnp$concatenate(list(jnp$expand_dims(first, 0L), rest), axis = 0L),
+      y0, scanned[[2L]]
+    )
+  } else {
+    jax$tree_util$tree_map(function(first) jnp$expand_dims(first, 0L), y0)
+  }
+  n_steps <- jnp$array(as.integer((n_save - 1L) * substeps), dtype = jnp$int32)
+  list(ts = ts, ys = ys, num_steps = n_steps)
+}
+
+ndm_runtime_fixed_step_diagnostics <- function(solution) {
+  state_finite <- ndm_runtime_tree_all_finite(solution$ys)
+  list(
+    "success" = state_finite,
+    "result_success" = state_finite,
+    "state_finite" = state_finite,
+    # 0 is diffrax's `successful`; 1 flags the non-finite state so the
+    # failure-stage reporting stays meaningful.
+    "result_code" = jnp$where(state_finite, jnp$array(0L, dtype = jnp$int32), jnp$array(1L, dtype = jnp$int32)),
+    "num_steps" = solution$num_steps,
+    "num_accepted_steps" = solution$num_steps,
+    "num_rejected_steps" = jnp$array(0L, dtype = jnp$int32),
+    "max_steps" = solution$num_steps
+  )
+}
+
 print2("Done loading helper functions...")

@@ -598,6 +598,20 @@ ndm_load_tfrecord_bundle <- function(train_file,
   )
 }
 
+# Overlap TensorFlow parsing with device compute. Datasets are consumed by
+# reticulate iterators one batch at a time, so without a prefetch buffer the
+# parser only runs while the training loop waits on it. Prefetch keeps the
+# dataset finite, unlike repeat(), so inference loops that stop on completion
+# are unaffected. Objects without a prefetch method (test doubles) are returned
+# unchanged.
+.ndm_prefetch_dataset <- function(dataset, buffer_size = 2L) {
+  if (is.null(dataset)) {
+    return(NULL)
+  }
+  prefetched <- tryCatch(dataset$prefetch(as.integer(buffer_size)), error = function(e) NULL)
+  if (is.null(prefetched)) dataset else prefetched
+}
+
 #' @rdname ndm_tf_batch_to_r
 #' @export
 ndm_attach_tfrecord_bundle <- function(env,
@@ -614,12 +628,14 @@ ndm_attach_tfrecord_bundle <- function(env,
   calibration_source <- match.arg(calibration_source)
   backend <- backend %||% tryCatch(ndm_backend_modules(), error = function(e) NULL)
 
-  assign("TFDataset_train", bundle$train_dataset, envir = env)
-  assign("TFDatasetIterator_train", reticulate::as_iterator(bundle$train_dataset), envir = env)
+  train_dataset <- .ndm_prefetch_dataset(bundle$train_dataset)
+  assign("TFDataset_train", train_dataset, envir = env)
+  assign("TFDatasetIterator_train", reticulate::as_iterator(train_dataset), envir = env)
 
   if (!is.null(bundle$inference_dataset)) {
-    assign("TFDataset_inference", bundle$inference_dataset, envir = env)
-    assign("TFDatasetIterator_inference", reticulate::as_iterator(bundle$inference_dataset), envir = env)
+    inference_dataset <- .ndm_prefetch_dataset(bundle$inference_dataset)
+    assign("TFDataset_inference", inference_dataset, envir = env)
+    assign("TFDatasetIterator_inference", reticulate::as_iterator(inference_dataset), envir = env)
   }
   assign("ndm_tfrecord_bundle_ref", .ndm_bundle_ref_from_bundle(bundle), envir = env)
 

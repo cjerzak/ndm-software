@@ -3063,7 +3063,7 @@ analysis2_solver_profile <- function(runtime_env, profile = "default") {
     controller = diffrax$PIDController(rtol = tolerances[["rtol"]], atol = tolerances[["atol"]]),
     rtol = unname(tolerances[["rtol"]]),
     atol = unname(tolerances[["atol"]]),
-    dt0 = 1e-3
+    dt0 = 0.1
   )
 }
 
@@ -3187,7 +3187,7 @@ analysis2_real_runtime_globals <- function(row_values,
     minAnchoringTimeID = analysis2_as_int(dataset_spec$min_anchoring_time),
     MIN_NA_ACCEPT_FRAC = 4 / max_times_past,
     NTimeSteps_SIM = n_time_steps_sim,
-    MaxSteps = as.integer(10^6),
+    MaxSteps = as.integer(4096),
     DecoderInNeuralODE = FALSE,
     endAppend = TRUE,
     OverDoDataFrac = 0.90,
@@ -3402,7 +3402,7 @@ analysis2_sim_runtime_globals <- function(row_values,
     nTimesInLikelihood = n_times_lookahead,
     NTimeSteps_SIM = n_time_steps_sim,
     nTimesLookValidationInference = n_times_lookahead,
-    MaxSteps = as.integer(10^4),
+    MaxSteps = as.integer(4096),
     VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$arange(
       start = 0L, stop = n_time_steps_sim, dtype = jnp$int32
     )),

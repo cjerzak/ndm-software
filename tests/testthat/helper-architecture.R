@@ -17,7 +17,7 @@ ndm_test_architecture_function <- function(path, name, env) {
   stop("Missing runtime function: ", name)
 }
 
-ndm_test_architecture_env <- function(backbone = FALSE, compute_dtype = "native", checkpointing = TRUE, depth = 2L) {
+ndm_test_architecture_env <- function(backbone = FALSE, compute_dtype = "native", checkpointing = FALSE, depth = 2L) {
   conda_env <- ndm_require_backend_test_stack("neural architecture regressions")
   backend <- ndm_initialize_backend(
     conda_env = conda_env, float_type = "32", import_tensorflow = FALSE

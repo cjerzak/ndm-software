@@ -100,7 +100,7 @@ test_that("BF16 transformer activations retain FP32 masters and finite gradients
 })
 
 test_that("residual source rematerialization reduces saved arrays without changing gradients", {
-  env <- ndm_test_architecture_env(backbone = TRUE, depth = 4L)
+  env <- ndm_test_architecture_env(backbone = TRUE, checkpointing = TRUE, depth = 4L)
   reference <- ndm_test_architecture_env(backbone = TRUE, checkpointing = FALSE, depth = 4L)
   x <- env$jax$random$normal(env$jax$random$PRNGKey(40L), list(12L, 16L))
   mask <- env$jnp$ones(list(12L, 1L))
@@ -137,7 +137,13 @@ test_that("donated updates reject bad loss and solver failures with usable origi
       model_state = state, solver_diagnostics = list(success = y_mask), loss_components = list()
     ))
   }
-  for (name in c("ndm_training_tree_finite", "train_step_impl", "train_step_owned_compiled")) {
+  for (name in c(
+    "ndm_training_tree_finite",
+    "ndm_training_solver_diagnostic_fields", "ndm_training_loss_component_fields",
+    "ndm_training_pack_diagnostics", "ndm_training_pack_scalars",
+    "ndm_training_observation_mask_valid",
+    "train_step_impl", "train_step_owned_compiled"
+  )) {
     ndm_test_architecture_function("ModelTrainers/SuperLModel_TrainDefine.R", name, env)
   }
   for (failure in c("none", "nan_loss", "solver")) {

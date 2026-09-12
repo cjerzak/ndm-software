@@ -571,6 +571,62 @@
             }
             jnp$zeros(list())
         }
+    }, ndm_runtime_fixed_step_solve <- function(field, y0, args,
+        save_ts, substeps = 1L) {
+        substeps <- as.integer(substeps)
+        if (length(substeps) != 1L || is.na(substeps) || substeps <
+            1L) {
+            stop("Fixed-step integration needs at least one substep per unit interval.",
+                call. = FALSE)
+        }
+        n_save <- as.integer(save_ts$shape[[1L]])
+        ts <- save_ts$astype(jnp$float32)
+        dt <- jnp$array(1/substeps, dtype = jnp$float32)
+        axpy <- function(a, k, y) jax$tree_util$tree_map(function(ki,
+            yi) yi + a * ki, k, y)
+        rk4_step <- function(y, t) {
+            k1 <- field(t, y, args)
+            k2 <- field(t + dt/2, axpy(dt/2, k1, y), args)
+            k3 <- field(t + dt/2, axpy(dt/2, k2, y), args)
+            k4 <- field(t + dt, axpy(dt, k3, y), args)
+            increment <- jax$tree_util$tree_map(function(a, b,
+                c, d) (a + 2 * b + 2 * c + d) * (dt/6), k1, k2,
+                k3, k4)
+            jax$tree_util$tree_map(function(yi, inc) yi + inc,
+                y, increment)
+        }
+        unit_interval <- function(y, t_start) {
+            sub_ts <- t_start + dt * jnp$arange(substeps, dtype = jnp$float32)
+            out <- jax$lax$scan(function(carry, t) list(rk4_step(carry,
+                t), NULL), y, sub_ts)
+            list(out[[1L]], out[[1L]])
+        }
+        scanned <- if (n_save > 1L) {
+            jax$lax$scan(unit_interval, y0, jnp$take(ts, jnp$arange(n_save -
+                1L), axis = 0L))
+        }
+        else {
+            list(y0, NULL)
+        }
+        ys <- if (n_save > 1L) {
+            jax$tree_util$tree_map(function(first, rest) jnp$concatenate(list(jnp$expand_dims(first,
+                0L), rest), axis = 0L), y0, scanned[[2L]])
+        }
+        else {
+            jax$tree_util$tree_map(function(first) jnp$expand_dims(first,
+                0L), y0)
+        }
+        n_steps <- jnp$array(as.integer((n_save - 1L) * substeps),
+            dtype = jnp$int32)
+        list(ts = ts, ys = ys, num_steps = n_steps)
+    }, ndm_runtime_fixed_step_diagnostics <- function(solution) {
+        state_finite <- ndm_runtime_tree_all_finite(solution$ys)
+        list(success = state_finite, result_success = state_finite,
+            state_finite = state_finite, result_code = jnp$where(state_finite,
+                jnp$array(0L, dtype = jnp$int32), jnp$array(1L,
+                  dtype = jnp$int32)), num_steps = solution$num_steps,
+            num_accepted_steps = solution$num_steps, num_rejected_steps = jnp$array(0L,
+                dtype = jnp$int32), max_steps = solution$num_steps)
     }, print2("Done loading helper functions..."))
 
 .ndm_stage_expr_SetupEnv_SuperLModel_MasterImports <- expression({
@@ -2456,6 +2512,23 @@
             neuralode_mean_loss_weight < 0) {
             stop("neuralode_mean_loss_weight must be one finite non-negative scalar.")
         }
+        NeuralODETrainIntegrator <- tolower(as.character(ndm_runtime_get0("NeuralODETrainIntegrator",
+            ifnotfound = ndm_runtime_get0("neuralode_train_integrator",
+                ifnotfound = "auto"))))
+        if (length(NeuralODETrainIntegrator) != 1L || !NeuralODETrainIntegrator %in%
+            c("auto", "fixed_rk4", "diffrax")) {
+            stop("NeuralODETrainIntegrator must be one of 'auto', 'fixed_rk4' or 'diffrax'.")
+        }
+        NeuralODETrainSubsteps <- ndm_runtime_get0("NeuralODETrainSubsteps",
+            ifnotfound = ndm_runtime_get0("neuralode_train_substeps",
+                ifnotfound = NULL))
+        if (!is.null(NeuralODETrainSubsteps)) {
+            NeuralODETrainSubsteps <- suppressWarnings(as.integer(NeuralODETrainSubsteps))
+            if (length(NeuralODETrainSubsteps) != 1L || is.na(NeuralODETrainSubsteps) ||
+                NeuralODETrainSubsteps < 1L) {
+                stop("NeuralODETrainSubsteps must be one positive integer or NULL (auto).")
+            }
+        }
         training_objective <- tolower(as.character(ndm_runtime_get0("training_objective",
             ifnotfound = ndm_runtime_get0("TrainingObjective",
                 ifnotfound = "student_t_nll"))))
@@ -2520,6 +2593,20 @@
         NormFxn <- RMSNorm
         print2("Entering SuperLModel_ParseDynamicODE.R")
         ndm_source_extracted("ModelDefiners/SuperLModel_ParseDynamicODE.R")
+        if (identical(NeuralODETrainIntegrator, "auto")) {
+            NeuralODETrainIntegrator <- if (length(uq_globalneural_vec) >
+                0L)
+                "diffrax"
+            else "fixed_rk4"
+        }
+        if (is.null(NeuralODETrainSubsteps)) {
+            NeuralODETrainSubsteps <- if (length(uq_globalneural_vec) >
+                0L)
+                2L
+            else 1L
+        }
+        print2(sprintf("NeuralODE training integrator: %s (substeps per unit time: %s)",
+            NeuralODETrainIntegrator, NeuralODETrainSubsteps))
         DenseLayerInputSize <- ai(1L * ModelDims)
         print2("Setting up ts part...")
         {
@@ -2910,14 +2997,25 @@
             x_mask <- xt[[2]]
             xt <- xt[[1]]
             if ("transformer" %in% BackboneType) {
-                xt <- RunTransformerBackbone(xt = xt, x_mask = x_mask,
-                  TransformerList = TSList$TSBackbone)
+                output_position <- if (ModelType == "DecoderOnly") {
+                  jnp$argmax(jnp$where(jnp$equal(x_mask, 1),
+                    jnp$expand_dims(jnp$arange(x_mask$shape[[1]]),
+                      1L), -jnp$inf))
+                }
+                else if (endAppend) {
+                  jnp$array(as.integer(xt$shape[[1]]) - 1L, dtype = jnp$int32)
+                }
+                else {
+                  jnp$array(0L, dtype = jnp$int32)
+                }
+                xt <- RunTransformerBackboneAt(xt = xt, x_mask = x_mask,
+                  TransformerList = TSList$TSBackbone, position = output_position)
             }
             if ("mamba" %in% BackboneType) {
                 stop("Mamba is not included in ndm.", call. = FALSE)
                 print("Done sourcing SuperLModel_BackboneMamba.R in run path")
+                xt <- SelectBackboneOutputToken(xt = xt, x_mask = x_mask)
             }
-            xt <- SelectBackboneOutputToken(xt = xt, x_mask = x_mask)
             xt <- DecoderBackboneToOutput(TSList = TSList, hidden_state = xt)
             return(xt)
         }
@@ -3280,6 +3378,8 @@
         }
         GetPred <- function(ModelList, x, state, inference, PriorList,
             PolicyList, GetPredSaveAtInfo, seed) {
+            use_fixed_step_training_solve <- !isTRUE(inference) &&
+                identical(NeuralODETrainIntegrator, "fixed_rk4")
             context <- x[[2]][[1]]
             loc_indices <- jnp$squeeze(x[[3]][[1]]$astype(jnp$int32))
             time_indices <- jnp$squeeze(x[[4]][[1]]$astype(jnp$int32))
@@ -3672,18 +3772,25 @@
                   }
                   dynamicglobal_x0_samp <- NULL
                   if (length(uq_globalneural_vec) > 0) {
-                    dynamicglobal_x_params_samp <- diffrax$diffeqsolve(terms = VI_ODE_term_globalOnly,
-                      solver = VI_diff_eq_solver_optim, saveat = VI_SaveAt_ODE_GlobalNeural,
-                      args = {
-                        ndm_runtime_replicate_tree(eval(parse(text = sprintf("list(\"Neural2\" = %s)",
-                          gsub(coreNeuralText, pattern = "LocalNeural",
-                            replace = "GlobalNeural")))))
-                      }, y0 = {
-                        ndm_runtime_replicate_tree(list(Neural2 = ModelList$GlobalNeural$NeuralInitialConditions))
-                      }, max_steps = MaxSteps, t0 = 0, t1 = f2n(NTimeGlobalNeuralMax),
-                      dt0 = (dt0_init_optim), stepsize_controller = stepsize_controller_optim,
-                      throw = FALSE)
-                    global_solver_diagnostics <- ndm_runtime_solution_diagnostics(dynamicglobal_x_params_samp)
+                    global_args <- ndm_runtime_replicate_tree(eval(parse(text = sprintf("list(\"Neural2\" = %s)",
+                      gsub(coreNeuralText, pattern = "LocalNeural",
+                        replace = "GlobalNeural")))))
+                    global_y0 <- ndm_runtime_replicate_tree(list(Neural2 = ModelList$GlobalNeural$NeuralInitialConditions))
+                    if (use_fixed_step_training_solve) {
+                      dynamicglobal_x_params_samp <- ndm_runtime_fixed_step_solve(field = f_VI_ODE_TERM_globalOnly,
+                        y0 = global_y0, args = global_args, save_ts = VI_SaveAt_ODE_GlobalNeural$subs$ts,
+                        substeps = NeuralODETrainSubsteps)
+                      global_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(dynamicglobal_x_params_samp)
+                    }
+                    else {
+                      dynamicglobal_x_params_samp <- diffrax$diffeqsolve(terms = VI_ODE_term_globalOnly,
+                        solver = VI_diff_eq_solver_optim, saveat = VI_SaveAt_ODE_GlobalNeural,
+                        args = global_args, y0 = global_y0, max_steps = MaxSteps,
+                        t0 = 0, t1 = f2n(NTimeGlobalNeuralMax),
+                        dt0 = (dt0_init_optim), stepsize_controller = stepsize_controller_optim,
+                        throw = FALSE)
+                      global_solver_diagnostics <- ndm_runtime_solution_diagnostics(dynamicglobal_x_params_samp)
+                    }
                     solver_diagnostics$global_attempted <- jnp$array(TRUE)
                     solver_diagnostics$global_result_success <- global_solver_diagnostics$result_success
                     solver_diagnostics$global_state_finite <- global_solver_diagnostics$state_finite
@@ -3776,24 +3883,32 @@
                       yes = list("Neural2"))[[1]])
                   y0_names <- c(y0_names[!y0_names %in% uq_encneural_vec],
                     "Neural1")
-                  diff_eq_sol <- diffrax$diffeqsolve(terms = VI_ODE_term,
-                    solver = VI_diff_eq_solver_optim, args = {
-                      ndm_runtime_replicate_tree(c(eval(parse(text = neuralArgsText)),
-                        policy_scenario_indicator = PolicyList[[1]],
-                        policy_scenario = PolicyList[[2]]))
-                    }, y0 = {
-                      ndm_runtime_replicate_tree(eval(parse(text = paste("list(",
-                        paste(sapply(y0_names, function(ze) {
-                          sprintf("'%s' = ODEParamsSampList_y0$%s_samp%s",
-                            ze, ze, ifelse(ze %in% uq_encneural_vec,
-                              yes = paste("$", ze, "_0", sep = ""),
-                              no = ""))
-                        }), collapse = ","), ")", collapse = ""))))
-                    }, max_steps = (MaxSteps), t0 = (jnp$array(0)),
-                    t1 = GetPredSaveAtInfo[[1]], saveat = GetPredSaveAtInfo[[2]],
-                    dt0 = dt0_init_optim, stepsize_controller = stepsize_controller_optim,
-                    throw = FALSE)
-                  local_solver_diagnostics <- ndm_runtime_solution_diagnostics(diff_eq_sol)
+                  local_args <- ndm_runtime_replicate_tree(c(eval(parse(text = neuralArgsText)),
+                    policy_scenario_indicator = PolicyList[[1]],
+                    policy_scenario = PolicyList[[2]]))
+                  local_y0 <- ndm_runtime_replicate_tree(eval(parse(text = paste("list(",
+                    paste(sapply(y0_names, function(ze) {
+                      sprintf("'%s' = ODEParamsSampList_y0$%s_samp%s",
+                        ze, ze, ifelse(ze %in% uq_encneural_vec,
+                          yes = paste("$", ze, "_0", sep = ""),
+                          no = ""))
+                    }), collapse = ","), ")", collapse = ""))))
+                  if (use_fixed_step_training_solve) {
+                    diff_eq_sol <- ndm_runtime_fixed_step_solve(field = f_VI_ODE_TERM,
+                      y0 = local_y0, args = local_args, save_ts = GetPredSaveAtInfo[[2]]$subs$ts,
+                      substeps = NeuralODETrainSubsteps)
+                    local_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(diff_eq_sol)
+                  }
+                  else {
+                    diff_eq_sol <- diffrax$diffeqsolve(terms = VI_ODE_term,
+                      solver = VI_diff_eq_solver_optim, args = local_args,
+                      y0 = local_y0, max_steps = (MaxSteps),
+                      t0 = (jnp$array(0)), t1 = as.integer(GetPredSaveAtInfo[[1]]) -
+                        1L, saveat = GetPredSaveAtInfo[[2]],
+                      dt0 = dt0_init_optim, stepsize_controller = stepsize_controller_optim,
+                      throw = FALSE)
+                    local_solver_diagnostics <- ndm_runtime_solution_diagnostics(diff_eq_sol)
+                  }
                   solver_diagnostics$local_attempted <- jnp$array(TRUE)
                   solver_diagnostics$local_result_success <- local_solver_diagnostics$result_success
                   solver_diagnostics$local_state_finite <- local_solver_diagnostics$state_finite
@@ -4106,7 +4221,7 @@
         else TransformerComputeDtype
         transformer_dtype <- jnp$dtype(TransformerComputeDtypeResolved)
         TransformerActivationCheckpointing <- backbone_runtime_get0("TransformerActivationCheckpointing",
-            TRUE)
+            FALSE)
         if (!is.logical(TransformerActivationCheckpointing) ||
             length(TransformerActivationCheckpointing) != 1L ||
             is.na(TransformerActivationCheckpointing)) {
@@ -4352,11 +4467,40 @@
             names(out) <- paste0("d", as.character(1:num_layers))
             out
         }
+        attnres_source <- function(x, eps = FullAttentionResidualEps) {
+            x_f32 <- x$astype(jnp$float32)
+            mean_square <- jnp$mean(jnp$square(x_f32), axis = -1L)
+            inv_rms <- jnp$reciprocal(jnp$sqrt(mean_square +
+                jnp$array(as.numeric(eps), dtype = jnp$float32)))
+            list(value = x, inv_rms = inv_rms)
+        }
+        full_attnres_combine <- function(sources, pseudo_query,
+            norm_scale) {
+            if (length(sources) == 0L) {
+                stop("Full attention residual aggregation needs at least one source.",
+                  call. = FALSE)
+            }
+            width <- as.integer(sources[[1L]]$value$shape[[2L]])
+            query_scaled <- jnp$multiply(resolve_attnres_norm_scale(norm_scale,
+                width, dtype = jnp$float32), pseudo_query$astype(jnp$float32))
+            logits <- jnp$stack(lapply(sources, function(s) {
+                jnp$multiply(jnp$matmul(s$value$astype(jnp$float32),
+                  query_scaled), s$inv_rms)
+            }), axis = 0L)
+            weights <- jax$nn$softmax(logits, axis = 0L)
+            out <- NULL
+            for (n in seq_along(sources)) {
+                term <- jnp$multiply(jnp$expand_dims(jnp$take(weights,
+                  n - 1L, axis = 0L), 1L), sources[[n]]$value$astype(jnp$float32))
+                out <- if (is.null(out))
+                  term
+                else jnp$add(out, term)
+            }
+            out$astype(sources[[1L]]$value$dtype)
+        }
         full_attnres_reduce_sources <- transformer_checkpoint(function(sources,
             query, scale) {
-            full_attnres_reduce_buffer(jnp$stack(sources, axis = 0L),
-                jnp$array(as.integer(length(sources)), dtype = jnp$int32),
-                query, scale)
+            full_attnres_combine(sources, query, scale)
         })
         transformer_norm <- function(x) {
             if (x$dtype$name == "bfloat16")
@@ -4411,8 +4555,18 @@
             x * jax$nn$softplus(weights$WtSkipPath$astype(x$dtype)) +
                 branch * jax$nn$softplus(weights$WtResidPath$astype(x$dtype))
         }
+        attnres_select_position <- function(sources, xt, rows,
+            position) {
+            index <- jnp$reshape(position$astype(jnp$int32),
+                list(1L))
+            list(sources = lapply(sources, function(s) list(value = jnp$take(s$value,
+                index, axis = 0L), inv_rms = jnp$take(s$inv_rms,
+                index, axis = 0L))), xt = jnp$take(xt, index,
+                axis = 0L), rows = jnp$take(rows, index, axis = 0L))
+        }
         transformer_run <- function(xt, x_mask, TransformerList,
-            mode = "full", cache = NULL, pos = NULL, max_len = NULL) {
+            mode = "full", cache = NULL, pos = NULL, max_len = NULL,
+            select_position = NULL) {
             xt <- xt$astype(transformer_dtype)
             rows <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
             positions <- if (mode == "decode")
@@ -4428,7 +4582,9 @@
                 cache <- kv_cache_allocate(max_len, ModelDepth,
                   num_kv_heads, head_dim, xt$dtype)
             }
-            sources <- list(xt)
+            sources <- if (UseFullAttentionResiduals)
+                list(attnres_source(xt))
+            else list()
             for (layer_name in paste0("d", seq_len(ModelDepth))) {
                 L <- TransformerList[[layer_name]]
                 source <- if (UseFullAttentionResiduals)
@@ -4464,8 +4620,18 @@
                   cache[[layer_name]] <- attention$cache
                 branch <- mask_sequence_rows_2d(attention$value,
                   rows)
+                if (!is.null(select_position) && layer_name ==
+                  paste0("d", ModelDepth)) {
+                  selected <- attnres_select_position(sources,
+                    xt, rows, select_position)
+                  sources <- selected$sources
+                  xt <- selected$xt
+                  rows <- selected$rows
+                  branch <- jnp$take(branch, jnp$reshape(select_position$astype(jnp$int32),
+                    list(1L)), axis = 0L)
+                }
                 if (UseFullAttentionResiduals) {
-                  sources[[length(sources) + 1L]] <- branch
+                  sources[[length(sources) + 1L]] <- attnres_source(branch)
                   source <- full_attnres_reduce_sources(sources,
                     L$AttnRes2$PseudoQuery, L$AttnRes2$NormScale)
                 }
@@ -4476,7 +4642,7 @@
                 branch <- mask_sequence_rows_2d(transformer_ffn(source,
                   L), rows)
                 if (UseFullAttentionResiduals)
-                  sources[[length(sources) + 1L]] <- branch
+                  sources[[length(sources) + 1L]] <- attnres_source(branch)
                 else xt <- transformer_skip(xt, branch, L$ResidCon2)
             }
             if (UseFullAttentionResiduals) {
@@ -4495,15 +4661,20 @@
         RunTransformerBackbone_FullAttnRes <- RunTransformerBackbone
         transformer_prefill_kv <- function(xt, x_mask, TransformerList,
             max_len = NULL) {
-            result <- transformer_run(xt, x_mask, TransformerList,
-                mode = "prefill", max_len = max_len)
             valid <- jnp$squeeze(jnp$greater(x_mask, 0), 1L)
             last_valid <- jnp$max(jnp$where(valid, jnp$arange(xt$shape[[1]],
                 dtype = jnp$int32), -1L))
             next_pos <- last_valid + 1L
-            list(xt_last = jnp$take(result$xt, jnp$maximum(last_valid,
-                0L), axis = 0L), cache = result$cache, last_valid = last_valid,
-                next_pos = next_pos)
+            result <- transformer_run(xt, x_mask, TransformerList,
+                mode = "prefill", max_len = max_len, select_position = jnp$maximum(last_valid,
+                  0L))
+            list(xt_last = jnp$squeeze(result$xt, 0L), cache = result$cache,
+                last_valid = last_valid, next_pos = next_pos)
+        }
+        RunTransformerBackboneAt <- function(xt, x_mask, TransformerList,
+            position) {
+            jnp$squeeze(transformer_run(xt, x_mask, TransformerList,
+                select_position = position)$xt, 0L)
         }
         transformer_decode_step_kv <- function(token_in, pos,
             TransformerList, cache) {
@@ -4888,10 +5059,8 @@
             outputDim_nODE_local <- 1L
             nDimODEOutput_ts <- nDimODEOutput_ts_mean <- ai(LocalNeuralEmbedDim +
                 length(uq_encneural_vec) + nOutcomes)
-            LocalNeuralMLP <- list(WideProj1 = eq$nn$Linear(in_features = inputDim_nODE_local <- ai(length(encneural_base_inputs)) +
-                ai(LocalNeuralEmbedDim + length(uq_encneural_vec) +
-                  length(encneural_extra_inputs) + nOutcomes +
-                  2 * grepl(model_tex_loc, pattern = "DynamicBeta_DynamicGlobal")),
+            LocalNeuralMLP <- list(WideProj1 = eq$nn$Linear(in_features = inputDim_nODE_local <- ai(nDimODEOutput_ts_mean +
+                length(encneural_base_inputs) + length(encneural_extra_inputs)),
                 out_features = ai(nWidthODEHidden_ts_local),
                 use_bias = F, key = jax$random$PRNGKey(ai(4444L *
                   34L + 5225L))), WideProj2 = eq$nn$Linear(in_features = inputDim_nODE_local,
@@ -5614,171 +5783,218 @@
             finite <- jnp$logical_and(finite, jnp$all(jnp$isfinite(leaf)))
     }
     finite
-}, {
-    print("Sarting SuperLModel_TrainDefine.R")
-    saveCheckpointCounter <- outSampCounter <- 0
-    nRestarts <- 1L
-    LR_schedule <- ndm_training_lr_schedule(nSGD_DefiningLRSeq,
-        LEARNING_RATE_MAX)
-    if (nRestarts %in% c(2, 3)) {
-        stop("Case not implemented in TrainDefine.R")
-    }
-    if (nRestarts > 3) {
-        LR_schedule <- c(replicate(nRestarts - 2L, optax$cosine_onecycle_schedule(transition_steps = jnp$array(ai(ceiling(nSGD_DefiningLRSeq/(nRestarts)))),
-            peak_value = jnp$array(LEARNING_RATE_MAX))), optax$cosine_decay_schedule(init_value = LEARNING_RATE_MAX,
-            decay_steps = ai(ceiling(nSGD_DefiningLRSeq/(nRestarts -
-                3)))))
-        LR_schedule <- optax$join_schedules(LR_schedule, boundaries = jnp$array(ai(ceiling(nSGD_DefiningLRSeq/nRestarts *
-            1:(nRestarts - 1)))))
-    }
-    nSGD_MASTER <- nSGD_DefiningLRSeq
-    LR_schedule_vec <- sapply(seq_len(nSGD_MASTER) - 1L, function(x_) {
-        np$array(LR_schedule(jnp$array(x_)))
-    })
-    if (T == T) {
-        optax_optimizer <- ndm_training_optimizer(LR_schedule)
-    }
-    if (T == F) {
-        optax_shampoo <- import("optax_shampoo")
-        optax_optimizer = optax_shampoo$distributed_shampoo$distributed_shampoo(learning_rate = LR_schedule,
-            block_size = 128L, nesterov = TRUE, exponent_override = 0)
-    }
-    opt_state <- optax_optimizer$init(eq$partition(ModelList,
-        eq$is_array)[[1]])
-    if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
-        opt_state <- ndm_runtime_replicate_tree(opt_state)
-    }
-    TrackBlockUpdateNorms <- isTRUE(get0("TrackBlockUpdateNorms",
-        inherits = TRUE, ifnotfound = FALSE))
-    PersistBlockUpdateNorms <- isTRUE(get0("PersistBlockUpdateNorms",
-        inherits = TRUE, ifnotfound = FALSE))
-    BlockUpdateTrackNames <- intersect(c("InitProcessList", "LocalNeural",
-        "GlobalNeural", "ScaleList", "TSList", "BNList"), names(ModelList))
-    train_define_env <- environment()
-    block_metric_norm <- function(tree) {
-        leaves <- jax$tree_util$tree_leaves(tree)
-        if (length(leaves) == 0L) {
-            return(jnp$array(0))
-        }
-        optax$global_norm(leaves)
-    }
-    block_update_log <- data.frame(iter = integer(0L), block = character(0L),
-        param_norm = numeric(0L), grad_norm = numeric(0L), update_norm = numeric(0L),
-        rel_update = numeric(0L), stringsAsFactors = FALSE)
-    append_block_update_log <- function(iteration, block_metrics) {
-        if (!TrackBlockUpdateNorms || is.null(block_metrics) ||
-            length(block_metrics) == 0L) {
-            return(invisible(NULL))
-        }
-        py_scalar_num <- function(x) {
-            value <- suppressWarnings(as.numeric(np$array(x)))
-            if (length(value) == 0L) {
-                return(NA_real_)
-            }
-            value[[1L]]
-        }
-        rows <- do.call(rbind, lapply(names(block_metrics), function(block_name) {
-            metric <- block_metrics[[block_name]]
-            data.frame(iter = as.integer(iteration), block = block_name,
-                param_norm = py_scalar_num(metric$param_norm),
-                grad_norm = py_scalar_num(metric$grad_norm),
-                update_norm = py_scalar_num(metric$update_norm),
-                rel_update = py_scalar_num(metric$rel_update),
-                stringsAsFactors = FALSE)
-        }))
-        current_log <- get("block_update_log", envir = train_define_env,
-            inherits = FALSE)
-        updated_log <- rbind(current_log, rows)
-        assign("block_update_log", updated_log, envir = train_define_env)
-        if (PersistBlockUpdateNorms) {
-            data.table::fwrite(updated_log, file.path(HolderFolder,
-                sprintf("block_updates_i%s.csv", as.integer(iteration))))
-        }
-        invisible(rows)
-    }
-    jit_apply_updates <- eq$filter_jit(optax$apply_updates)
-    jit_get_update <- eq$filter_jit(optax_optimizer$update)
-    train_step_impl <- function(ModelList, batch_pkg, y_true,
-        y_mask, iteration, state, PriorList, PolicyList, GetPredSaveAtInfo,
-        seed, opt_state) {
-        loss_and_grads <- (eq$filter_value_and_grad(getLoss_train,
-            has_aux = T))(ModelList, batch_pkg, y_true, y_mask,
-            iteration, state, PriorList, PolicyList, GetPredSaveAtInfo,
-            seed)
-        loss_and_state <- loss_and_grads[[1]]
-        loss_aux <- loss_and_state[[2]]
-        grads <- loss_and_grads[[2]]
-        model_arrays <- eq$partition(ModelList, eq$is_array)
-        model_array_tree <- model_arrays[[1]]
-        grad_arrays <- eq$partition(grads, eq$is_inexact_array)[[1]]
-        updates_and_state <- optax_optimizer$update(grad_arrays,
-            opt_state, model_array_tree)
-        block_update_metrics <- if (TrackBlockUpdateNorms &&
-            length(BlockUpdateTrackNames) > 0L) {
-            metrics <- lapply(BlockUpdateTrackNames, function(block_name) {
-                param_norm <- block_metric_norm(model_array_tree[[block_name]])
-                grad_norm <- block_metric_norm(grad_arrays[[block_name]])
-                update_norm <- block_metric_norm(updates_and_state[[1]][[block_name]])
-                rel_update <- update_norm/jnp$maximum(param_norm,
-                  jnp$array(1e-12)$astype(param_norm$dtype))
-                list(param_norm = param_norm, grad_norm = grad_norm,
-                  update_norm = update_norm, rel_update = rel_update)
+}, ndm_training_solver_diagnostic_fields <- c("success", "failure_stage_code",
+    "prediction_finite", "global_attempted", "global_result_success",
+    "global_state_finite", "global_result_code", "global_num_steps",
+    "global_num_accepted_steps", "global_num_rejected_steps",
+    "global_max_steps", "local_attempted", "local_result_success",
+    "local_state_finite", "local_result_code", "local_num_steps",
+    "local_num_accepted_steps", "local_num_rejected_steps", "local_max_steps"),
+    ndm_training_loss_component_fields <- c("objective_data_loss",
+        "student_t_nll", "raw_mse", "scaled_mse", "kl_local",
+        "kl_global", "kl_place", "kl_unweighted", "kl_weighted",
+        "auxiliary_mean_loss", "prediction_abs_mean", "truth_abs_mean"),
+    ndm_training_pack_diagnostics <- function(diagnostics) {
+        if (!all(ndm_training_solver_diagnostic_fields %in% names(diagnostics)))
+            return(NULL)
+        columns <- lapply(ndm_training_solver_diagnostic_fields,
+            function(field) {
+                jnp$reshape(diagnostics[[field]]$astype(jnp$int32),
+                  list(-1L))
             })
-            names(metrics) <- BlockUpdateTrackNames
-            metrics
+        jnp$stack(columns, axis = 1L)
+    }, ndm_training_pack_scalars <- function(values, fields,
+        dtype) {
+        if (!all(fields %in% names(values)))
+            return(NULL)
+        jnp$stack(lapply(fields, function(field) jnp$reshape(values[[field]]$astype(dtype),
+            list())), axis = 0L)
+    }, ndm_training_observation_mask_valid <- function(mask) {
+        if (length(mask$shape) < 2L)
+            return(jnp$array(TRUE))
+        rows <- jnp$reshape(mask$astype(jnp$float32), list(mask$shape[[1]],
+            -1L))
+        finite <- jnp$all(jnp$isfinite(rows), axis = 1L)
+        nonzero <- jnp$any(jnp$not_equal(rows, 0), axis = 1L)
+        jnp$all(jnp$logical_and(finite, nonzero))
+    }, {
+        print("Sarting SuperLModel_TrainDefine.R")
+        saveCheckpointCounter <- outSampCounter <- 0
+        nRestarts <- 1L
+        LR_schedule <- ndm_training_lr_schedule(nSGD_DefiningLRSeq,
+            LEARNING_RATE_MAX)
+        if (nRestarts %in% c(2, 3)) {
+            stop("Case not implemented in TrainDefine.R")
         }
-        else {
-            NULL
+        if (nRestarts > 3) {
+            LR_schedule <- c(replicate(nRestarts - 2L, optax$cosine_onecycle_schedule(transition_steps = jnp$array(ai(ceiling(nSGD_DefiningLRSeq/(nRestarts)))),
+                peak_value = jnp$array(LEARNING_RATE_MAX))),
+                optax$cosine_decay_schedule(init_value = LEARNING_RATE_MAX,
+                  decay_steps = ai(ceiling(nSGD_DefiningLRSeq/(nRestarts -
+                    3)))))
+            LR_schedule <- optax$join_schedules(LR_schedule,
+                boundaries = jnp$array(ai(ceiling(nSGD_DefiningLRSeq/nRestarts *
+                  1:(nRestarts - 1)))))
         }
-        candidate_arrays <- optax$apply_updates(model_array_tree,
-            updates_and_state[[1]])
-        grad_norm <- optax$global_norm(jax$tree_util$tree_leaves(grad_arrays))
-        accepted <- jnp$logical_and(jnp$isfinite(loss_and_state[[1]]),
-            jnp$isfinite(grad_norm))
-        accepted <- jnp$logical_and(accepted, jnp$all(loss_aux$solver_diagnostics$success))
-        accepted <- jnp$logical_and(accepted, ndm_training_tree_finite(list(candidate_arrays,
-            updates_and_state[[2]], loss_aux$model_state)))
-        chosen <- jax$lax$cond(accepted, function(pair) pair[[1L]],
-            function(pair) pair[[2L]], list(list(candidate_arrays,
-                updates_and_state[[2]]), list(model_array_tree,
-                opt_state)))
-        updated_model <- eq$combine(chosen[[1L]], model_arrays[[2]])
-        list(loss = loss_and_state[[1]], state = loss_aux$model_state,
-            solver_diagnostics = loss_aux$solver_diagnostics,
-            loss_components = loss_aux$loss_components, grad_norm = grad_norm,
-            update_accepted = accepted, model = updated_model,
-            opt_state = chosen[[2L]], block_update_metrics = block_update_metrics)
-    }
-    DonateTrainingState <- get0("DonateTrainingState", inherits = TRUE,
-        ifnotfound = TRUE)
-    if (!is.logical(DonateTrainingState) || length(DonateTrainingState) !=
-        1L || is.na(DonateTrainingState)) {
-        stop("DonateTrainingState must be one non-missing logical value.",
-            call. = FALSE)
-    }
-    train_step_owned_compiled <- switch_filter_jit(function(fixed,
-        owned) {
-        do.call(train_step_impl, c(list(ModelList = owned$model),
-            fixed, list(opt_state = owned$opt_state)))
-    }, donate = if (DonateTrainingState)
-        "all-except-first"
-    else "none")
-    train_step_compiled <- function(ModelList, batch_pkg, y_true,
-        y_mask, iteration, state, PriorList, PolicyList, GetPredSaveAtInfo,
-        seed, opt_state) {
-        train_step_owned_compiled(list(batch_pkg = batch_pkg,
-            y_true = y_true, y_mask = y_mask, iteration = iteration,
-            state = state, PriorList = PriorList, PolicyList = PolicyList,
-            GetPredSaveAtInfo = GetPredSaveAtInfo, seed = seed),
-            list(model = ModelList, opt_state = opt_state))
-    }
-}, NA20 <- function(zer) {
-    zer[is.na(zer)] <- 0
-    zer[is.infinite(zer)] <- 0
-    zer
-}, grad_norm_vec <- out_loss_vec <- in_loss_vec <- rep(NA, times = nSGD_DefiningLRSeq),
-    i_ <- 1, grad_norm_mat <- c(), LastOutCor <- Skill8SanityCheck <- NA,
-    te_total <- te_grads <- 0, st0 <- Sys.time(), plottingSeq_counter <- ExecuteUpdateCounter <- 0,
+        nSGD_MASTER <- nSGD_DefiningLRSeq
+        LR_schedule_vec <- as.numeric(np$array(LR_schedule(jnp$arange(as.integer(nSGD_MASTER)))))
+        if (T == T) {
+            optax_optimizer <- ndm_training_optimizer(LR_schedule)
+        }
+        if (T == F) {
+            optax_shampoo <- import("optax_shampoo")
+            optax_optimizer = optax_shampoo$distributed_shampoo$distributed_shampoo(learning_rate = LR_schedule,
+                block_size = 128L, nesterov = TRUE, exponent_override = 0)
+        }
+        opt_state <- optax_optimizer$init(eq$partition(ModelList,
+            eq$is_array)[[1]])
+        if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
+            opt_state <- ndm_runtime_replicate_tree(opt_state)
+        }
+        TrackBlockUpdateNorms <- isTRUE(get0("TrackBlockUpdateNorms",
+            inherits = TRUE, ifnotfound = FALSE))
+        PersistBlockUpdateNorms <- isTRUE(get0("PersistBlockUpdateNorms",
+            inherits = TRUE, ifnotfound = FALSE))
+        BlockUpdateTrackNames <- intersect(c("InitProcessList",
+            "LocalNeural", "GlobalNeural", "ScaleList", "TSList",
+            "BNList"), names(ModelList))
+        train_define_env <- environment()
+        block_metric_norm <- function(tree) {
+            leaves <- jax$tree_util$tree_leaves(tree)
+            if (length(leaves) == 0L) {
+                return(jnp$array(0))
+            }
+            optax$global_norm(leaves)
+        }
+        block_update_log <- data.frame(iter = integer(0L), block = character(0L),
+            param_norm = numeric(0L), grad_norm = numeric(0L),
+            update_norm = numeric(0L), rel_update = numeric(0L),
+            stringsAsFactors = FALSE)
+        append_block_update_log <- function(iteration, block_metrics) {
+            if (!TrackBlockUpdateNorms || is.null(block_metrics) ||
+                length(block_metrics) == 0L) {
+                return(invisible(NULL))
+            }
+            py_scalar_num <- function(x) {
+                value <- suppressWarnings(as.numeric(np$array(x)))
+                if (length(value) == 0L) {
+                  return(NA_real_)
+                }
+                value[[1L]]
+            }
+            rows <- do.call(rbind, lapply(names(block_metrics),
+                function(block_name) {
+                  metric <- block_metrics[[block_name]]
+                  data.frame(iter = as.integer(iteration), block = block_name,
+                    param_norm = py_scalar_num(metric$param_norm),
+                    grad_norm = py_scalar_num(metric$grad_norm),
+                    update_norm = py_scalar_num(metric$update_norm),
+                    rel_update = py_scalar_num(metric$rel_update),
+                    stringsAsFactors = FALSE)
+                }))
+            current_log <- get("block_update_log", envir = train_define_env,
+                inherits = FALSE)
+            updated_log <- rbind(current_log, rows)
+            assign("block_update_log", updated_log, envir = train_define_env)
+            if (PersistBlockUpdateNorms) {
+                data.table::fwrite(updated_log, file.path(HolderFolder,
+                  sprintf("block_updates_i%s.csv", as.integer(iteration))))
+            }
+            invisible(rows)
+        }
+        jit_apply_updates <- eq$filter_jit(optax$apply_updates)
+        jit_get_update <- eq$filter_jit(optax_optimizer$update)
+        train_step_impl <- function(ModelList, batch_pkg, y_true,
+            y_mask, iteration, state, PriorList, PolicyList,
+            GetPredSaveAtInfo, seed, opt_state) {
+            loss_and_grads <- (eq$filter_value_and_grad(getLoss_train,
+                has_aux = T))(ModelList, batch_pkg, y_true, y_mask,
+                iteration, state, PriorList, PolicyList, GetPredSaveAtInfo,
+                seed)
+            loss_and_state <- loss_and_grads[[1]]
+            loss_aux <- loss_and_state[[2]]
+            grads <- loss_and_grads[[2]]
+            model_arrays <- eq$partition(ModelList, eq$is_array)
+            model_array_tree <- model_arrays[[1]]
+            grad_arrays <- eq$partition(grads, eq$is_inexact_array)[[1]]
+            updates_and_state <- optax_optimizer$update(grad_arrays,
+                opt_state, model_array_tree)
+            block_update_metrics <- if (TrackBlockUpdateNorms &&
+                length(BlockUpdateTrackNames) > 0L) {
+                metrics <- lapply(BlockUpdateTrackNames, function(block_name) {
+                  param_norm <- block_metric_norm(model_array_tree[[block_name]])
+                  grad_norm <- block_metric_norm(grad_arrays[[block_name]])
+                  update_norm <- block_metric_norm(updates_and_state[[1]][[block_name]])
+                  rel_update <- update_norm/jnp$maximum(param_norm,
+                    jnp$array(1e-12)$astype(param_norm$dtype))
+                  list(param_norm = param_norm, grad_norm = grad_norm,
+                    update_norm = update_norm, rel_update = rel_update)
+                })
+                names(metrics) <- BlockUpdateTrackNames
+                metrics
+            }
+            else {
+                NULL
+            }
+            candidate_arrays <- optax$apply_updates(model_array_tree,
+                updates_and_state[[1]])
+            grad_norm <- optax$global_norm(jax$tree_util$tree_leaves(grad_arrays))
+            accepted <- jnp$logical_and(jnp$isfinite(loss_and_state[[1]]),
+                jnp$isfinite(grad_norm))
+            accepted <- jnp$logical_and(accepted, jnp$all(loss_aux$solver_diagnostics$success))
+            accepted <- jnp$logical_and(accepted, ndm_training_tree_finite(list(candidate_arrays,
+                updates_and_state[[2]], loss_aux$model_state)))
+            observation_mask_valid <- ndm_training_observation_mask_valid(y_mask)
+            accepted <- jnp$logical_and(accepted, observation_mask_valid)
+            chosen <- jax$lax$cond(accepted, function(pair) pair[[1L]],
+                function(pair) pair[[2L]], list(list(candidate_arrays,
+                  updates_and_state[[2]]), list(model_array_tree,
+                  opt_state)))
+            updated_model <- eq$combine(chosen[[1L]], model_arrays[[2]])
+            list(loss = loss_and_state[[1]], state = loss_aux$model_state,
+                solver_diagnostics = loss_aux$solver_diagnostics,
+                loss_components = loss_aux$loss_components, grad_norm = grad_norm,
+                update_accepted = accepted, model = updated_model,
+                opt_state = chosen[[2L]], block_update_metrics = block_update_metrics,
+                solver_diagnostics_packed = ndm_training_pack_diagnostics(loss_aux$solver_diagnostics),
+                loss_components_packed = ndm_training_pack_scalars(loss_aux$loss_components,
+                  ndm_training_loss_component_fields, loss_and_state[[1]]$dtype),
+                scalars_packed = jnp$stack(list(loss_and_state[[1]]$astype(jnp$float32),
+                  grad_norm$astype(jnp$float32), accepted$astype(jnp$float32),
+                  observation_mask_valid$astype(jnp$float32)),
+                  axis = 0L))
+        }
+        DonateTrainingState <- get0("DonateTrainingState", inherits = TRUE,
+            ifnotfound = TRUE)
+        if (!is.logical(DonateTrainingState) || length(DonateTrainingState) !=
+            1L || is.na(DonateTrainingState)) {
+            stop("DonateTrainingState must be one non-missing logical value.",
+                call. = FALSE)
+        }
+        train_step_owned_compiled <- switch_filter_jit(function(fixed,
+            owned) {
+            do.call(train_step_impl, c(list(ModelList = owned$model),
+                fixed, list(opt_state = owned$opt_state)))
+        }, donate = if (DonateTrainingState)
+            "all-except-first"
+        else "none")
+        train_step_compiled <- function(ModelList, batch_pkg,
+            y_true, y_mask, iteration, state, PriorList, PolicyList,
+            GetPredSaveAtInfo, seed, opt_state) {
+            train_step_owned_compiled(list(batch_pkg = batch_pkg,
+                y_true = y_true, y_mask = y_mask, iteration = iteration,
+                state = state, PriorList = PriorList, PolicyList = PolicyList,
+                GetPredSaveAtInfo = GetPredSaveAtInfo, seed = seed),
+                list(model = ModelList, opt_state = opt_state))
+        }
+    }, NA20 <- function(zer) {
+        zer[is.na(zer)] <- 0
+        zer[is.infinite(zer)] <- 0
+        zer
+    }, grad_norm_vec <- out_loss_vec <- in_loss_vec <- rep(NA,
+        times = nSGD_DefiningLRSeq), i_ <- 1, grad_norm_mat <- c(),
+    LastOutCor <- Skill8SanityCheck <- NA, te_total <- te_grads <- 0,
+    st0 <- Sys.time(), plottingSeq_counter <- ExecuteUpdateCounter <- 0,
     GradNorm_jit <- jax$jit(optax$global_norm), crossIterCor_vec <- c(),
     saved_model_run_id <- get0("RUN_ID", inherits = TRUE, ifnotfound = paste0("legacy_outer",
         get0("OUTER_ITERATION", inherits = TRUE, ifnotfound = "unknown"))),
@@ -5832,6 +6048,21 @@
     }
     stop(sprintf("Could not obtain a full training batch of %s examples after %s attempts (%s retries) in TrainDo.R.",
         nBatch, max_attempts, max(0L, max_attempts - 1L)), call. = FALSE)
+}, stop_on_invalid_observation_masks <- function(batch) {
+    observation_mask_host <- as.array(np$array(batch$YTrue_out_mask))
+    if (length(dim(observation_mask_host)) == 0L) {
+        observation_mask_host <- array(observation_mask_host,
+            dim = c(length(observation_mask_host), 1L))
+    }
+    observation_mask_matrix <- matrix(as.numeric(observation_mask_host),
+        nrow = dim(observation_mask_host)[[1L]])
+    invalid_mask_examples <- which(!apply(is.finite(observation_mask_matrix),
+        1L, all) | rowSums(observation_mask_matrix != 0) == 0)
+    if (length(invalid_mask_examples) > 0L) {
+        stop(sprintf("Training batch contains non-finite or all-zero observation masks for example(s): %s.",
+            paste(invalid_mask_examples, collapse = ", ")), call. = FALSE)
+    }
+    invisible(NULL)
 }, save_eqx_enabled <- isTRUE(get0("SaveEqx", ifnotfound = TRUE)),
     recover_checkpoint_at <- get0("RecoverCheckpointAt", ifnotfound = NULL),
     if (isTRUE(recover_checkpoint_at)) {
@@ -5902,7 +6133,7 @@
                 call. = FALSE)
         }
         host_value
-    }, solver_diagnostics_to_host <- function(diagnostics) {
+    }, solver_diagnostics_to_host <- function(diagnostics, packed = NULL) {
         required_fields <- c("success", "failure_stage_code",
             "prediction_finite", "global_attempted", "global_result_success",
             "global_state_finite", "global_result_code", "global_num_steps",
@@ -5919,13 +6150,31 @@
         boolean_fields <- c("success", "prediction_finite", "global_attempted",
             "global_result_success", "global_state_finite", "local_attempted",
             "local_result_success", "local_state_finite")
-        host_fields <- lapply(required_fields, function(field_name) {
-            value <- as.vector(as.array(np$array(diagnostics[[field_name]])))
-            if (field_name %in% boolean_fields) {
-                return(as.logical(value))
+        if (!is.null(packed)) {
+            packed_host <- as.matrix(np$array(packed))
+            if (length(dim(packed_host)) != 2L || ncol(packed_host) !=
+                length(required_fields)) {
+                stop("Packed solver diagnostics do not match the expected field layout.",
+                  call. = FALSE)
             }
-            as.integer(value)
-        })
+            host_fields <- lapply(seq_along(required_fields),
+                function(field_index) {
+                  column <- as.vector(packed_host[, field_index])
+                  if (required_fields[[field_index]] %in% boolean_fields) {
+                    return(as.logical(column))
+                  }
+                  as.integer(column)
+                })
+        }
+        else {
+            host_fields <- lapply(required_fields, function(field_name) {
+                value <- as.vector(as.array(np$array(diagnostics[[field_name]])))
+                if (field_name %in% boolean_fields) {
+                  return(as.logical(value))
+                }
+                as.integer(value)
+            })
+        }
         names(host_fields) <- required_fields
         field_lengths <- vapply(host_fields, length, integer(1L))
         if (length(unique(field_lengths)) != 1L || field_lengths[[1L]] <
@@ -6058,7 +6307,13 @@
             log(n_steps, base = 10), length.out = n_checkpoints))
         sort(unique(c(as.integer(intermediate), n_steps)))
     }, CheckPointSaveAt <- checkpoint_save_steps(nSGD_MASTER,
-        nCheckpoints), KVCacheTrainingExercised <- isTRUE(get0("KVCacheTrainingExercised",
+        nCheckpoints), training_gc_interval <- suppressWarnings(as.integer(get0("TrainingGcInterval",
+        inherits = TRUE, ifnotfound = 200L))), if (length(training_gc_interval) !=
+        1L || is.na(training_gc_interval) || training_gc_interval <
+        1L) {
+        stop("TrainingGcInterval must be one positive integer.",
+            call. = FALSE)
+    }, KVCacheTrainingExercised <- isTRUE(get0("KVCacheTrainingExercised",
         inherits = TRUE, ifnotfound = FALSE)), KVCacheInferenceExercised <- isTRUE(get0("KVCacheInferenceExercised",
         inherits = TRUE, ifnotfound = FALSE)), print2(sprintf(paste("KV cache runtime: requested=%s; training_requested=%s;",
         "inference_effective=%s; training_effective=%s"), isTRUE(get0("EnableKVCachingRequested",
@@ -6082,9 +6337,17 @@
     loss_component_names <- c("objective_data_loss", "student_t_nll",
         "raw_mse", "scaled_mse", "kl_local", "kl_global", "kl_place",
         "kl_unweighted", "kl_weighted", "auxiliary_mean_loss",
-        "prediction_abs_mean", "truth_abs_mean"), loss_components_to_host <- function(components) {
+        "prediction_abs_mean", "truth_abs_mean"), loss_components_to_host <- function(components,
+        packed = NULL) {
         values <- stats::setNames(rep(NA_real_, length(loss_component_names)),
             loss_component_names)
+        if (!is.null(packed)) {
+            packed_host <- suppressWarnings(as.numeric(np$array(packed)))
+            if (length(packed_host) == length(loss_component_names)) {
+                values[] <- packed_host
+                return(values)
+            }
+        }
         if (is.null(components)) {
             return(values)
         }
@@ -6152,26 +6415,13 @@
         fulliter_timer <- Sys.time()
         if (i%%10 == 0) {
             print(i)
+        }
+        if ((i%%training_gc_interval == 0L) || (i %in% CheckPointSaveAt)) {
             gc()
             py_gc$collect()
         }
         if (nSGD_pretrain > 0L | nSGD_posttrain > 0) {
             dat_ <- next_train_batch()
-            observation_mask_host <- as.array(np$array(dat_$YTrue_out_mask))
-            if (length(dim(observation_mask_host)) == 0L) {
-                observation_mask_host <- array(observation_mask_host,
-                  dim = c(length(observation_mask_host), 1L))
-            }
-            observation_mask_matrix <- matrix(as.numeric(observation_mask_host),
-                nrow = dim(observation_mask_host)[[1L]])
-            invalid_mask_examples <- which(!apply(is.finite(observation_mask_matrix),
-                1L, all) | rowSums(observation_mask_matrix !=
-                0) == 0)
-            if (length(invalid_mask_examples) > 0L) {
-                stop(sprintf("Training batch contains non-finite or all-zero observation masks for example(s): %s.",
-                  paste(invalid_mask_examples, collapse = ", ")),
-                  call. = FALSE)
-            }
             {
                 gd_timer <- Sys.time()
                 if (i == 1) {
@@ -6202,10 +6452,33 @@
                 ModelList <- train_step_result$model
                 opt_state <- train_step_result$opt_state
                 TrainingStateUsable <- TRUE
-                Loss_i <- in_loss_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
-                GradNorm_i <- grad_norm_vec[i] <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
-                loss_components_i <- loss_components_to_host(train_step_result$loss_components)
-                solver_diagnostics_host <- solver_diagnostics_to_host(train_step_result$solver_diagnostics)
+                step_scalars <- if (is.null(train_step_result$scalars_packed)) {
+                  NULL
+                }
+                else {
+                  suppressWarnings(as.numeric(np$array(train_step_result$scalars_packed)))
+                }
+                if (length(step_scalars) == 4L) {
+                  Loss_i <- step_scalars[[1L]]
+                  GradNorm_i <- step_scalars[[2L]]
+                  update_accepted_i <- isTRUE(step_scalars[[3L]] >
+                    0.5)
+                  if (!isTRUE(step_scalars[[4L]] > 0.5)) {
+                    stop_on_invalid_observation_masks(dat_)
+                  }
+                }
+                else {
+                  Loss_i <- suppressWarnings(as.numeric(np$array(train_step_result$loss))[[1L]])
+                  GradNorm_i <- suppressWarnings(as.numeric(np$array(train_step_result$grad_norm))[[1L]])
+                  update_accepted_i <- isTRUE(as.logical(np$array(train_step_result$update_accepted)))
+                  stop_on_invalid_observation_masks(dat_)
+                }
+                in_loss_vec[i] <- Loss_i
+                grad_norm_vec[i] <- GradNorm_i
+                loss_components_i <- loss_components_to_host(train_step_result$loss_components,
+                  packed = train_step_result$loss_components_packed)
+                solver_diagnostics_host <- solver_diagnostics_to_host(train_step_result$solver_diagnostics,
+                  packed = train_step_result$solver_diagnostics_packed)
                 solver_diagnostics_host$location_id_numeric <- solver_batch_identifier(dat_$location_id_numeric,
                   "location_id_numeric", nrow(solver_diagnostics_host))
                 solver_diagnostics_host$time_id_numeric <- solver_batch_identifier(dat_$time_id_numeric,
@@ -6243,7 +6516,7 @@
                 }
                 solver_telemetry_i <- solver_iteration_telemetry(solver_diagnostics_host)
                 UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i) &
-                  isTRUE(as.logical(np$array(train_step_result$update_accepted)))
+                  update_accepted_i
                 if (!UpdateParametersCond) {
                   nonfinite_capture <- capture_nonfinite_report(batch_l = dat_,
                     loss_value = Loss_i, grad_norm_value = GradNorm_i,
@@ -11533,7 +11806,7 @@
     list(name = profile, solver = if (identical(profile, "alternative")) diffrax$Dopri8() else diffrax$Tsit5(),
         controller = diffrax$PIDController(rtol = tolerances[["rtol"]],
             atol = tolerances[["atol"]]), rtol = unname(tolerances[["rtol"]]),
-        atol = unname(tolerances[["atol"]]), dt0 = 0.001)
+        atol = unname(tolerances[["atol"]]), dt0 = 0.1)
 }, analysis2_real_runtime_globals <- function(row_values, dataset_spec,
     training_spec, state, runtime_env, model_type, run_seed,
     gpu_mem_frac = NULL, enable_kv_cache = TRUE, enable_kv_cache_training = TRUE,
@@ -11607,7 +11880,7 @@
         nTimesTotal = max_times_past + n_times_lookahead, VI_TotalTimesInLikelihood = vi_total_times,
         minAnchoringTimeID = analysis2_as_int(dataset_spec$min_anchoring_time),
         MIN_NA_ACCEPT_FRAC = 4/max_times_past, NTimeSteps_SIM = n_time_steps_sim,
-        MaxSteps = as.integer(10^6), DecoderInNeuralODE = FALSE,
+        MaxSteps = as.integer(4096), DecoderInNeuralODE = FALSE,
         endAppend = TRUE, OverDoDataFrac = 0.9, specificOptState = TRUE,
         SharedListNames = c("TS"), nOutcomes = 1L, AppendTimeEmbeds = TRUE,
         AppendPlaceEmbeds = TRUE, AttentionHeadDim = 64L, AttentionKVHeads = NULL,
@@ -11716,7 +11989,7 @@
         nTimesPast = n_times_past, nTimesLookahead = n_times_lookahead,
         nTimesTotal = n_times_total, nTimesThres = 10L, VI_TotalTimesInLikelihood = n_times_lookahead,
         nTimesInLikelihood = n_times_lookahead, NTimeSteps_SIM = n_time_steps_sim,
-        nTimesLookValidationInference = n_times_lookahead, MaxSteps = as.integer(10^4),
+        nTimesLookValidationInference = n_times_lookahead, MaxSteps = as.integer(4096),
         VI_SaveAt_ODE_sim = diffrax$SaveAt(ts = jnp$arange(start = 0L,
             stop = n_time_steps_sim, dtype = jnp$int32)), VI_SaveAt_ODE_optim = diffrax$SaveAt(ts = jnp$arange(start = 0L,
             stop = n_times_lookahead, dtype = jnp$int32)), VI_diff_eq_solver_optim = solver_settings$solver,
@@ -12357,7 +12630,7 @@
                   stepsize_controller = diffrax$PIDController(rtol = 1e-07,
                     atol = 1e-09)
                   diffraxInterpolator <- diffrax$LinearInterpolation
-                  MaxSteps <- ai(10^6)
+                  MaxSteps <- ai(4096)
                   VI_SaveAt_ODE_sim <- diffrax$SaveAt(ts = jnp$arange(start = 0L,
                     stop = as.integer(NTimeSteps_SIM), dtype = jnp$int32))
                   VI_SaveAt_ODE_optim <- diffrax$SaveAt(ts = jnp$arange(start = 0L,

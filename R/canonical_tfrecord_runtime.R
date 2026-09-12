@@ -257,6 +257,8 @@
     shuffle_seed = NULL,
     reshuffle_each_iteration = FALSE
   )
+  train_dataset <- .ndm_prefetch_dataset(train_dataset)
+  inference_dataset <- .ndm_prefetch_dataset(inference_dataset)
 
   assign("TFDataset_train", train_dataset, envir = runtime_env)
   assign("TFDatasetIterator_train", iterator_factory(train_dataset), envir = runtime_env)

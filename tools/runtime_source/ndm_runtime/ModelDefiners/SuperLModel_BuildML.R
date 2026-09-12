@@ -188,6 +188,29 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
      !is.finite(neuralode_mean_loss_weight) || neuralode_mean_loss_weight < 0){
     stop("neuralode_mean_loss_weight must be one finite non-negative scalar.")
   }
+  # "auto" is resolved after the ODE structure is parsed: fixed-step RK4 for
+  # structures without global-neural terms, the adaptive solve otherwise.
+  NeuralODETrainIntegrator <- tolower(as.character(ndm_runtime_get0(
+    "NeuralODETrainIntegrator",
+    ifnotfound = ndm_runtime_get0("neuralode_train_integrator", ifnotfound = "auto")
+  )))
+  if(length(NeuralODETrainIntegrator) != 1L ||
+     !NeuralODETrainIntegrator %in% c("auto", "fixed_rk4", "diffrax")){
+    stop("NeuralODETrainIntegrator must be one of 'auto', 'fixed_rk4' or 'diffrax'.")
+  }
+  # NULL means "auto": resolved after the ODE structure is parsed, because the
+  # right step count depends on whether the structure has global-neural terms.
+  NeuralODETrainSubsteps <- ndm_runtime_get0(
+    "NeuralODETrainSubsteps",
+    ifnotfound = ndm_runtime_get0("neuralode_train_substeps", ifnotfound = NULL)
+  )
+  if(!is.null(NeuralODETrainSubsteps)){
+    NeuralODETrainSubsteps <- suppressWarnings(as.integer(NeuralODETrainSubsteps))
+    if(length(NeuralODETrainSubsteps) != 1L || is.na(NeuralODETrainSubsteps) ||
+       NeuralODETrainSubsteps < 1L){
+      stop("NeuralODETrainSubsteps must be one positive integer or NULL (auto).")
+    }
+  }
   training_objective <- tolower(as.character(ndm_runtime_get0(
     "training_objective",
     ifnotfound = ndm_runtime_get0("TrainingObjective", ifnotfound = "student_t_nll")
@@ -254,6 +277,23 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
 
   print2("Entering SuperLModel_ParseDynamicODE.R")
   ndm_source_extracted("ModelDefiners/SuperLModel_ParseDynamicODE.R")
+  if(identical(NeuralODETrainIntegrator, "auto")){
+    # Structures with dynamic global rates are stiff at initialisation: the
+    # adaptive solve needs up to ~120 local steps on some examples, and a
+    # fixed RK4 step at 1, 1/2 or 1/4 unit time blows those examples up (the
+    # compartments, not the global path). They keep the adaptive solve unless
+    # fixed_rk4 is requested explicitly.
+    NeuralODETrainIntegrator <- if(length(uq_globalneural_vec) > 0L) "diffrax" else "fixed_rk4"
+  }
+  if(is.null(NeuralODETrainSubsteps)){
+    # With global-neural terms (only reached when fixed_rk4 is forced), one
+    # step per unit time leaves the recovered compartment far off while the
+    # observed compartment still agrees; two steps bring the tame examples
+    # within 1e-4 of the adaptive solve. Stiff examples still fail.
+    NeuralODETrainSubsteps <- if(length(uq_globalneural_vec) > 0L) 2L else 1L
+  }
+  print2(sprintf("NeuralODE training integrator: %s (substeps per unit time: %s)",
+                 NeuralODETrainIntegrator, NeuralODETrainSubsteps))
 
   # define all parameter arrays
   DenseLayerInputSize <- ai(1L*ModelDims)
@@ -743,18 +783,31 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     x_mask <- xt[[2]]; xt <- xt[[1]]
 
     if("transformer" %in% BackboneType){
-      xt <- RunTransformerBackbone(
+      # Only one token leaves the backbone, so ask for that position and skip
+      # the final layer's FFN and output aggregation on every other token.
+      # The position rule mirrors SelectBackboneOutputToken.
+      output_position <- if (ModelType == "DecoderOnly") {
+        jnp$argmax(jnp$where(jnp$equal(x_mask, 1),
+                             jnp$expand_dims(jnp$arange(x_mask$shape[[1]]), 1L),
+                             -jnp$inf))
+      } else if (endAppend) {
+        jnp$array(as.integer(xt$shape[[1]]) - 1L, dtype = jnp$int32)
+      } else {
+        jnp$array(0L, dtype = jnp$int32)
+      }
+      xt <- RunTransformerBackboneAt(
         xt = xt,
         x_mask = x_mask,
-        TransformerList = TSList$TSBackbone
+        TransformerList = TSList$TSBackbone,
+        position = output_position
       )
     }
     if("mamba" %in% BackboneType){
       stop("Mamba is not included in ndm.", call. = FALSE)
       print("Done sourcing SuperLModel_BackboneMamba.R in run path")
+      xt <- SelectBackboneOutputToken(xt = xt, x_mask = x_mask)
     }
 
-    xt <- SelectBackboneOutputToken(xt = xt, x_mask = x_mask)
     xt <- DecoderBackboneToOutput(TSList = TSList, hidden_state = xt)
     return( xt ) 
   }
@@ -1194,6 +1247,12 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                       PolicyList, # not vectorized
                       GetPredSaveAtInfo, # not vectorized
                       seed){ # vectorized
+
+    # Training integrates the ODEs with a fixed-step scan; prediction and
+    # analytics (`inference = TRUE`) keep the adaptive diffrax solve.
+    # `inference` is a plain logical, so this is a static branch.
+    use_fixed_step_training_solve <- !isTRUE(inference) &&
+      identical(NeuralODETrainIntegrator, "fixed_rk4")
 
     # parcel out context information
     context <- x[[2]][[1]]
@@ -1700,14 +1759,28 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   
         #f_VI_ODE_TERM_globalOnly(jnp$array(0.), tmpy, tmpargs) # t, y, args
         #plot( np$array(ModelList$GlobalNeural$NeuralInitialConditions) ) 
+        global_args <- ndm_runtime_replicate_tree(eval(parse(text = sprintf('list("Neural2" = %s)',
+                                                      gsub(coreNeuralText,pattern="LocalNeural",replace="GlobalNeural") ))))
+        global_y0 <- ndm_runtime_replicate_tree(list("Neural2"=ModelList$GlobalNeural$NeuralInitialConditions ))
+        if (use_fixed_step_training_solve) {
+          # Training: fixed-step RK4 scan on the integer save grid (see
+          # ndm_runtime_fixed_step_solve). The global path's grid is already
+          # integer-spaced, so dt = 1 lands on every saved time.
+          dynamicglobal_x_params_samp <- ndm_runtime_fixed_step_solve(
+            field = f_VI_ODE_TERM_globalOnly,
+            y0 = global_y0, args = global_args,
+            save_ts = VI_SaveAt_ODE_GlobalNeural$subs$ts,
+            substeps = NeuralODETrainSubsteps
+          )
+          global_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(dynamicglobal_x_params_samp)
+        } else {
         dynamicglobal_x_params_samp <- diffrax$diffeqsolve(
                                            terms = VI_ODE_term_globalOnly,
                                            solver = VI_diff_eq_solver_optim,
                                            saveat = VI_SaveAt_ODE_GlobalNeural,
-                                           # for structure of this, see definitions in transform_vec_final 
-                                           args = {ndm_runtime_replicate_tree(eval(parse(text = sprintf('list("Neural2" = %s)',
-                                                      gsub(coreNeuralText,pattern="LocalNeural",replace="GlobalNeural") ))))},
-                                           y0 =  {ndm_runtime_replicate_tree(list("Neural2"=ModelList$GlobalNeural$NeuralInitialConditions ))},
+                                           # for structure of this, see definitions in transform_vec_final
+                                           args = global_args,
+                                           y0 = global_y0,
                                            max_steps = MaxSteps,
                                            t0 = 0.,
                                            t1 = f2n(NTimeGlobalNeuralMax),
@@ -1717,6 +1790,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         global_solver_diagnostics <- ndm_runtime_solution_diagnostics(
           dynamicglobal_x_params_samp
         )
+        }
         solver_diagnostics$global_attempted <- jnp$array(TRUE)
         solver_diagnostics$global_result_success <- global_solver_diagnostics$result_success
         solver_diagnostics$global_state_finite <- global_solver_diagnostics$state_finite
@@ -1843,18 +1917,11 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       
       # plot( colMeans( np$array( tmp$Neural1$val$val )[,1,] )  ) 
       # plot( apply( np$array( tmp$Neural1$val$val )[,1,], 2, sd )  ) 
-      diff_eq_sol <- diffrax$diffeqsolve(terms = VI_ODE_term,
-                                         solver = VI_diff_eq_solver_optim,
-                                         args = 
-                                          { 
-                                          ndm_runtime_replicate_tree(
+      local_args <- ndm_runtime_replicate_tree(
                                          c(eval(parse(text = neuralArgsText)),
                                                 "policy_scenario_indicator" = PolicyList[[1]],
                                                 "policy_scenario" = PolicyList[[2]]))
-                                        },
-                                         y0 = 
-                                          {  
-                                            ndm_runtime_replicate_tree(
+      local_y0 <- ndm_runtime_replicate_tree(
                                              eval(parse(text = paste("list(",paste(
                                            sapply(y0_names, function(ze){
                                            sprintf("'%s' = ODEParamsSampList_y0$%s_samp%s",
@@ -1863,15 +1930,33 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                                          yes = paste("$",ze,"_0",sep=""),
                                                          no = "")
                                                   ) }),collapse=","),")",collapse="")  )))
-                                          },
+      if (use_fixed_step_training_solve) {
+        # Training: fixed-step RK4 scan over the integer save grid, which ends
+        # at the last saved time (the same t1 the adaptive solve uses).
+        diff_eq_sol <- ndm_runtime_fixed_step_solve(
+          field = f_VI_ODE_TERM,
+          y0 = local_y0, args = local_args,
+          save_ts = GetPredSaveAtInfo[[2]]$subs$ts,
+          substeps = NeuralODETrainSubsteps
+        )
+        local_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(diff_eq_sol)
+      } else {
+      diff_eq_sol <- diffrax$diffeqsolve(terms = VI_ODE_term,
+                                         solver = VI_diff_eq_solver_optim,
+                                         args = local_args,
+                                         y0 = local_y0,
                                          max_steps = (MaxSteps),
-                                         t0 = (jnp$array(0)), 
-                                         t1 = GetPredSaveAtInfo[[1]], 
+                                         t0 = (jnp$array(0)),
+                                         # SaveAt covers times 0..GetPredSaveAtInfo[[1]] - 1, so stop
+                                         # at the last saved time rather than integrating (and
+                                         # differentiating) one further unit that is never read.
+                                         t1 = as.integer(GetPredSaveAtInfo[[1]]) - 1L,
                                          saveat = GetPredSaveAtInfo[[2]],
                                          dt0 = dt0_init_optim,
                                          stepsize_controller = stepsize_controller_optim,
                                          throw = FALSE )
       local_solver_diagnostics <- ndm_runtime_solution_diagnostics(diff_eq_sol)
+      }
       solver_diagnostics$local_attempted <- jnp$array(TRUE)
       solver_diagnostics$local_result_success <- local_solver_diagnostics$result_success
       solver_diagnostics$local_state_finite <- local_solver_diagnostics$state_finite

@@ -127,7 +127,7 @@ ndm_print <- function(text, quiet = FALSE) {
   }
 
   if (!exists("dt0_init_optim", envir = runtime_env, inherits = FALSE)) {
-    dt0_init_optim <- suppressWarnings(as.numeric(runtime_get0("neuralode_optim_dt0", ifnotfound = 1e-3)))
+    dt0_init_optim <- suppressWarnings(as.numeric(runtime_get0("neuralode_optim_dt0", ifnotfound = 0.1)))
     if (length(dt0_init_optim) != 1L || !is.finite(dt0_init_optim)) {
       stop("`neuralode_optim_dt0` must be a finite numeric scalar.", call. = FALSE)
     }
@@ -217,6 +217,19 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   `neuralode_optim_controller = "pid"`.
 #' @param neuralode_optim_atol Absolute tolerance used when
 #'   `neuralode_optim_controller = "pid"`.
+#' @param neuralode_train_integrator Integrator for the NeuralODE solves inside
+#'   the training loss and gradient. `"fixed_rk4"` runs a fixed-step RK4 scan
+#'   on the integer save grid, differentiated with plain reverse-mode AD, which
+#'   costs a fraction of the adaptive solve's adjoint. `"diffrax"` uses the
+#'   adaptive `neuralode_optim_*` solve for training as well. `"auto"` (the
+#'   default) uses `"fixed_rk4"` for structures without global-neural terms
+#'   and `"diffrax"` for structures with them, whose dynamics are stiff at
+#'   initialisation. Prediction and analytics always use the adaptive solve.
+#' @param neuralode_train_substeps Number of RK4 substeps per unit time for
+#'   `neuralode_train_integrator = "fixed_rk4"`, or `NULL` (the default) to
+#'   choose automatically: two for structures with global-neural terms, whose
+#'   compartments move quickly, and one otherwise. Raise it if training
+#'   dynamics become stiff.
 #' @param enable_kv_cache Logical scalar controlling DecoderOnly KV caching.
 #'   The default enables the faster cached inference path.
 #' @param enable_kv_cache_training Logical scalar controlling KV caching during
@@ -256,7 +269,10 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   `"bfloat16"`, and `"float32"` are explicit overrides. Master parameters,
 #'   optimizer moments, prediction heads, and ODE arithmetic retain `float_type`.
 #' @param transformer_activation_checkpointing Recompute transformer sublayer
-#'   intermediates during backpropagation to reduce activation memory.
+#'   intermediates during backpropagation to reduce activation memory. Defaults
+#'   to `FALSE`: at typical model sizes the saved activations are small, while
+#'   the extra forward pass costs measurable training time. Enable it when
+#'   activation memory is the binding constraint.
 #' @param donate_training_state Allow compiled updates to reuse parameter and
 #'   optimizer buffers. Rejected updates return the original values in fresh
 #'   usable state handles for diagnostics.
@@ -280,10 +296,12 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_init_state_logit_offset = NULL,
                               neuralode_init_state_logit_scale_max = Inf,
                               neuralode_optim_solver = c("tsit5", "dopri8"),
-                              neuralode_optim_dt0 = 1e-3,
+                              neuralode_optim_dt0 = 0.1,
                               neuralode_optim_controller = c("pid", "constant"),
                               neuralode_optim_rtol = 1e-5,
                               neuralode_optim_atol = 1e-7,
+                              neuralode_train_integrator = c("auto", "fixed_rk4", "diffrax"),
+                              neuralode_train_substeps = NULL,
                               enable_kv_cache = TRUE,
                               enable_kv_cache_training = TRUE,
                               inference_mc_draws = 5L,
@@ -296,7 +314,7 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               outcome_loss_scale = NULL,
                               compute_backend = c("auto", "cpu", "gpu"),
                               transformer_compute_dtype = c("auto", "native", "bfloat16", "float32"),
-                              transformer_activation_checkpointing = TRUE,
+                              transformer_activation_checkpointing = FALSE,
                               donate_training_state = TRUE,
                               ...) {
   compute_backend_supplied <- !missing(compute_backend)
@@ -311,6 +329,14 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   }
   neuralode_optim_solver <- match.arg(neuralode_optim_solver)
   neuralode_optim_controller <- match.arg(neuralode_optim_controller)
+  neuralode_train_integrator <- match.arg(neuralode_train_integrator)
+  if (!is.null(neuralode_train_substeps)) {
+    neuralode_train_substeps <- suppressWarnings(as.integer(neuralode_train_substeps))
+    if (length(neuralode_train_substeps) != 1L || is.na(neuralode_train_substeps) ||
+        neuralode_train_substeps < 1L) {
+      stop("`neuralode_train_substeps` must be one positive integer or NULL.", call. = FALSE)
+    }
+  }
   training_objective <- match.arg(training_objective)
   if (!identical(backbone, "transformer")) {
     stop("Phase 1 only supports backbone = 'transformer'.", call. = FALSE)
@@ -435,6 +461,8 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     neuralode_optim_controller = neuralode_optim_controller,
     neuralode_optim_rtol = neuralode_optim_rtol,
     neuralode_optim_atol = neuralode_optim_atol,
+    neuralode_train_integrator = neuralode_train_integrator,
+    neuralode_train_substeps = neuralode_train_substeps,
     enable_kv_cache = enable_kv_cache,
     enable_kv_cache_training = enable_kv_cache_training,
     inference_mc_draws = inference_mc_draws,

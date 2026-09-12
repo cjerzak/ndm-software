@@ -10,11 +10,13 @@ ndm_test_runtime_assignment <- function(relative_path, target) {
       return(expr)
     }
     for (child_index in seq_along(expr)[-1L]) {
-      child <- expr[[child_index]]
-      if (identical(child, quote(expr = ))) {
+      # Test the subscript directly: binding an empty argument (e.g. the gap
+      # in `x[, j]`) to a variable and then touching it throws "argument is
+      # missing", as the other assignment finders in this suite already avoid.
+      if (identical(expr[[child_index]], quote(expr = ))) {
         next
       }
-      found <- find_assignment(child)
+      found <- find_assignment(expr[[child_index]])
       if (!is.null(found)) {
         return(found)
       }

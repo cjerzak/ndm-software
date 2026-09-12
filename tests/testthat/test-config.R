@@ -27,6 +27,8 @@ test_that("configuration objects preserve requested modeling defaults", {
       "neuralode_optim_solver",
       "neuralode_optim_dt0",
       "neuralode_optim_controller",
+      "neuralode_train_integrator",
+      "neuralode_train_substeps",
       "neuralode_optim_rtol",
       "neuralode_optim_atol",
       "enable_kv_cache",
@@ -48,8 +50,10 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_identical(cfg$compute_backend, "auto")
   expect_equal(cfg$neuralode_init_state_logit_scale_max, Inf)
   expect_equal(cfg$neuralode_optim_solver, "tsit5")
-  expect_equal(cfg$neuralode_optim_dt0, 1e-3)
+  expect_equal(cfg$neuralode_optim_dt0, 0.1)
   expect_equal(cfg$neuralode_optim_controller, "pid")
+  expect_identical(cfg$neuralode_train_integrator, "auto")
+  expect_null(cfg$neuralode_train_substeps)
   expect_equal(cfg$neuralode_optim_rtol, 1e-5)
   expect_equal(cfg$neuralode_optim_atol, 1e-7)
   expect_true(cfg$enable_kv_cache)
@@ -63,20 +67,31 @@ test_that("configuration objects preserve requested modeling defaults", {
   expect_identical(cfg$training_objective, "student_t_nll")
   expect_null(cfg$outcome_loss_scale)
   expect_identical(cfg$transformer_compute_dtype, "auto")
-  expect_true(cfg$transformer_activation_checkpointing)
+  expect_false(cfg$transformer_activation_checkpointing)
   expect_true(cfg$donate_training_state)
 })
 
 test_that("transformer memory controls validate explicit overrides", {
   cfg <- ndm_create_config(transformer_compute_dtype = "bfloat16",
-                           transformer_activation_checkpointing = FALSE,
+                           transformer_activation_checkpointing = TRUE,
                            donate_training_state = FALSE)
   expect_identical(cfg$transformer_compute_dtype, "bfloat16")
-  expect_false(cfg$transformer_activation_checkpointing)
+  expect_true(cfg$transformer_activation_checkpointing)
   expect_false(cfg$donate_training_state)
   expect_error(ndm_create_config(transformer_compute_dtype = "float16"), "arg")
   expect_error(ndm_create_config(transformer_activation_checkpointing = NA), "non-missing logical")
   expect_error(ndm_create_config(donate_training_state = 1), "non-missing logical")
+})
+
+test_that("NeuralODE training integrator controls validate explicit overrides", {
+  cfg <- ndm_create_config(neuralode_train_integrator = "diffrax", neuralode_train_substeps = 4L)
+  expect_identical(cfg$neuralode_train_integrator, "diffrax")
+  expect_identical(cfg$neuralode_train_substeps, 4L)
+  expect_identical(ndm_create_config(neuralode_train_integrator = "fixed_rk4")$neuralode_train_integrator, "fixed_rk4")
+  expect_error(ndm_create_config(neuralode_train_integrator = "euler"), "arg")
+  expect_error(ndm_create_config(neuralode_train_substeps = 0L), "positive integer")
+  expect_error(ndm_create_config(neuralode_train_substeps = NA), "positive integer")
+  expect_null(ndm_create_config(neuralode_train_substeps = NULL)$neuralode_train_substeps)
 })
 
 test_that("public config constructors share the unit observation-scale default", {

@@ -2185,7 +2185,7 @@ ndm_bootstrap_multidisease_tfrecords <- function(
       min_anchoring_time = as.integer(.ndm_runtime_get0(runtime_env, "minAnchoringTimeID", ifnotfound = 4L)),
       MIN_NA_ACCEPT_FRAC = 4 / max_times_past,
       NTimeSteps_SIM = n_time_steps_sim,
-      MaxSteps = as.integer(.ndm_runtime_get0(runtime_env, "MaxSteps", ifnotfound = 10^6)),
+      MaxSteps = as.integer(.ndm_runtime_get0(runtime_env, "MaxSteps", ifnotfound = 4096)),
       nOutcomes = bundle$nOutcomes,
       nPlaces = bundle$nPlaces,
       MaxTimeIndex = max_time_index,

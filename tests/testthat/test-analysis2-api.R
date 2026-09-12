@@ -1043,7 +1043,7 @@ test_that("multidisease driver consumes all normalized sensitivity controls", {
   expect_equal(grid_globals$SolverRtol, 1e-6)
   expect_equal(grid_globals$SolverAtol, 1e-8)
   expect_identical(unclass(grid_globals$VI_diff_eq_solver_optim), "tsit5")
-  expect_equal(grid_globals$dt0_init_optim, 1e-3)
+  expect_equal(grid_globals$dt0_init_optim, 0.1)
   expect_equal(grid_globals$stepsize_controller_optim$rtol, 1e-6)
   expect_equal(grid_globals$stepsize_controller_optim$atol, 1e-8)
 

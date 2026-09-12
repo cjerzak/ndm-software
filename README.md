@@ -212,9 +212,11 @@ Transformer backbones now use Full Attention Residuals by default. Set the
 runtime global `UseFullAttentionResiduals = FALSE` if you need the legacy
 additive residual path for compatibility or comparison runs.
 
-Transformer training recomputes sublayer intermediates during backpropagation,
-uses native grouped-query attention, and prefills only context tokens while
-reserving cache capacity for forecasts. Full Attention Residuals retain the
+Transformer training uses native grouped-query attention and prefills only
+context tokens while reserving cache capacity for forecasts. Recomputing
+sublayer intermediates during backpropagation is available through
+`transformer_activation_checkpointing` but is off by default, since it trades
+measurable step time for activation memory that rarely binds. Full Attention Residuals retain the
 individual layer outputs rather than a separate padded history at every layer.
 Compiled optimizer updates donate parameter and optimizer buffers; rejected
 updates return unchanged values through usable handles for failure diagnostics.
@@ -224,7 +226,7 @@ default. Master parameters, optimizer moments, prediction heads, and ODE
 arithmetic keep their configured precision. CPU and FP64 models keep native
 transformer precision by default. `ndm_create_config()` exposes
 `transformer_compute_dtype = "auto"` (also `"native"`, `"bfloat16"`, or
-`"float32"`), `transformer_activation_checkpointing = TRUE`, and
+`"float32"`), `transformer_activation_checkpointing = FALSE`, and
 `donate_training_state = TRUE`. Their runtime-global equivalents are
 `TransformerComputeDtype`, `TransformerActivationCheckpointing`, and
 `DonateTrainingState`. Artifacts retain the resolved transformer precision;

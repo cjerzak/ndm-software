@@ -905,6 +905,27 @@ ndm_initialize_backend <- function(conda_env = "ndm_software_env",
     jax_float_type <- jnp$float32
   }
 
+  # Persistent XLA compilation cache. Train-step programs take 6-15 s to
+  # compile, and each grid row or outer iteration otherwise recompiles from
+  # scratch. The default lives in the session temporary directory, so it is
+  # reused across rows within one R process and removed with the session. Set
+  # `NDM_JAX_CACHE_DIR` to a durable path to reuse compilations across
+  # sessions, or to "" to disable the cache.
+  jax_cache_dir <- Sys.getenv(
+    "NDM_JAX_CACHE_DIR",
+    unset = file.path(tempdir(), "ndm-jax-compilation-cache")
+  )
+  if (nzchar(jax_cache_dir)) {
+    try(
+      {
+        dir.create(jax_cache_dir, recursive = TRUE, showWarnings = FALSE)
+        jax$config$update("jax_compilation_cache_dir", jax_cache_dir)
+        jax$config$update("jax_persistent_cache_min_compile_time_secs", 1)
+      },
+      silent = TRUE
+    )
+  }
+
   jax_default_backend <- tolower(as.character(jax$default_backend()))
   default_backend <- if (jax_default_backend %in% c("gpu", "cuda", "rocm")) {
     "gpu"

@@ -669,6 +669,10 @@ test_that("NeuralODE generalized structures smoke-test across SEIRS and the 12 T
 
   cases <- list(
     list(label = "seirs_dynamic_beta", spec = ndm_model_spec(preset = "seirs_dynamic_beta", model_type = "NeuralODE")),
+    list(
+      label = "seirs_dynamic_beta_dynamic_global",
+      spec = ndm_model_spec(preset = "seirs_dynamic_beta_dynamic_global", model_type = "NeuralODE")
+    ),
     list(label = "tb_a", spec = ndm_model_spec(preset = "tb_a", model_type = "NeuralODE")),
     list(label = "tb_b_n2", spec = ndm_model_spec(preset = "tb_b", model_type = "NeuralODE", family_args = list(n = 2L))),
     list(label = "tb_b_n5", spec = ndm_model_spec(preset = "tb_b", model_type = "NeuralODE", family_args = list(n = 5L))),

@@ -17,10 +17,12 @@ ndm_create_config(
   neuralode_init_state_logit_offset = NULL,
   neuralode_init_state_logit_scale_max = Inf,
   neuralode_optim_solver = c("tsit5", "dopri8"),
-  neuralode_optim_dt0 = 0.001,
+  neuralode_optim_dt0 = 0.1,
   neuralode_optim_controller = c("pid", "constant"),
   neuralode_optim_rtol = 1e-05,
   neuralode_optim_atol = 1e-07,
+  neuralode_train_integrator = c("auto", "fixed_rk4", "diffrax"),
+  neuralode_train_substeps = NULL,
   enable_kv_cache = TRUE,
   enable_kv_cache_training = TRUE,
   inference_mc_draws = 5L,
@@ -33,7 +35,7 @@ ndm_create_config(
   outcome_loss_scale = NULL,
   compute_backend = c("auto", "cpu", "gpu"),
   transformer_compute_dtype = c("auto", "native", "bfloat16", "float32"),
-  transformer_activation_checkpointing = TRUE,
+  transformer_activation_checkpointing = FALSE,
   donate_training_state = TRUE,
   ...
 )
@@ -86,6 +88,21 @@ Use `"pid"` or `"constant"`.}
 \item{neuralode_optim_atol}{Absolute tolerance used when
 `neuralode_optim_controller = "pid"`.}
 
+\item{neuralode_train_integrator}{Integrator for the NeuralODE solves inside
+the training loss and gradient. `"fixed_rk4"` runs a fixed-step RK4 scan
+on the integer save grid, differentiated with plain reverse-mode AD, which
+costs a fraction of the adaptive solve's adjoint. `"diffrax"` uses the
+adaptive `neuralode_optim_*` solve for training as well. `"auto"` (the
+default) uses `"fixed_rk4"` for structures without global-neural terms
+and `"diffrax"` for structures with them, whose dynamics are stiff at
+initialisation. Prediction and analytics always use the adaptive solve.}
+
+\item{neuralode_train_substeps}{Number of RK4 substeps per unit time for
+`neuralode_train_integrator = "fixed_rk4"`, or `NULL` (the default) to
+choose automatically: two for structures with global-neural terms, whose
+compartments move quickly, and one otherwise. Raise it if training
+dynamics become stiff.}
+
 \item{enable_kv_cache}{Logical scalar controlling DecoderOnly KV caching.
 The default enables the faster cached inference path.}
 
@@ -137,7 +154,10 @@ uses BF16 for FP32 CUDA models and native precision otherwise. `"native"`,
 optimizer moments, prediction heads, and ODE arithmetic retain `float_type`.}
 
 \item{transformer_activation_checkpointing}{Recompute transformer sublayer
-intermediates during backpropagation to reduce activation memory.}
+intermediates during backpropagation to reduce activation memory. Defaults
+to `FALSE`: at typical model sizes the saved activations are small, while
+the extra forward pass costs measurable training time. Enable it when
+activation memory is the binding constraint.}
 
 \item{donate_training_state}{Allow compiled updates to reuse parameter and
 optimizer buffers. Rejected updates return the original values in fresh
