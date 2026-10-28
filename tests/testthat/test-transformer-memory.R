@@ -1,3 +1,23 @@
+test_that("automatic BF16 requires support on every selected CUDA device", {
+  env <- new.env(parent = baseenv())
+  resolve <- ndm_test_architecture_function(
+    "ModelDefiners/SuperLModel_BackboneTransformer.R", "ndm_transformer_auto_dtype", env
+  )
+  device <- function(capability) list(compute_capability = capability)
+  for (capability in c("7.0", "7.5")) {
+    expect_identical(resolve("float32", TRUE, list(device(capability))), "float32")
+  }
+  for (capability in c("8.0", "8.6", "9.0", "10.0")) {
+    expect_identical(resolve("float32", TRUE, list(device(capability))), "bfloat16")
+  }
+  expect_identical(resolve("float32", TRUE, list(device("8.0"), device("7.0"))), "float32")
+  for (devices in list(list(), list(list()), list(device(NA_character_)), list(device("unknown")))) {
+    expect_identical(resolve("float32", TRUE, devices), "float32")
+  }
+  expect_identical(resolve("float32", FALSE, list(device("8.0"))), "float32")
+  expect_identical(resolve("float64", TRUE, list(device("8.0"))), "float64")
+})
+
 test_that("native grouped attention matches repeated heads and their gradients", {
   env <- ndm_test_architecture_env(backbone = TRUE)
   p <- list(
@@ -131,6 +151,7 @@ test_that("donated updates reject bad loss and solver failures with usable origi
   env$optax_optimizer <- env$optax$adabelief(1e-3)
   env$switch_filter_jit <- env$eq$filter_jit
   env$DonateTrainingState <- TRUE
+  env$TrainabilityMask <- list(weight = TRUE)
   env$getLoss_train <- function(ModelList, batch_pkg, y_true, y_mask, iteration,
                                 state, PriorList, PolicyList, GetPredSaveAtInfo, seed) {
     list(env$jnp$sum((ModelList$weight - y_true)^2), list(

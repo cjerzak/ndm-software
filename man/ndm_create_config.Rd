@@ -152,7 +152,8 @@ JAX GPU when available and otherwise CPU, while `"cpu"` and `"gpu"`
 require the named backend.}
 
 \item{transformer_compute_dtype}{Transformer activation precision. `"auto"`
-uses BF16 for FP32 CUDA models and native precision otherwise. `"native"`,
+uses BF16 for FP32 CUDA models only when every selected device has compute
+capability 8.0 or newer, and native precision otherwise. `"native"`,
 `"bfloat16"`, and `"float32"` are explicit overrides. Master parameters,
 optimizer moments, prediction heads, and ODE arithmetic retain `float_type`.}
 

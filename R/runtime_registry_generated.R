@@ -3927,6 +3927,22 @@
         split_keys <- jax$random$split(key, 5L)
         list(W_q = split_keys[0L], W_k = split_keys[1L], W_v = split_keys[2L],
             W_o = split_keys[3L], next_layer = split_keys[4L])
+    }, ndm_transformer_auto_dtype <- function(native_dtype, cuda_available,
+        devices) {
+        if (!isTRUE(cuda_available) || !identical(native_dtype,
+            "float32") || !length(devices)) {
+            return(native_dtype)
+        }
+        supported <- vapply(devices, function(device) {
+            capability <- tryCatch(as.character(device$compute_capability),
+                error = function(e) character())
+            length(capability) == 1L && !is.na(capability) &&
+                grepl("^[0-9]+[.][0-9]+$", capability) && as.integer(sub("[.].*$",
+                "", capability)) >= 8L
+        }, logical(1L))
+        if (all(supported))
+            "bfloat16"
+        else native_dtype
     }, if (backbonePath == "initialize") {
         backbone_runtime_lookup_env <- environment()
         backbone_runtime_get0 <- function(name, ifnotfound = NULL) {
@@ -3972,9 +3988,8 @@
         native_dtype <- jnp$dtype(jaxFloatType)$name
         TransformerComputeDtypeResolved <- if (TransformerComputeDtype ==
             "auto") {
-            if (cuda_attention_available && native_dtype == "float32")
-                "bfloat16"
-            else native_dtype
+            ndm_transformer_auto_dtype(native_dtype, cuda_attention_available,
+                backbone_runtime_get0("selected_devices", list(backbone_runtime_get0("selected_device"))))
         }
         else if (TransformerComputeDtype == "native")
             native_dtype

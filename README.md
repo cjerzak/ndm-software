@@ -221,9 +221,11 @@ individual layer outputs rather than a separate padded history at every layer.
 Compiled optimizer updates donate parameter and optimizer buffers; rejected
 updates return unchanged values through usable handles for failure diagnostics.
 
-For new FP32 CUDA models, transformer activations and K/V caches use BF16 by
-default. Master parameters, optimizer moments, prediction heads, and ODE
-arithmetic keep their configured precision. CPU and FP64 models keep native
+For new FP32 CUDA models on Ampere or newer GPUs (compute capability 8.0+),
+transformer activations and K/V caches use BF16 by default. Older GPUs such as
+the V100, and devices whose capability cannot be determined, keep native
+precision. Master parameters, optimizer moments, prediction heads, and ODE
+arithmetic keep their configured precision. CPU and FP64 models also keep native
 transformer precision by default. `ndm_create_config()` exposes
 `transformer_compute_dtype = "auto"` (also `"native"`, `"bfloat16"`, or
 `"float32"`), `transformer_activation_checkpointing = FALSE`, and
