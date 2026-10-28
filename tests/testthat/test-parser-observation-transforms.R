@@ -379,7 +379,7 @@ test_that("canonical parser compiles fixed and evolved Sigmoid roles consistentl
   )))
 
   compiled_body <- paste(
-    deparse(body(runtime_env$f_VI_ODE_TERM), width.cutoff = 500L),
+    deparse(body(runtime_env$raw_local_vector_field), width.cutoff = 500L),
     collapse = "\n"
   )
   expect_match(

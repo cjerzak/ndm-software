@@ -306,7 +306,37 @@ X &\sim \textrm{Distribution}(q)
 Why do we need something like this? Because $\E[f(X)] \ne \E[X]$, and the way we impose constraints on the parameters (e.g., to be positive) act like $f(\cdot)$'s.
 \\ \vspace{0.1cm}
 \\ \Verb|%%%START BAYES ODE%%%|
+% NDM_COMPOSITION_BEGIN
+\paragraph{Initial population composition.}
+Reference state: \texttt{\detokenize{s_l}}. Non-reference coordinates, in order: \texttt{\detokenize{e_l, i_l, r_l}}.
+The joint prior is $z \sim \mathcal{N}(\mu,\Sigma)$; the reference logit is zero.
+\[ \mu = (-11, -11, -11)^\top, \qquad \Sigma = \begin{pmatrix}2 & 1 & 1 \\ 1 & 2 & 1 \\ 1 & 1 & 2\end{pmatrix}. \]
+Initial counts are $N\,\mathrm{softmax}(z,0)$, reordered to the declared state order.
+These are log-ratio parameters; transformed centers are not arithmetic means of counts.
+% NDM_COMPOSITION_END
 %%%START BAYES ODE%%%
+%%%NDM_SPEC_META_BEGIN%%%
+% source_format: tex
+% preset: custom
+% family:
+% family_args:
+% state_terms: s_l,e_l,i_l,r_l,beta_l,p_l
+% init_state_terms: s_l,e_l,i_l,r_l
+% parameter_terms: beta_l,sigma,gamma,xi,delta
+% auxiliary_terms:
+% local_dynamic_terms: beta_l,p_l
+% global_dynamic_terms:
+% time_varying_terms:
+% endogenous_terms:
+% local_inputs: s_l,e_l,i_l,r_l,beta_l,p_l
+% model_semantics_version: 2
+% initial_state_prior_type: logistic_normal
+% initial_state_reference: s_l
+% initial_state_mean: -1.1e+01,-1.1e+01,-1.1e+01
+% initial_state_cov: 2e+00,1e+00,1e+00,1e+00,2e+00,1e+00,1e+00,1e+00,2e+00
+% initial_state_fixed_names:
+% initial_state_fixed_values:
+%%%NDM_SPEC_META_END%%%
 
 %%%Priors 
 \begin{itemize}
@@ -316,10 +346,6 @@ Why do we need something like this? Because $\E[f(X)] \ne \E[X]$, and the way we
 \item $\InvSoftPlus(\gamma) \sim \Dist{Normal}(\gst(1/1),0.1)$ % time rate, infected to recovered (1 over recovery time)
 \item $\InvSoftPlus(\xi) \sim \Dist{Normal}(\gst(1/20),0.3)$ % time rate, recovered to sus (1 over immune time)
 \item $\InvSigmoid(\delta) \sim \Dist{Normal}(\gst(0.01),0.0001)$ % mortality rate (assumed to be the same as the birth rate)
-  \item $s_{l0} \sim \Dist{Normal}(0, 0.1)$ % initial sus frac (multiply by N to get number) 
-\item $e_{l0} \sim \Dist{Normal}(0, 0.1)$ % initial exposed frac (multiply by N to get total number) 
-\item $i_{l0}\sim \Dist{Normal}(0, 0.1)$ % initial infected frac (multiply by N to get total number) 
-\item $r_{l0} \sim \Dist{Normal}(0, 0.1)$  %initial recovered frac (multiply by N to get total number) 
 \item $\Evolve{s_l} = -\SoftPlus( \beta_{l} ) \cdot i_l \cdot s_l \cdot \frac{1}{N} + \xi \cdot r_l$ 
 \item $\Evolve{e_l} = \SoftPlus( \beta_{l} ) \cdot  i_l \cdot  s_l \cdot \frac{1}{N} - \sigma \cdot  e_l$
 \item $\Evolve{i_l} = \sigma \cdot e_l - \gamma \cdot  i_l$ % if set too small, values clipped

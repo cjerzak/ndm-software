@@ -29,6 +29,8 @@ test_that("configuration objects preserve requested modeling defaults", {
       "neuralode_optim_controller",
       "neuralode_train_integrator",
       "neuralode_train_substeps",
+      "neuralode_train_max_substeps",
+      "neuralode_train_fallback",
       "neuralode_optim_rtol",
       "neuralode_optim_atol",
       "enable_kv_cache",

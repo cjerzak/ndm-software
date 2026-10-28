@@ -72,8 +72,12 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   ODE_NORM_TYPE <- "pre-activation1" # "post-activation", "none" 
 
   ## structural parameters
-  nTimeStepsInHistory <- batch_l$XPred$shape[[2]][[1]]
-  TSInputSize <- batch_l$XPred$shape[[3]][[1]]
+  if (exists("batch_l", inherits = FALSE)) {
+    nTimeStepsInHistory <- batch_l$XPred$shape[[2]][[1]]
+    TSInputSize <- batch_l$XPred$shape[[3]][[1]]
+  } else if (!exists("nTimeStepsInHistory", inherits = FALSE) || !exists("TSInputSize", inherits = FALSE)) {
+    stop("Model construction requires a preview batch or saved input dimensions.")
+  }
   batch_axis_name <- "batch" # -> must name if using batchnorm
   InitTransform_CLS <- InitTransform_EMBED <- function(x){  sqrt(2/x)  }
   #InitTransform_CLS <- InitTransform_EMBED <- function(x){  1/sqrt(2)  }
@@ -628,10 +632,14 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # head(names(ModelList))
       
       print2("Obtaining approximate parameter count...")
-      nParamsModel <- sum(unlist(lapply(jax$tree$leaves(eq$partition(ModelList, eq$is_array)[[1]]), function(zer){zer$size})))
+      TrainabilityMask <- ndm_trainability_mask(ModelList, environment())
+      ParameterCounts <- ndm_parameter_counts(ModelList, TrainabilityMask, eq, jax)
+      nParamsTotal <- nParamsModel <- ParameterCounts$total
+      nParamsTrainable <- ParameterCounts$trainable
+      nParamsNonTrainable <- ParameterCounts$nontrainable
       # ModelList owns the initialized weights. Do not retain a second root to
       # the original backbone after training switches to donated buffers.
-      rm(list = c(names(ListIndices), "TransformerList"))
+      rm(list = intersect(c(names(ListIndices), "TransformerList"), ls()))
   }
 
   print2("Define functional components of model...")
@@ -821,14 +829,14 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                             tze,
                             seed){
     # local parameters - vector sequence - referenced to localze (these are dynamic local)
-    lDepParamsVec_ <- NeuralDefinitions_jax_STOCHASTIC["DefClean",][as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",])]
+    lDepParamsVec_ <- NeuralDefinitions_jax_STOCHASTIC["DefClean",][as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",]), drop = FALSE]
     lDepParamsVec_ <- lDepParamsVec_[!lDepParamsVec_ %in% FixedLocalParams_defns]
 
     # fixed local parameters - vector sequence - indexed to fixedlocalze
     lFixedDepParamsVec_ <- FixedLocalParams_defns
 
     # global parameters - vector sequence - not indexed
-    gDepParamsVec_ <- NeuralDefinitions_jax_STOCHASTIC["DefClean",][!as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",])]
+    gDepParamsVec_ <- NeuralDefinitions_jax_STOCHASTIC["DefClean",][!as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",]), drop = FALSE]
     dgDepParamsVec_ <- gDepParamsVec_[gDepParamsVec_ %in% uq_globalneural_vec] # uq_globalneural_vec
     gDepParamsVec_ <- gDepParamsVec_[!gDepParamsVec_ %in% uq_globalneural_vec]
 
@@ -1001,126 +1009,17 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     args_samp_vec <- c(args_samp_vec, args_context_vec)
     names(args_samp_vec) <- paste(names(args_samp_vec),"_samp",sep="")
 
-    # select initial conditions
-    uq_initcond_vec <- ndm_runtime_get0(
-      "InitStateTerms",
-      ifnotfound = uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
-    )
-    uq_initcond_vec <- as.character(uq_initcond_vec)
-    init_state_supported_terms <- unique(uq_initcond_vec)
-    if (length(init_state_supported_terms) == 0L) {
-      stop(
-        "NeuralODE init-state softmax requires at least one declared init-state term.",
-        call. = FALSE
-      )
-    }
-    if (length(init_state_supported_terms) != length(uq_initcond_vec)) {
-      stop("NeuralODE init-state softmax requires unique `InitStateTerms`.", call. = FALSE)
-    }
-    init_logit_param_names <- ndm_runtime_get0(
-      "InitStateLogitParamNames",
-      ifnotfound = paste0("InitStateLogit_", uq_initcond_vec)
-    )
-    init_logit_param_names <- as.character(init_logit_param_names)
-    init_scale_param_name <- as.character(
-      ndm_runtime_get0("InitStateScaleParamName", ifnotfound = "InitStateLogitScale")
-    )
-    init_param_indices <- match(init_logit_param_names, lDepParamsVec_)
-    if (anyNA(init_param_indices)) {
-      stop(
-        sprintf(
-          "Missing NeuralODE init-state logit parameters: %s",
-          paste(init_logit_param_names[is.na(init_param_indices)], collapse = ", ")
-        ),
-        call. = FALSE
-      )
-    }
-    init_scale_index <- match(init_scale_param_name, lDepParamsVec_)
-    if (is.na(init_scale_index)) {
-      stop(
-        sprintf("Missing NeuralODE init-state scale parameter: %s", init_scale_param_name),
-        call. = FALSE
-      )
-    }
-   
-   { # performs better in tests 
-      init_m <- jnp$take(localze, jnp$array(init_param_indices - 1L))
-      init_logit_offset_default <- c(10, rep(-1, max(0L, length(uq_initcond_vec) - 1L)))
-      if (length(init_logit_offset_default) > 0L) {
-        names(init_logit_offset_default) <- uq_initcond_vec
-      }
-      init_logit_offset_raw <- ndm_runtime_get0(
-        "InitStateLogitOffset",
-        ifnotfound = init_logit_offset_default
-      )
-      init_logit_offset_names <- names(init_logit_offset_raw)
-      init_logit_offset <- as.numeric(init_logit_offset_raw)
-      if(length(init_logit_offset) == 1L){
-        init_logit_offset <- rep(init_logit_offset, length(uq_initcond_vec))
-      } else if(!is.null(init_logit_offset_names) && any(nzchar(init_logit_offset_names))){
-        names(init_logit_offset) <- init_logit_offset_names
-        if(!all(uq_initcond_vec %in% init_logit_offset_names)){
-          stop(
-            sprintf(
-              "InitStateLogitOffset names must cover {%s}.",
-              paste(uq_initcond_vec, collapse = ", ")
-            ),
-            call. = FALSE
-          )
-        }
-        init_logit_offset <- init_logit_offset[uq_initcond_vec]
-      } else {
-        if(length(init_logit_offset) != length(init_state_supported_terms)){
-          stop(
-            sprintf(
-              "InitStateLogitOffset must have length 1 or %s, or be named by init-state terms.",
-              length(init_state_supported_terms)
-            ),
-            call. = FALSE
-          )
-        }
-        names(init_logit_offset) <- init_state_supported_terms
-        init_logit_offset <- init_logit_offset[uq_initcond_vec]
-      }
-      init_logit_offset <- jnp$array(as.numeric(init_logit_offset))$astype(init_m$dtype)
-      init_logit_scale_max <- suppressWarnings(as.numeric(ndm_runtime_get0("InitStateLogitScaleMax", ifnotfound = Inf)))
-      if(length(init_logit_scale_max) == 0L){ init_logit_scale_max <- Inf }
-      if(length(init_logit_scale_max) != 1L){
-        stop("InitStateLogitScaleMax must be scalar.")
-      }
-      init_logit_scale_max <- init_logit_scale_max[[1L]]
-      init_scale <- SoftPlus( InvSoftPlus(1.) + 
-                      jnp$take(localze, jnp$array(init_scale_index - 1L ))*1  )
-      if(is.finite(init_logit_scale_max)){
-        init_scale <- jnp$minimum(
-          init_scale,
-          jnp$array(init_logit_scale_max)$astype(init_scale$dtype)
-        )
-      }
-      # plot(np$array(init_m$val)[,1])
-     
-      #init_m <- jnp$take(localze, jnp$array( which(lDepParamsVec_ %in% uq_initcond_vec)[1:3] - 1L ))
-      #init_m <- jnp$concatenate(list( init_m, jnp$zeros(1L)$astype(init_m$dtype) ), 0L)
-      #init_m <-  ( init_m  + jnp$array(c(10,0,0,0)) ) *
-      init_m <-  ( ( init_m  + init_logit_offset )) * init_scale # 0.1,1 before 
-      init_samp <- jnp$exp(  jax$nn$log_softmax( init_m  ) + jnp$log(CONST_N)   )
-      # plot(np$array(init_samp$val)[,1])
-    }
-    # init_samp$sum()
-    # cor(np$array( init_m_T$val$val )[,1,])
-    # cor(np$array( init_samp$val$val )[,1,])
-    # plot(np$array( init_samp$val$val )[,1,1] )
-    # plot(np$array( init_samp$val$val )[,1,2:3] )
-
-    if("N_samp" %in% names(args_samp_vec)){ init_samp <- jnp$multiply( init_samp,  args_samp_vec$N_samp ) }
-
-    for(j_ in 1L:length(uq_initcond_vec)){
-      eval(parse(text = sprintf("%s_samp = jnp$take(init_samp, j_ - 1L)", uq_initcond_vec[j_])))
-    }
-    tmp <- paste0(uq_initcond_vec, "_samp")
-    tmp <- paste("c(args_samp_vec,", paste(paste("'",tmp,"'=",tmp,sep = ""),collapse=","), ")",collapse="")
-    
-    return(   eval(parse(text = tmp)) )
+    # K - 1 log ratios uniquely determine the population composition.
+    init_param_indices <- match(InitStateLogitParamNames, lDepParamsVec_)
+    if (anyNA(init_param_indices)) stop("Missing initial-state log-ratio coordinates.")
+    z <- jnp$take(localze, jnp$array(as.integer(init_param_indices - 1L)))
+    population <- if ("N_samp" %in% names(args_samp_vec)) args_samp_vec$N_samp else CONST_N
+    init_samp <- ndm_initial_state_draw(z, InitialStatePrior, InitStateTerms, population, jax, jnp)
+    initial_values <- lapply(seq_along(InitStateTerms), function(i) jnp$take(init_samp, as.integer(i - 1L)))
+    names(initial_values) <- paste0(InitStateTerms, "_samp")
+    fixed_values <- lapply(InitialStateValues, function(value) jnp$array(value, dtype = population$dtype))
+    if (length(fixed_values)) names(fixed_values) <- paste0(names(InitialStateValues), "_samp")
+    c(args_samp_vec, initial_values, fixed_values)
   } )
 
   PolicyList <- list( # policy indicator
@@ -1251,8 +1150,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     # Training integrates the ODEs with a fixed-step scan; prediction and
     # analytics (`inference = TRUE`) keep the adaptive diffrax solve.
     # `inference` is a plain logical, so this is a static branch.
+    numerical_policy <- if (length(GetPredSaveAtInfo) >= 3L) GetPredSaveAtInfo[[3L]] else
+      list(integrator = "diffrax", substeps = 1L)
     use_fixed_step_training_solve <- !isTRUE(inference) &&
-      identical(NeuralODETrainIntegrator, "fixed_rk4")
+      identical(numerical_policy$integrator, "fixed_rk4")
+    global_saved_states <- NULL
+    solve_controller <- if (!isTRUE(inference) && !is.null(numerical_policy$rtol))
+      diffrax$PIDController(rtol = numerical_policy$rtol, atol = numerical_policy$atol) else stepsize_controller_optim
 
     # parcel out context information
     context <- x[[2]][[1]]
@@ -1545,7 +1449,8 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
   
       # get params
       IndicesLocalMuParams <- ai(0:(stop_ <- (nODEParams-1L)))
-      IndicesLocalLParams <- ai((stop_+1):(stop_<-(stop_+1L+nParams_LMat_base-1L)))
+      IndicesLocalLParams <- ai(stop_ + seq_len(nParams_LMat_base))
+      stop_ <- stop_ + nParams_LMat_base
       localx_LMat_params_ODE <- jnp$take(x, jnp$array( IndicesLocalLParams ))
       if(nParams_DiagMat_neural > 0){
         IndicesLocalDiagParams <- ai((stop_+1):(stop_ <- (stop_+1L+nParams_DiagMat_neural-1L)))
@@ -1563,9 +1468,9 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # get params based on indices
       localx_mu_params_ODE <- jnp$take(x, jnp$array(IndicesLocalMuParams))
       NeuralDefinitions_jax_STOCHASTIC_LDep <- NeuralDefinitions_jax_STOCHASTIC[,
-                                                  as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",])]
+                                                  as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",]), drop = FALSE]
       NeuralDefinitions_jax_STOCHASTIC_LDep <- NeuralDefinitions_jax_STOCHASTIC_LDep[,
-         !NeuralDefinitions_jax_STOCHASTIC_LDep["DefClean",] %in% FixedLocalParams_defns]
+         !NeuralDefinitions_jax_STOCHASTIC_LDep["DefClean",] %in% FixedLocalParams_defns, drop = FALSE]
       
       ref_i_base <- which(!as.logical(NeuralDefinitions_jax_STOCHASTIC_LDep["TDep",]) &
                             !NeuralDefinitions_jax_STOCHASTIC_LDep["DefClean",] %in% FixedLocalParams_defns) - 1L
@@ -1762,6 +1667,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         global_args <- ndm_runtime_replicate_tree(eval(parse(text = sprintf('list("Neural2" = %s)',
                                                       gsub(coreNeuralText,pattern="LocalNeural",replace="GlobalNeural") ))))
         global_y0 <- ndm_runtime_replicate_tree(list("Neural2"=ModelList$GlobalNeural$NeuralInitialConditions ))
+        global_y0 <- jax$tree_util$tree_map(function(a) a$astype(jaxFloatType), global_y0)
         if (use_fixed_step_training_solve) {
           # Training: fixed-step RK4 scan on the integer save grid (see
           # ndm_runtime_fixed_step_solve). The global path's grid is already
@@ -1770,7 +1676,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
             field = f_VI_ODE_TERM_globalOnly,
             y0 = global_y0, args = global_args,
             save_ts = VI_SaveAt_ODE_GlobalNeural$subs$ts,
-            substeps = NeuralODETrainSubsteps
+            substeps = numerical_policy$substeps
           )
           global_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(dynamicglobal_x_params_samp)
         } else {
@@ -1785,12 +1691,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                            t0 = 0.,
                                            t1 = f2n(NTimeGlobalNeuralMax),
                                            dt0 = (dt0_init_optim),
-                                           stepsize_controller = stepsize_controller_optim,
+                                           stepsize_controller = solve_controller,
                                            throw = FALSE )
         global_solver_diagnostics <- ndm_runtime_solution_diagnostics(
           dynamicglobal_x_params_samp
         )
         }
+        global_saved_states <- dynamicglobal_x_params_samp$ys
         solver_diagnostics$global_attempted <- jnp$array(TRUE)
         solver_diagnostics$global_result_success <- global_solver_diagnostics$result_success
         solver_diagnostics$global_state_finite <- global_solver_diagnostics$state_finite
@@ -1874,7 +1781,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
         Neural1_samp_before_sigma <- ODEParamsSampList_y0$Neural1_samp
         ODEParamsSampList_y0$Neural1_samp <- jnp$concatenate(
           lapply( list(ODEParamsSampList_y0$Neural1_samp, ySigma_init_nODE_untransformed),
-                   function(x){ jnp$ravel(jnp$asarray(x, dtype = jnp$float32)) }
+                   function(x){ jnp$ravel(jnp$asarray(x, dtype = jaxFloatType)) }
                  ), axis = 0L)
         # plot(np$array(NormFxn( ODEParamsSampList_y0$Neural1_samp$val$val ))[,sample(1:30,2)])
       }
@@ -1930,6 +1837,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                                          yes = paste("$",ze,"_0",sep=""),
                                                          no = "")
                                                   ) }),collapse=","),")",collapse="")  )))
+      local_y0 <- jax$tree_util$tree_map(function(a) a$astype(jaxFloatType), local_y0)
       if (use_fixed_step_training_solve) {
         # Training: fixed-step RK4 scan over the integer save grid, which ends
         # at the last saved time (the same t1 the adaptive solve uses).
@@ -1937,7 +1845,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
           field = f_VI_ODE_TERM,
           y0 = local_y0, args = local_args,
           save_ts = GetPredSaveAtInfo[[2]]$subs$ts,
-          substeps = NeuralODETrainSubsteps
+          substeps = numerical_policy$substeps
         )
         local_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(diff_eq_sol)
       } else {
@@ -1950,10 +1858,10 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                                          # SaveAt covers times 0..GetPredSaveAtInfo[[1]] - 1, so stop
                                          # at the last saved time rather than integrating (and
                                          # differentiating) one further unit that is never read.
-                                         t1 = as.integer(GetPredSaveAtInfo[[1]]) - 1L,
+                                         t1 = jnp$max(GetPredSaveAtInfo[[2]]$subs$ts),
                                          saveat = GetPredSaveAtInfo[[2]],
                                          dt0 = dt0_init_optim,
-                                         stepsize_controller = stepsize_controller_optim,
+                                         stepsize_controller = solve_controller,
                                          throw = FALSE )
       local_solver_diagnostics <- ndm_runtime_solution_diagnostics(diff_eq_sol)
       }
@@ -1974,7 +1882,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
       # plot( np$array(diff_eq_sol$ys$Neural2$val)[1,,j_<-sample(1:40,1)] );
   
       # extract observed data mean
-      if( length(ODEParamsSampList_args$p_l_samp$shape)==0 ){
+      if( !is.null(ODEParamsSampList_args$p_l_samp) && !is.null(diff_eq_sol$ys$i_l) && length(ODEParamsSampList_args$p_l_samp$shape)==0 ){
         #ODEParamsSampList_args$p_l_samp <- ODEParamsSampList_args$p_l_samp *
         ODEParamsSampList_args$p_l_samp <- jnp$array(1.) * jnp$ones_like(diff_eq_sol$ys$i_l)
       }
@@ -2049,6 +1957,7 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
                             "KL_PLACE" = KL_PLACE,
                             "TemporalLatents" = TemporalLatents,
                             "solver_diagnostics" = solver_diagnostics,
+                            "numerical_states" = list(local = diff_eq_sol$ys, global = global_saved_states),
                             "ODEParamsSampList" = c(ODEParamsSampList_args,
                                                     ODEParamsSampList_y0,
                                                     "center_param" = y_mean,
@@ -2104,13 +2013,13 @@ LatentDim <- as.integer(ModelDims / 4)  # Latent dimension for compression (1/4 
     GetPred_inference <- switch_filter_jit( jax$vmap(function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed){
       GetPred(ModelList, x, state, inference=T, PriorList=PriorList, PolicyList=PolicyList, GetPredSaveAtInfo=GetPredSaveAtInfo, seed=seed) },
       in_axes = list(NULL,0L,NULL,NULL,NULL,NULL,0L), # null indicates no vmap over that input
-      out_axes = list(0L,0L), # null indicates no vmap over output
+      out_axes = list(0L,NULL), # model state is shared and unchanged by the stateless backbone
       axis_name = batch_axis_name )
       )
     GetPred_train_jit <- switch_filter_jit( GetPred_train <- jax$vmap(function(ModelList, x, state, PriorList, PolicyList, GetPredSaveAtInfo, seed){
       GetPred(ModelList, x, state, inference=F, PriorList=PriorList, PolicyList=PolicyList, GetPredSaveAtInfo=GetPredSaveAtInfo, seed=seed) },
         in_axes = list(NULL,0L,NULL,NULL,NULL,NULL,0L), # null indicates no vmap over parameters
-        out_axes = list(0L,0L), # null indicates no vmap over output
+        out_axes = list(0L,NULL), # model state is shared and unchanged by the stateless backbone
         axis_name = batch_axis_name
       )
       )

@@ -160,9 +160,10 @@
     sprintf("%% time_varying_terms: %s", .ndm_csv_field(spec$time_varying_terms)),
     sprintf("%% endogenous_terms: %s", .ndm_csv_field(spec$endogenous_terms)),
     sprintf("%% local_inputs: %s", .ndm_csv_field(spec$neural$local_inputs %||% character(0))),
+    .ndm_initial_state_metadata(spec),
     "%%%NDM_SPEC_META_END%%%"
   )
-  meta_lines
+  sub("[[:space:]]+$", "", meta_lines)
 }
 
 .ndm_parse_execution_spec_metadata <- function(tex_text) {
@@ -187,7 +188,7 @@
   if (length(values) == 0L) {
     return(NULL)
   }
-  list(
+  c(.ndm_read_initial_state_metadata(values), list(
     source_format = values$source_format %||% "structured",
     preset = values$preset %||% "custom",
     family = values$family %||% NULL,
@@ -203,7 +204,7 @@
     neural = list(
       local_inputs = .ndm_parse_csv_field(values$local_inputs %||% "")
     )
-  )
+  ))
 }
 
 .ndm_replace_token <- function(expr, token, replacement) {
@@ -390,6 +391,13 @@
   if (length(spec$observations %||% character()) == 0L) {
     stop("Structured model specs must define at least one observation expression.", call. = FALSE)
   }
+  spec$initial_state_prior <- .ndm_validate_initial_state_prior(spec$initial_state_prior, spec$init_state_terms)
+  fixed <- spec$initial_state_values %||% numeric()
+  ordinary <- setdiff(spec$state_terms, c(spec$local_dynamic_terms, spec$global_dynamic_terms))
+  if (!is.numeric(fixed) || any(!is.finite(fixed)) || anyDuplicated(names(fixed)) ||
+      !setequal(names(fixed) %||% character(), setdiff(ordinary, spec$init_state_terms))) {
+    stop("initial_state_values must initialize exactly the ordinary states outside init_state_terms.", call. = FALSE)
+  }
   invisible(spec)
 }
 
@@ -426,19 +434,8 @@
     )
   }
 
-  for (state_term in spec$init_state_terms) {
-    prior <- spec$state_init_priors[[state_term]]
-    bayes_lines <- c(
-      bayes_lines,
-      sprintf(
-        "\\item $%s \\sim \\Dist{Normal}(%s, %s)$",
-        .ndm_state_init_symbol(state_term),
-        as.character(prior$prior_mean),
-        as.character(prior$prior_sd)
-      )
-    )
-  }
-
+  # The joint logistic-normal prior is declared in metadata, not as independent
+  # Gaussian compartment marginals. Runtime coordinates are added from it.
   inlined_equations <- vapply(
     spec$equations,
     .ndm_inline_auxiliary_expr,
@@ -465,7 +462,7 @@
     "%%%END BAYES ODE%%%"
   )
 
-  paste(c(template$prefix, bayes_lines, template$suffix), collapse = "\n")
+  paste(c(template$prefix, .ndm_initial_state_tex(spec), bayes_lines, template$suffix), collapse = "\n")
 }
 
 .ndm_make_execution_spec <- function(preset = "custom",
@@ -485,13 +482,11 @@
                                      source_format = "structured",
                                      init_state_terms = states,
                                      state_init_priors = NULL,
+                                     initial_state_prior = NULL,
+                                     initial_state_values = numeric(),
                                      neural = list(local_inputs = states)) {
-  if (is.null(state_init_priors)) {
-    state_init_priors <- stats::setNames(
-      replicate(length(init_state_terms), .ndm_state_init_prior_spec(), simplify = FALSE),
-      init_state_terms
-    )
-  }
+  if (!is.null(state_init_priors)) stop("state_init_priors is obsolete; supply initial_state_prior in log-ratio coordinates.", call. = FALSE)
+  initial_state_prior <- .ndm_validate_initial_state_prior(initial_state_prior %||% .ndm_default_initial_state_prior(init_state_terms), init_state_terms)
   spec <- list(
     preset = preset,
     family = family,
@@ -514,7 +509,9 @@
     time_varying_terms = as.character(time_varying_terms),
     endogenous_terms = as.character(endogenous_terms),
     neural = neural,
-    state_init_priors = state_init_priors
+    initial_state_prior = initial_state_prior,
+    initial_state_values = initial_state_values,
+    model_semantics_version = 2L
   )
   .ndm_validate_execution_spec(spec)
   spec
@@ -589,24 +586,6 @@
   )
 }
 
-.ndm_tb_balanced_state_init_priors <- function(states, family_args) {
-  priors <- stats::setNames(
-    replicate(length(states), .ndm_state_init_prior_spec(), simplify = FALSE),
-    states
-  )
-  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "balanced_initial_incidence_mean", 0.0008, positive = FALSE)
-  mu <- .ndm_tb_family_numeric_arg(family_args, "balanced_mu_mean", 0.02)
-  gamma_i <- .ndm_tb_family_numeric_arg(family_args, "balanced_gamma_i_mean", 1.0)
-  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "balanced_i0_prior_sd", 0.001)
-  if ("i_l" %in% names(priors)) {
-    priors[["i_l"]] <- .ndm_state_init_prior_spec(
-      prior_mean = initial_incidence / (gamma_i + mu),
-      prior_sd = i0_sd
-    )
-  }
-  priors
-}
-
 .ndm_tb_susceptible_infection_outflow <- function(equations) {
   s_equation <- .ndm_compact_text(equations[["s_l"]] %||% "")
   if (!nzchar(s_equation)) {
@@ -642,7 +621,9 @@
     parameters = .ndm_tb_balanced_parameters(parameters, family_args),
     equations = balanced_equations,
     incidence_expr = incidence_expr,
-    state_init_priors = .ndm_tb_balanced_state_init_priors(states, family_args)
+    initial_state_prior = .ndm_default_initial_state_prior(states,
+      .ndm_tb_family_numeric_arg(family_args, "initial_incidence_center", 0.0008) /
+      (.ndm_tb_family_numeric_arg(family_args, "balanced_gamma_i_mean", 1.0) + .ndm_tb_family_numeric_arg(family_args, "balanced_mu_mean", 0.02)))
   )
 }
 
@@ -671,24 +652,6 @@
       )
     )
   )
-}
-
-.ndm_tb_seir_state_init_priors <- function(states, family_args) {
-  priors <- stats::setNames(
-    replicate(length(states), .ndm_state_init_prior_spec(), simplify = FALSE),
-    states
-  )
-  initial_incidence <- .ndm_tb_family_numeric_arg(family_args, "seir_initial_incidence_mean", 0.0008, positive = FALSE)
-  gamma <- .ndm_tb_family_numeric_arg(family_args, "seir_gamma_mean", 1.0)
-  mu <- .ndm_tb_family_numeric_arg(family_args, "seir_mu_mean", 0.02)
-  i0_sd <- .ndm_tb_family_numeric_arg(family_args, "seir_i0_prior_sd", 0.001)
-  if ("i_l" %in% names(priors)) {
-    priors[["i_l"]] <- .ndm_state_init_prior_spec(
-      prior_mean = initial_incidence / (gamma + mu),
-      prior_sd = i0_sd
-    )
-  }
-  priors
 }
 
 .ndm_tb_seir_equations <- function(states, parameters, equations, family_args) {
@@ -723,7 +686,9 @@
     parameters = .ndm_tb_seir_parameters(parameters, family_args),
     equations = seir_equations,
     incidence_expr = incidence_expr,
-    state_init_priors = .ndm_tb_seir_state_init_priors(seir_states, family_args)
+    initial_state_prior = .ndm_default_initial_state_prior(seir_states,
+      .ndm_tb_family_numeric_arg(family_args, "initial_incidence_center", 0.0008) /
+      (.ndm_tb_family_numeric_arg(family_args, "seir_gamma_mean", 1.0) + .ndm_tb_family_numeric_arg(family_args, "seir_mu_mean", 0.02)))
   )
 }
 
@@ -755,7 +720,7 @@
     )
     args$parameters <- balanced$parameters
     args$equations <- balanced$equations
-    args$state_init_priors <- args$state_init_priors %||% balanced$state_init_priors
+    args$initial_state_prior <- args$initial_state_prior %||% balanced$initial_state_prior
     incidence_expr <- balanced$incidence_expr
   } else if (identical(dynamics_variant, "seir")) {
     if (identical(observation_target, "cumulative")) {
@@ -770,7 +735,7 @@
     args$states <- seir$states
     args$parameters <- seir$parameters
     args$equations <- seir$equations
-    args$state_init_priors <- args$state_init_priors %||% seir$state_init_priors
+    args$initial_state_prior <- args$initial_state_prior %||% seir$initial_state_prior
     incidence_expr <- seir$incidence_expr
   }
   args$observations <- .ndm_tb_observations_from_equations(
@@ -783,6 +748,8 @@
 
 .ndm_tb_structure_spec <- function(family, family_args = list()) {
   family_args <- .ndm_coerce_family_args(family_args)
+  obsolete <- intersect(names(family_args), c("balanced_initial_incidence_mean", "balanced_i0_prior_sd", "seir_initial_incidence_mean", "seir_i0_prior_sd"))
+  if (length(obsolete)) stop("Obsolete prior options: ", paste(obsolete, collapse = ", "), "; use initial_incidence_center and initial_state_prior log-ratio covariance.", call. = FALSE)
   n <- if (!is.null(family_args$n)) as.integer(family_args$n) else 3L
   if (!is.na(n) && n < 2L) {
     stop("TB chain-family specs require `family_args$n >= 2`.", call. = FALSE)
@@ -1184,6 +1151,9 @@
     state_terms <- names(bayes$equations)
     return(list(
       source_format = "tex",
+      constants = bayes$constants,
+      equations = bayes$equations,
+      observations = bayes$observations,
       preset = "custom",
       family = NULL,
       family_args = list(),
@@ -1192,8 +1162,8 @@
       parameter_terms = bayes$parameter_terms,
       parameter_transforms = bayes$parameter_transforms,
       auxiliary_terms = character(0),
-      local_dynamic_terms = character(0),
-      global_dynamic_terms = character(0),
+      local_dynamic_terms = names(bayes$equations)[grepl("Neural1", bayes$equations)],
+      global_dynamic_terms = names(bayes$equations)[grepl("Neural2", bayes$equations)],
       time_varying_terms = character(0),
       endogenous_terms = character(0),
       neural = list(local_inputs = state_terms)
@@ -1299,6 +1269,10 @@ ndm_model_spec_from_structure <- function(structure,
     if (!is.null(structure$description)) {
       spec$description <- structure$description
     }
+    if (!is.null(structure$initial_state_prior)) {
+      if ("initial_incidence_center" %in% names(spec$family_args)) stop("Supply either initial_incidence_center or initial_state_prior.", call. = FALSE)
+      spec$initial_state_prior <- structure$initial_state_prior
+    }
     return(.ndm_model_spec_from_execution_spec(spec, model_type = model_type))
   }
 
@@ -1329,6 +1303,8 @@ ndm_model_spec_from_structure <- function(structure,
     endogenous_terms = structure$endogenous_terms %||% character(),
     init_state_terms = structure$init_state_terms %||% structure$states,
     state_init_priors = structure$state_init_priors %||% NULL,
+    initial_state_prior = structure$initial_state_prior %||% NULL,
+    initial_state_values = structure$initial_state_values %||% numeric(),
     neural = structure$neural %||% list(local_inputs = structure$states)
   )
 

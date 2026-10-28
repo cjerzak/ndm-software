@@ -40,16 +40,29 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
     if (is.null(x)) {
       return(integer(0L))
     }
-    if (is.list(x)) {
-      return(as.integer(unlist(x)))
-    }
-    if (is_py_object(x)) {
-      shp <- tryCatch(as.integer(unlist(x$shape)), error = function(e) NULL)
-      if (!is.null(shp)) {
-        return(shp)
-      }
+    if (is.list(x)) x <- unlist(x)
+    if (!length(x)) return(integer())
+    if (is_py_object(x)) x <- reticulate::py_to_r(np$asarray(x))
+    if (any(!is.finite(x)) || any(x < 0) || any(x != floor(x))) {
+      stop("sample_shape must contain nonnegative integers.", call. = FALSE)
     }
     as.integer(x)
+  }
+
+  broadcast_shape <- function(...) as.integer(unlist(jnp$broadcast_shapes(...)))
+  sample_dtype <- function(...) {
+    dtype <- jnp$result_type(...)
+    if (!as.character(dtype$kind) %in% c("f", "c")) dtype <- jnp$array(0.)$dtype
+    dtype
+  }
+  mvn_shape <- function(loc, factor, triangular = FALSE) {
+    ls <- shape_of(loc); fs <- shape_of(factor)
+    if (!length(ls) || !length(fs)) stop("Multivariate Gaussian parameters need an event dimension.", call. = FALSE)
+    k <- tail(ls, 1L)
+    if (tail(fs, 1L) != k || (triangular && (length(fs) < 2L || fs[[length(fs)-1L]] != k))) {
+      stop("Multivariate Gaussian event dimensions do not match.", call. = FALSE)
+    }
+    c(broadcast_shape(utils::head(ls, -1L), utils::head(fs, if (triangular) -2L else -1L)), k)
   }
 
   make_dist <- function(name, params, sample_fn, log_prob_fn = NULL) {
@@ -86,11 +99,12 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
       scale <- jnp$array(scale)
     }
     scale <- jnp$maximum(jnp$abs(scale), scale_floor)
+    broadcast_shape(shape_of(loc), shape_of(scale))
 
     sample_fn <- function(sample_shape = NULL, seed = NULL) {
       key <- ensure_key(seed)
-      shp <- c(as_shape(sample_shape), shape_of(loc))
-      eps <- jax$random$normal(key, shape = shp)
+      shp <- c(as_shape(sample_shape), broadcast_shape(shape_of(loc), shape_of(scale)))
+      eps <- jax$random$normal(key, shape = shp, dtype = sample_dtype(loc, scale))
       eps * scale + loc
     }
 
@@ -137,14 +151,17 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
     if (!is_py_object(sd)) {
       sd <- jnp$array(sd)
     }
+    loc <- jnp$atleast_1d(loc)
+    sd <- jnp$atleast_1d(sd)
     sd <- jnp$maximum(jnp$abs(sd), scale_floor)
+    mvn_shape(loc, sd)
 
     k <- as.integer(utils::tail(shape_of(loc), 1L))
 
     sample_fn <- function(sample_shape = NULL, seed = NULL) {
       key <- ensure_key(seed)
-      shp <- c(as_shape(sample_shape), shape_of(loc))
-      eps <- jax$random$normal(key, shape = shp)
+      shp <- c(as_shape(sample_shape), mvn_shape(loc, sd))
+      eps <- jax$random$normal(key, shape = shp, dtype = sample_dtype(loc, sd))
       eps * sd + loc
     }
 
@@ -162,7 +179,7 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
     )
   }
 
-  oryx$MultivariateNormalTriL <- function(loc, scale_tril) {
+  oryx$MultivariateNormalTriL <- function(loc, scale_tril, stabilize = TRUE) {
     if (!is_py_object(loc)) {
       loc <- jnp$array(loc)
     }
@@ -170,18 +187,17 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
       scale_tril <- jnp$array(scale_tril)
     }
 
-    scale_tril <- safe_scale_tril(scale_tril)
+    loc <- jnp$atleast_1d(loc)
+    mvn_shape(loc, scale_tril, triangular = TRUE)
+    if (stabilize) scale_tril <- safe_scale_tril(scale_tril)
 
     k <- as.integer(utils::tail(shape_of(loc), 1L))
 
     sample_fn <- function(sample_shape = NULL, seed = NULL) {
       key <- ensure_key(seed)
-      shp <- c(as_shape(sample_shape), k)
-      eps <- jax$random$normal(key, shape = shp)
-      jnp$matmul(
-        jnp$expand_dims(eps, axis = -2L),
-        jnp$swapaxes(scale_tril, -1L, -2L)
-      )$squeeze(axis = -2L) + loc
+      shp <- c(as_shape(sample_shape), mvn_shape(loc, scale_tril, triangular = TRUE))
+      eps <- jax$random$normal(key, shape = shp, dtype = sample_dtype(loc, scale_tril))
+      jnp$matmul(scale_tril, jnp$expand_dims(eps, axis = -1L))$squeeze(axis = -1L) + loc
     }
 
     log_prob_fn <- function(x) {
@@ -216,6 +232,7 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
       covariance_matrix <- jnp$array(covariance_matrix)
     }
 
+    loc <- jnp$atleast_1d(loc)
     k <- as.integer(utils::tail(shape_of(loc), 1L))
     covariance_matrix <- 0.5 * (
       covariance_matrix + jnp$swapaxes(covariance_matrix, -1L, -2L)
@@ -250,7 +267,7 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
       )))
     }
     if (!is.null(dist$parameters$scale_tril)) {
-      return(safe_scale_tril(dist$parameters$scale_tril))
+      return(dist$parameters$scale_tril)
     }
     NULL
   }
@@ -280,15 +297,13 @@ ndm_make_oryx_shim <- function(jax, jnp, np) {
         )
       }
 
-      broadcast_factors <- jnp$broadcast_arrays(q_factor, p_factor)
-      q_factor <- broadcast_factors[[1L]]
-      p_factor <- broadcast_factors[[2L]]
-      broadcast_locations <- jnp$broadcast_arrays(
-        q$parameters$loc,
-        p$parameters$loc
-      )
-      q_location <- broadcast_locations[[1L]]
-      p_location <- broadcast_locations[[2L]]
+      dimension <- as.integer(utils::tail(shape_of(q$parameters$loc), 1L))
+      batch_shape <- broadcast_shape(utils::head(shape_of(q_factor), -2L), utils::head(shape_of(p_factor), -2L),
+        utils::head(shape_of(q$parameters$loc), -1L), utils::head(shape_of(p$parameters$loc), -1L))
+      q_factor <- jnp$broadcast_to(q_factor, c(batch_shape, dimension, dimension))
+      p_factor <- jnp$broadcast_to(p_factor, c(batch_shape, dimension, dimension))
+      q_location <- jnp$broadcast_to(q$parameters$loc, c(batch_shape, dimension))
+      p_location <- jnp$broadcast_to(p$parameters$loc, c(batch_shape, dimension))
 
       whitened_q_factor <- jax$scipy$linalg$solve_triangular(
         p_factor,

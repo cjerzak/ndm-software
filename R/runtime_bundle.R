@@ -256,6 +256,16 @@ ndm_runtime_paths <- function(analysis_root = .ndm_default_analysis_root()) {
 }
 
 .ndm_install_runtime_helpers <- function(env, analysis_root = NULL) {
+  env$ndm_initial_state_draw <- .ndm_initial_state_draw
+  env$ndm_validate_initial_state_prior <- .ndm_validate_initial_state_prior
+  env$ndm_parse_tex_execution_spec <- .ndm_parse_tex_execution_spec
+  env$ndm_result_metadata <- .ndm_result_metadata
+  env$ndm_trainability_mask <- .ndm_trainability_mask
+  env$ndm_parameter_counts <- .ndm_parameter_counts
+  env$ndm_select_training_solver <- .ndm_select_training_solver
+  env$ndm_compile_math_expr <- .ndm_compile_math_expr
+  env$ndm_normalize_math_text <- .ndm_normalize_math_text
+
   stopifnot(is.environment(env))
 
   if (!is.null(analysis_root) && nzchar(analysis_root)) {

@@ -152,8 +152,8 @@ ndm_print <- function(text, quiet = FALSE) {
       pid = {
         rtol <- suppressWarnings(as.numeric(runtime_get0("neuralode_optim_rtol", ifnotfound = 1e-5)))
         atol <- suppressWarnings(as.numeric(runtime_get0("neuralode_optim_atol", ifnotfound = 1e-7)))
-        if (length(rtol) != 1L || !is.finite(rtol) || length(atol) != 1L || !is.finite(atol)) {
-          stop("`neuralode_optim_rtol` and `neuralode_optim_atol` must be finite numeric scalars.", call. = FALSE)
+        if (length(rtol) != 1L || !is.finite(rtol) || rtol <= 0 || length(atol) != 1L || !is.finite(atol) || atol <= 0) {
+          stop("`neuralode_optim_rtol` and `neuralode_optim_atol` must be finite positive numeric scalars.", call. = FALSE)
         }
         runtime_env$diffrax$PIDController(rtol = rtol[[1L]], atol = atol[[1L]])
       },
@@ -166,16 +166,11 @@ ndm_print <- function(text, quiet = FALSE) {
     assign("stepsize_controller_optim", controller, envir = runtime_env)
   }
 
-  if (!exists("InitStateLogitOffset", envir = runtime_env, inherits = FALSE)) {
-    init_state_logit_offset <- runtime_get0("neuralode_init_state_logit_offset", ifnotfound = NULL)
-    if (!is.null(init_state_logit_offset)) {
-      assign("InitStateLogitOffset", init_state_logit_offset, envir = runtime_env)
-    }
-  }
-
-  if (!exists("InitStateLogitScaleMax", envir = runtime_env, inherits = FALSE)) {
-    init_state_logit_scale_max <- runtime_get0("neuralode_init_state_logit_scale_max", ifnotfound = Inf)
-    assign("InitStateLogitScaleMax", init_state_logit_scale_max, envir = runtime_env)
+  if (!is.null(runtime_get0("neuralode_init_state_logit_offset")) ||
+      !identical(as.numeric(runtime_get0("neuralode_init_state_logit_scale_max", Inf)), Inf) ||
+      exists("InitStateLogitOffset", envir = runtime_env, inherits = FALSE) ||
+      exists("InitStateLogitScaleMax", envir = runtime_env, inherits = FALSE)) {
+    stop("Legacy initial-state offset/temperature options are obsolete; use initial_state_prior log-ratio means and covariance.", call. = FALSE)
   }
 
   invisible(runtime_env)
@@ -203,33 +198,32 @@ ndm_print <- function(text, quiet = FALSE) {
 #'   `NULL`, runtime code resolves this to `ModelDims`.
 #' @param neuralode_global_latent_dim Optional global NeuralODE latent width.
 #'   When `NULL`, runtime code resolves this to `ModelDims`.
-#' @param neuralode_init_state_logit_offset Optional init-state logit offset
-#'   vector for the NeuralODE state simplex initializer.
-#' @param neuralode_init_state_logit_scale_max Scalar cap applied to the
-#'   NeuralODE init-state logit scale.
-#' @param neuralode_optim_solver NeuralODE optimization solver name. Use
-#'   `"tsit5"` or `"dopri8"`.
-#' @param neuralode_optim_dt0 Initial step size used by the NeuralODE
-#'   optimization solve.
-#' @param neuralode_optim_controller NeuralODE optimization stepsize controller.
-#'   Use `"pid"` or `"constant"`.
-#' @param neuralode_optim_rtol Relative tolerance used when
-#'   `neuralode_optim_controller = "pid"`.
-#' @param neuralode_optim_atol Absolute tolerance used when
-#'   `neuralode_optim_controller = "pid"`.
-#' @param neuralode_train_integrator Integrator for the NeuralODE solves inside
-#'   the training loss and gradient. `"fixed_rk4"` runs a fixed-step RK4 scan
-#'   on the integer save grid, differentiated with plain reverse-mode AD, which
-#'   costs a fraction of the adaptive solve's adjoint. `"diffrax"` uses the
-#'   adaptive `neuralode_optim_*` solve for training as well. `"auto"` (the
-#'   default) uses `"fixed_rk4"` for structures without global-neural terms
-#'   and `"diffrax"` for structures with them, whose dynamics are stiff at
-#'   initialisation. Prediction and analytics always use the adaptive solve.
-#' @param neuralode_train_substeps Number of RK4 substeps per unit time for
-#'   `neuralode_train_integrator = "fixed_rk4"`, or `NULL` (the default) to
-#'   choose automatically: two for structures with global-neural terms, whose
-#'   compartments move quickly, and one otherwise. Raise it if training
-#'   dynamics become stiff.
+#' @param neuralode_init_state_logit_offset Obsolete. Non-NULL values are rejected;
+#'   supply `initial_state_prior` through the model specification instead.
+#' @param neuralode_init_state_logit_scale_max Obsolete. Values other than `Inf`
+#'   are rejected; specify log-ratio covariance in `initial_state_prior`.
+#' @param neuralode_optim_solver NeuralODE optimization solver: `"tsit5"` or `"dopri8"`.
+#' @param neuralode_optim_dt0 Initial integration step size.
+#' @param neuralode_optim_controller Inference controller: `"pid"` or `"constant"`.
+#'   RK4 fallback always uses an adaptive PID controller.
+#' @param neuralode_optim_rtol Relative tolerance for adaptive integration and
+#'   the RK4 coarse/fine discrepancy check.
+#' @param neuralode_optim_atol Absolute tolerance for adaptive integration and
+#'   the RK4 coarse/fine discrepancy check.
+#' @param neuralode_train_integrator Training integrator. `"auto"` chooses
+#'   checked `"fixed_rk4"` for local models and `"diffrax"` for models with
+#'   dynamic global states. Checked RK4 probes the same batch at increasing
+#'   resolutions before gradients or optimizer donation. Acceptance requires
+#'   max(abs(fine-coarse)/(atol+rtol*max(abs(fine),abs(coarse)))) <= 1 over every
+#'   saved local/global state and finite predictions. This discrepancy is a
+#'   diagnostic, not a certified exact-solution or gradient error bound.
+#' @param neuralode_train_substeps Initial RK4 substeps per unit interval, or
+#'   `NULL` for one (two with dynamic global states). Must be below the maximum.
+#' @param neuralode_train_max_substeps Maximum RK4 substeps per unit interval;
+#'   default 128. Refinement uses doubling, capped at this budget.
+#' @param neuralode_train_fallback `"diffrax"` (default) selects adaptive
+#'   integration for the entire batch if refinement fails or the save grid is
+#'   not unit spaced from zero. `"error"` stops before any training update.
 #' @param enable_kv_cache Logical scalar controlling DecoderOnly KV caching.
 #'   The default enables the faster cached inference path.
 #' @param enable_kv_cache_training Logical scalar controlling KV caching during
@@ -302,6 +296,8 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
                               neuralode_optim_atol = 1e-7,
                               neuralode_train_integrator = c("auto", "fixed_rk4", "diffrax"),
                               neuralode_train_substeps = NULL,
+                              neuralode_train_max_substeps = 128L,
+                              neuralode_train_fallback = c("diffrax", "error"),
                               enable_kv_cache = TRUE,
                               enable_kv_cache_training = TRUE,
                               inference_mc_draws = 5L,
@@ -330,6 +326,18 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
   neuralode_optim_solver <- match.arg(neuralode_optim_solver)
   neuralode_optim_controller <- match.arg(neuralode_optim_controller)
   neuralode_train_integrator <- match.arg(neuralode_train_integrator)
+  neuralode_train_fallback <- match.arg(neuralode_train_fallback)
+  if (length(neuralode_train_max_substeps) != 1L || !is.finite(neuralode_train_max_substeps) ||
+      neuralode_train_max_substeps < 2 || neuralode_train_max_substeps > .Machine$integer.max || neuralode_train_max_substeps != floor(neuralode_train_max_substeps)) {
+    stop("neuralode_train_max_substeps must be an integer >= 2.", call. = FALSE)
+  }
+  neuralode_train_max_substeps <- as.integer(neuralode_train_max_substeps)
+  if (!is.null(neuralode_train_substeps) &&
+      (length(neuralode_train_substeps) != 1L || !is.finite(neuralode_train_substeps) ||
+       neuralode_train_substeps != floor(neuralode_train_substeps) ||
+       neuralode_train_substeps >= neuralode_train_max_substeps)) {
+    stop("neuralode_train_substeps must be one positive integer below neuralode_train_max_substeps.", call. = FALSE)
+  }
   if (!is.null(neuralode_train_substeps)) {
     neuralode_train_substeps <- suppressWarnings(as.integer(neuralode_train_substeps))
     if (length(neuralode_train_substeps) != 1L || is.na(neuralode_train_substeps) ||
@@ -463,6 +471,8 @@ ndm_create_config <- function(model_type = c("DecoderOnly", "NeuralODE"),
     neuralode_optim_atol = neuralode_optim_atol,
     neuralode_train_integrator = neuralode_train_integrator,
     neuralode_train_substeps = neuralode_train_substeps,
+    neuralode_train_max_substeps = neuralode_train_max_substeps,
+    neuralode_train_fallback = neuralode_train_fallback,
     enable_kv_cache = enable_kv_cache,
     enable_kv_cache_training = enable_kv_cache_training,
     inference_mc_draws = inference_mc_draws,

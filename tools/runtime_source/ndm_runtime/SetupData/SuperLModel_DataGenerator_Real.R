@@ -3,16 +3,19 @@
                                        in_sample_indices,
                                        time_id,
                                        initial_transform,
-                                       initial_norm_type) {
+                                       initial_norm_type,
+                                       return_fit = FALSE) {
   if (length(in_sample_indices) == 0L) {
     stop("Real-data normalization requires at least one training observation.")
   }
 
+  lambda <- NULL
   if (identical(initial_transform, "yeoJohnson")) {
     transform_fit <- bestNormalize::yeojohnson(
       col_vals[in_sample_indices],
       standardize = FALSE
     )
+    lambda <- transform_fit$lambda
     col_vals <- as.numeric(stats::predict(transform_fit, newdata = col_vals))
   }
 
@@ -56,7 +59,38 @@
     stop("Real-data normalization scale must be finite and positive.")
   }
 
-  (col_vals - demeaner) / (0.001 + descaler)
+  values <- (col_vals - demeaner) / (0.001 + descaler)
+  if (!return_fit) return(values)
+  list(values = values, fit = list(transform = initial_transform, lambda = lambda,
+       normalization = initial_norm_type, center = demeaner, scale = 0.001 + descaler))
+}
+
+.ndm_real_training_partition <- function(data, split_type, times_in, times_out, base_id) {
+  locs <- unique(data$location_id)
+  train_locs <- locs
+  if (split_type %in% c("OutOfPlace", "OutOfPlacetime")) {
+    had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    if (had_seed) previous_seed <- get(".Random.seed", envir = .GlobalEnv)
+    on.exit({
+      if (had_seed) assign(".Random.seed", previous_seed, envir = .GlobalEnv) else
+        if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
+    }, add = TRUE)
+    set.seed(base_id)
+    train_locs <- sample(locs, floor(length(locs) * 0.8), replace = FALSE)
+  }
+  if (identical(split_type, "OutOfPlace")) times_in <- times_out <- unique(data$time_id)
+  train <- switch(split_type,
+    OutOfTime = data$time_id <= max(times_in),
+    OutOfPlace = data$location_id %in% train_locs,
+    OutOfPlacetime = data$location_id %in% train_locs & data$time_id <= max(times_in),
+    stop("Unknown OSSType: ", split_type))
+  test <- switch(split_type,
+    OutOfTime = data$time_id >= min(times_out),
+    OutOfPlace = !data$location_id %in% train_locs,
+    OutOfPlacetime = !data$location_id %in% train_locs & data$time_id >= min(times_out))
+  if (any(train & test) || !any(train) || !any(test)) stop("Training and evaluation partitions must be nonempty and disjoint.")
+  list(train = which(train), test = which(test), train_locations = train_locs,
+       times_in = times_in, times_out = times_out)
 }
 
 {
@@ -65,122 +99,28 @@
     context_variables <- NULL
     #context_variables <- c("Pop", "ihme_true_value_inc_hosp_per_capita")
     
-    # normalize data inputs 
-    input_df_red_tmp <- truth_df_red
-    input_df_red_tmp[,dataInputs_colnames] <- apply(as.matrix(input_df_red_tmp[,dataInputs_colnames]),2,f2n)
-  
-    #
-    dataInputs_colnames_TO_NORMALIZE <- dataInputs_colnames
-    in_sample_red_tmp_indices <- which(input_df_red_tmp$time_id <= max(times_in))
-  
-    # data normalization
-    #colnames(input_df_red_tmp)[colnames(input_df_red_tmp) %in% dataInputs_colnames_TO_NORMALIZE]
-    input_df_red_tmp[,dataInputs_colnames_TO_NORMALIZE] <- 
-          sapply(1:length(dataInputs_colnames_TO_NORMALIZE),function(col_to_norm){
-      col_vals <- f2n(unlist(truth_df_red[,dataInputs_colnames_TO_NORMALIZE[col_to_norm]]))
-      
-      if (initialTransform == "yeoJohnson") {
-        print2("---yeojohnson for normality---")
-      }
-
-      .ndm_real_normalize_column(
-        col_vals = col_vals,
-        in_sample_indices = in_sample_red_tmp_indices,
-        time_id = truth_df_red$time_id,
-        initial_transform = initialTransform,
-        initial_norm_type = initialNormType
+    # Establish the partition on the original location order before fitting
+    # any transform. The split helper restores the complete caller RNG state.
+    partition <- .ndm_real_training_partition(truth_df_red, OSSType, times_in, times_out, BaseID)
+    times_in <- partition$times_in
+    times_out <- partition$times_out
+    input_df_red_full <- as.data.frame(truth_df_red)
+    RealNormalization <- list(schema_version = 1L, split_type = OSSType,
+      base_id = BaseID, train_locations = partition$train_locations,
+      train_times = sort(unique(truth_df_red$time_id[partition$train])),
+      training_rows = length(partition$train), parameters = list())
+    for (column in dataInputs_colnames) {
+      normalized <- .ndm_real_normalize_column(
+        col_vals = f2n(truth_df_red[[column]]), in_sample_indices = partition$train,
+        time_id = truth_df_red$time_id, initial_transform = initialTransform,
+        initial_norm_type = initialNormType, return_fit = TRUE
       )
-    })
-  
-    # setup train / test
-    input_df_red_full <- input_df_red_tmp
-    
-    print2(sprintf("Splitting data according to OSSType='%s'", OSSType))
-    if (OSSType == "OutOfTime") {
-      # -- Standard "out of time" logic (default) -------------------------------
-      input_df_red_out <- input_df_red_full[input_df_red_full$time_id >= min(times_out), ]
-      input_df_red_in  <- input_df_red_full[input_df_red_full$time_id <= max(times_in), ]
-      
-      # Basic checks on in/out
-      if (any(input_df_red_out$time_id <= max(times_in))) stop("In-out mismatch-1")
-      if (!all(input_df_red_in$time_id <= max(times_in))) stop("In-out mismatch-2")
-      if (!all(input_df_red_out$time_id >= min(times_out))) stop("In-out mismatch-3")
-      if (any(input_df_red_in$time_id >= min(times_out))) stop("In-out mismatch-4")
-      
-      print2("Using default out-of-time train/test split.")
-    } 
-    if (OSSType == "OutOfPlace") {
-      # -- "out_of_place": different locations for train vs test ----------------
-      # Use *all* times for both sets.
-      
-      locs <- unique(input_df_red_full$location_id)
-      
-      # For example, 80% of locations for training, 20% for test:
-      frac_train_locs <- 0.8
-      n_train_locs <- floor(length(locs) * frac_train_locs)
-      
-      pre_samp <- sample(1:1000,1)
-      set.seed(BaseID) # for reproducible location splitting
-      train_locs <- sample(locs, n_train_locs, replace = FALSE)
-      set.seed(pre_samp) # reset seed 
-      
-      test_locs  <- setdiff(locs, train_locs)
-      
-      # We do *not* filter by times_in or times_out here
-      # because "out_of_place" is about new places, not new times.
-      # Optionally, you may want to ensure all times are included:
-      
-      # Reset times_in and times_out to use all available times
-      times_in <- unique(input_df_red_full$time_id)
-      times_out <- times_in
-      
-      # subset to within range governed by times_in
-      input_df_red_full  <- input_df_red_full[input_df_red_full$time_id <= max(times_in), ]
-      
-      # set training / test based on location ids. 
-      input_df_red_in  <- input_df_red_full[input_df_red_full$location_id %in% train_locs, ]
-      input_df_red_out <- input_df_red_full[input_df_red_full$location_id %in% test_locs, ]
-      
-      print2("Using out-of-place train/test split (same times, different places).")
-    } 
-    if( OSSType == "OutOfPlacetime") {
-      
-      # -- "out_of_placetime": different locations *and* out-of-time ------------
-      # 1) We first select a subset of places for training, the rest for test.
-      # 2) Among the training places, we only keep times_in (like usual).
-      # 3) Among the test places, we only keep times_out.
-      
-      locs <- unique(input_df_red_full$location_id)
-      
-      frac_train_locs <- 0.8
-      n_train_locs <- floor(length(locs) * frac_train_locs)
-      
-      pre_samp <- sample(1:1000,1)
-      set.seed(BaseID) # for reproducible location splitting
-      train_locs <- sample(locs, n_train_locs, replace = FALSE)
-      set.seed(pre_samp) # reset seed 
-      
-      test_locs  <- setdiff(locs, train_locs)
-      
-      # train = (train_locs) AND (time in times_in range)
-      # test  = (test_locs)  AND (time in times_out range)
-      in_mask  <- (input_df_red_full$location_id %in% train_locs) & 
-        (input_df_red_full$time_id <= max(times_in)) 
-      out_mask <- (input_df_red_full$location_id %in% test_locs)  &
-        (input_df_red_full$time_id >= min(times_out)) 
-      
-      input_df_red_in  <- input_df_red_full[in_mask, ]
-      input_df_red_out <- input_df_red_full[out_mask, ]
-      
-      print2("Using out-of-place-time train/test split (different places + future times).")
-    } 
-    
-    if( !OSSType %in% c("OutOfTime","OutOfPlace","OutOfPlacetime")){
-      # ------------------------------------------------------------------------
-      stop(sprintf("Unknown OSSType='%s'. Must be one of: {OutOfTime, OutOfPlace, OutOfPlacetime}", OSSType))
+      input_df_red_full[[column]] <- normalized$values
+      RealNormalization$parameters[[column]] <- normalized$fit
     }
-    rm(input_df_red_tmp)
-    
+    input_df_red_in <- input_df_red_full[partition$train, , drop = FALSE]
+    input_df_red_out <- input_df_red_full[partition$test, , drop = FALSE]
+
     context_df_red <- truth_df_red[,c("location_id","time_id"
                                       ,"targetTime_id",context_variables)]
     truth_df_red <- truth_df_red[,c("location_id",

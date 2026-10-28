@@ -67,7 +67,7 @@ test_that("real aggregation compares paired raw squared errors", {
   expect_equal(unname(corrected[["rss_baseline"]]), 4)
   expect_match(
     real_preprocess_text,
-    "ndm_paired_squared_error_skill",
+    ".ndm_report_aggregate_real",
     fixed = TRUE
   )
   expect_false(grepl("clipAt", real_preprocess_text, fixed = TRUE))
@@ -115,12 +115,12 @@ test_that("simulation and figure analytics use the corrected helpers", {
   expect_false(grepl("mean(clipAt", simulation_text, fixed = TRUE))
   expect_match(
     figure_text,
-    "Map2ConstrainedSkill <- ndm_skill_from_unconstrained",
+    "ndm_summarize_results",
     fixed = TRUE
   )
   expect_match(
     figure_text,
-    "InvMap2ConstrainedSkill <- ndm_skill_to_unconstrained",
+    "report$final_pairs",
     fixed = TRUE
   )
 })

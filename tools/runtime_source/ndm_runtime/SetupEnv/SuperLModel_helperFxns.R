@@ -1,5 +1,6 @@
 # Content of SuperLModel_helperFxns.R
 ai <- as.integer
+Identity <- function(x) x
 
 mean2 <- function(x){mean(x,na.rm=T)}
 
@@ -439,165 +440,8 @@ robust_cut <- function(x, n_bins = 2L){
   )
 }
 
-# create oryx helpers 
-{
-  # ---------------------------------------------------------------------
-  # Minimal Oryx stand-ins (JAX via reticulate) 
-  # ---------------------------------------------------------------------
-  oryx <- list()
-  
-  # ---------- helpers ----------
-  .ensure_key <- function(seed) {
-    if (is.null(seed)) stop("seed must be provided")
-    # If looks like a PRNGKey (shape (2,))
-    try({
-      shp <- seed$shape
-      if (!is.null(shp) && length(shp) == 1 && as.integer(shp[[1]]) == 2) return(seed)
-    }, silent = TRUE)
-    # If it's a JAX scalar or R numeric, convert to PRNGKey
-    if (!is.null(seed$shape) && length(seed$shape) == 0) {
-      return(jax$random$PRNGKey(as.integer(np$asarray(seed))))
-    }
-    if (is.numeric(seed)) return(jax$random$PRNGKey(as.integer(seed)))
-    # last resort
-    jax$random$PRNGKey(as.integer(reticulate::py_to_r(seed)))
-  }
-  
-  .shape_of <- function(x) {
-    tryCatch({ as.integer(unlist(x$shape)) }, error = function(e) integer(0L))
-  }
-  .as_shape <- function(s) {
-    if (is.null(s)) return(integer(0L))
-    if (is.list(s)) return(as.integer(unlist(s)))
-    if ("python.builtin.object" %in% class(s)) {
-      shp <- tryCatch(as.integer(unlist(s$shape)), error = function(e) NULL)
-      if (!is.null(shp)) return(shp)
-    }
-    as.integer(s)
-  }
-  .make_dist <- function(name, params, sample_fn, log_prob_fn = NULL) {
-    list(
-      name = name,
-      parameters = params,
-      sample = sample_fn,
-      log_prob = if (is.null(log_prob_fn))
-        function(...) stop("log_prob not implemented for ", name) else log_prob_fn
-    )
-  }
-  
-  # ---------- distributions ----------
-  oryx$Normal <- function(loc, scale) {
-    if (!"python.builtin.object" %in% class(loc))   loc   <- jnp$array(loc)
-    if (!"python.builtin.object" %in% class(scale)) scale <- jnp$array(scale)
-    sample_fn <- function(sample_shape = NULL, seed = NULL) {
-      key <- .ensure_key(seed)
-      shp <- c(.as_shape(sample_shape), .shape_of(loc))
-      eps <- jax$random$normal(key, shape = shp)
-      eps * scale + loc
-    }
-    logp_fn <- function(x) {
-      -0.5 * jnp$square((x - loc) / scale) - jnp$log(scale) - 0.5 * jnp$log(2 * pi)
-    }
-    .make_dist("Normal", list(loc = loc, scale = scale), sample_fn, logp_fn)
-  }
-  
-  oryx$Uniform <- function(low = 0., high = 1.) {
-    if (!"python.builtin.object" %in% class(low))  low  <- jnp$array(low)
-    if (!"python.builtin.object" %in% class(high)) high <- jnp$array(high)
-    sample_fn <- function(sample_shape = NULL, seed = NULL) {
-      key <- .ensure_key(seed)
-      jax$random$uniform(key, shape = .as_shape(sample_shape), minval = low, maxval = high)
-    }
-    logp_fn <- function(x) {
-      jnp$where((x >= low) & (x <= high), -jnp$log(high - low), -jnp$inf)
-    }
-    .make_dist("Uniform", list(low = low, high = high), sample_fn, logp_fn)
-  }
-  
-  # Accepts either scale_diag= or scale=
-  oryx$MultivariateNormalDiag <- function(loc, scale_diag = NULL, scale = NULL) {
-    sd <- if (!is.null(scale_diag)) scale_diag else scale
-    if (is.null(sd)) stop("Provide 'scale_diag' (preferred) or 'scale'.")
-    if (!"python.builtin.object" %in% class(loc)) loc <- jnp$array(loc)
-    if (!"python.builtin.object" %in% class(sd))  sd  <- jnp$array(sd)
-    k <- as.integer(tail(.shape_of(loc), 1L))
-    sample_fn <- function(sample_shape = NULL, seed = NULL) {
-      key <- .ensure_key(seed)
-      shp <- c(.as_shape(sample_shape), .shape_of(loc))
-      eps <- jax$random$normal(key, shape = shp)
-      eps * sd + loc
-    }
-    logp_fn <- function(x) {
-      diff  <- (x - loc) / sd
-      const <- 0.5 * as.numeric(k) * jnp$log(2 * pi)
-      -0.5 * jnp$sum(jnp$square(diff) + 2 * jnp$log(sd), axis = -1L) - const
-    }
-    .make_dist("MultivariateNormalDiag", list(loc = loc, scale_diag = sd), sample_fn, logp_fn)
-  }
-  
-  oryx$MultivariateNormalTriL <- function(loc, scale_tril) {
-    if (!"python.builtin.object" %in% class(loc))        loc        <- jnp$array(loc)
-    if (!"python.builtin.object" %in% class(scale_tril)) scale_tril <- jnp$array(scale_tril)
-    k <- as.integer(tail(.shape_of(loc), 1L))
-    sample_fn <- function(sample_shape = NULL, seed = NULL) {
-      key <- .ensure_key(seed)
-      shp <- c(.as_shape(sample_shape), k)
-      eps <- jax$random$normal(key, shape = shp)
-      jnp$dot(eps, jnp$transpose(scale_tril)) + loc
-    }
-    logp_fn <- function(x) {
-      diff  <- x - loc
-      y     <- jax$scipy$linalg$solve_triangular(scale_tril, jnp$transpose(diff),
-                                                 lower = TRUE, check_finite = FALSE)
-      y     <- jnp$transpose(y)
-      logdet <- jnp$sum(jnp$log(jnp$diag(scale_tril)))
-      const  <- 0.5 * as.numeric(k) * jnp$log(2 * pi)
-      -0.5 * jnp$sum(jnp$square(y), axis = -1L) - logdet - const
-    }
-    .make_dist("MultivariateNormalTriL", list(loc = loc, scale_tril = scale_tril), sample_fn, logp_fn)
-  }
-  
-  oryx$MultivariateNormalFullCovariance <- function(loc, covariance_matrix) {
-    if (!"python.builtin.object" %in% class(loc))               loc <- jnp$array(loc)
-    if (!"python.builtin.object" %in% class(covariance_matrix)) covariance_matrix <- jnp$array(covariance_matrix)
-    L <- jnp$linalg$cholesky(covariance_matrix)
-    d <- oryx$MultivariateNormalTriL(loc = loc, scale_tril = L)
-    d$parameters$covariance_matrix <- covariance_matrix
-    d
-  }
-  
-  # ---------- math helpers ----------
-  oryx$math <- list()
-  oryx$math$fill_triangular <- function(vec) {
-    if (!"python.builtin.object" %in% class(vec)) vec <- jnp$array(vec)
-    n_elem <- as.integer(vec$size)
-    m <- as.integer(floor((sqrt(8 * n_elem + 1) - 1) / 2))
-    if (m * (m + 1) / 2 != n_elem) stop("fill_triangular: length does not match any triangular number")
-    L   <- jnp$zeros(list(m, m), dtype = vec$dtype)
-    idx <- jnp$tril_indices(m)
-    L$at[idx[[1]], idx[[2]]]$set(vec)
-  }
-  
-  # ---------- (optional) KL divergence ----------
-  oryx$kl_divergence <- function(p, q) {
-    if (p$name == "Normal" && q$name == "Normal") {
-      mu1 <- p$parameters$loc;  sd1 <- p$parameters$scale
-      mu2 <- q$parameters$loc;  sd2 <- q$parameters$scale
-      return(jnp$log(sd2 / sd1) + (jnp$square(sd1) + jnp$square(mu1 - mu2)) / (2 * jnp$square(sd2)) - 0.5)
-    }
-    if (grepl("MultivariateNormal", p$name) && grepl("MultivariateNormal", q$name)) {
-      if (!is.null(p$parameters$scale_diag) && !is.null(q$parameters$scale_diag)) {
-        s1 <- p$parameters$scale_diag; s2 <- q$parameters$scale_diag
-        m1 <- p$parameters$loc;       m2 <- q$parameters$loc
-        k  <- as.numeric(tail(.shape_of(m1), 1L))
-        term2 <- jnp$sum(jnp$square(s1) / jnp$square(s2))
-        term3 <- jnp$sum(jnp$square(m2 - m1) / jnp$square(s2))
-        return(0.5 * (term2 + term3 - k))
-      }
-    }
-    jnp$zeros(list())
-  }
-}
+# One authoritative distribution implementation for package and runtime callers.
+# The backend installs the single package-owned Gaussian shim in MasterImports.
 
 # Fixed-step RK4 integration on the integer save grid, as a lax.scan.
 #
@@ -617,8 +461,9 @@ ndm_runtime_fixed_step_solve <- function(field, y0, args, save_ts, substeps = 1L
     stop("Fixed-step integration needs at least one substep per unit interval.", call. = FALSE)
   }
   n_save <- as.integer(save_ts$shape[[1L]])
-  ts <- save_ts$astype(jnp$float32)
-  dt <- jnp$array(1.0 / substeps, dtype = jnp$float32)
+  ode_dtype <- jax$tree_util$tree_leaves(y0)[[1L]]$dtype
+  ts <- save_ts$astype(ode_dtype)
+  dt <- jnp$array(1.0 / substeps, dtype = ode_dtype)
   axpy <- function(a, k, y) jax$tree_util$tree_map(function(ki, yi) yi + a * ki, k, y)
   rk4_step <- function(y, t) {
     k1 <- field(t, y, args)
@@ -632,7 +477,7 @@ ndm_runtime_fixed_step_solve <- function(field, y0, args, save_ts, substeps = 1L
     jax$tree_util$tree_map(function(yi, inc) yi + inc, y, increment)
   }
   unit_interval <- function(y, t_start) {
-    sub_ts <- t_start + dt * jnp$arange(substeps, dtype = jnp$float32)
+    sub_ts <- t_start + dt * jnp$arange(substeps, dtype = ode_dtype)
     out <- jax$lax$scan(function(carry, t) list(rk4_step(carry, t), NULL), y, sub_ts)
     list(out[[1L]], out[[1L]])
   }

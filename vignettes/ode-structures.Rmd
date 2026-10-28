@@ -198,16 +198,19 @@ The important conventions are:
 - `%%%START BAYES ODE%%%` and `%%%END BAYES ODE%%%` mark the parseable block.
 - `\\item $x \\leftarrow ...$` defines constants.
 - `\\item $... \\sim \\Dist{Normal}(... )$` defines priors.
-- Init-state priors are distinguished by names like `s_{l0}` and are mapped
-  back to `s_l`, `e_l`, and so on.
+- Legacy initial-state declarations such as `s_{l0}` are obsolete. Initial
+  population priors now use the explicit logistic-normal metadata described below.
 - `\\Evolve{state}` defines one ODE equation per evolved term.
 - `\\Observe = ...` defines one or more observation expressions.
 - `\\Neural1{...}` denotes local dynamics.
 - `\\Neural2{...}` denotes global dynamics.
 
-In the current runtime code, these conventions are parsed mostly through string
-processing. When you change naming or formatting, assume the parser is strict
-unless tests prove otherwise.
+Arithmetic expressions are parsed as syntax trees after balanced TeX normalization.
+Supported operations are unary plus/minus, addition, subtraction, multiplication,
+division, powers, `exp`, `sqrt`, `log`, `SoftPlus`, `Sigmoid`, and `min`/`max`.
+For example, `-x^2` means `-(x^2)`, and `1e-3` is one numeric literal. Unknown
+symbols, assignments, multiple expressions, and other function calls are rejected.
+Neural directives are parsed separately.
 
 ## Safe modification workflow
 
@@ -284,3 +287,92 @@ Before trusting a modified or new structure:
 Those tests currently provide the most concrete examples of supported
 modification patterns, especially for custom init-state layouts and the TB
 family coverage.
+
+
+## Initial population priors and fixed states
+
+For `K` population states, declare a Gaussian on the `K - 1` log ratios against
+one reference state. The reference logit is zero, and multiplying the softmax by
+`N` guarantees nonnegative counts summing to the population. For example:
+
+```{r}
+prior <- list(
+  type = "logistic_normal",
+  reference_state = "s_l",
+  logratio_mean = c(e_l = -7, i_l = -6, r_l = -8),
+  logratio_cov = matrix(c(2,1,1, 1,2,1, 1,1,2), 3,
+    dimnames = list(c("e_l", "i_l", "r_l"), c("e_l", "i_l", "r_l")))
+)
+composition_spec <- ndm_model_spec(
+  preset = "seirs_dynamic_beta", model_type = "NeuralODE",
+  initial_state_prior = prior
+)
+```
+
+Means and covariance name all non-reference states; covariance must be symmetric
+positive definite. No jitter is added to repair invalid prior covariance. The
+local variational KL uses the full joint Gaussian, including correlations with
+other local parameters. `prior_sd_multiplier` multiplies covariance by its square.
+The transformed Gaussian center is not the arithmetic mean of initial counts.
+The deterministic NeuralODE mode uses that center. A single population state
+needs no latent coordinates and starts at `N`.
+
+For custom structured models, `init_state_terms` chooses which ordinary states
+belong to this population simplex. Initialize every other ordinary state with
+`initial_state_values`, a named numeric vector. Neural states have their own
+initialization. Do not include an auxiliary cumulative counter in the population
+simplex unless it actually represents a disjoint population compartment.
+
+TB incidence variants use `family_args$initial_incidence_center` (default
+`0.0008`) to set the infectious composition center using the variant's exit rate.
+An explicit `initial_state_prior` replaces that default; supplying both an
+explicit incidence center and an explicit prior is an error. The old
+`balanced_initial_incidence_mean`, `balanced_i0_prior_sd`,
+`seir_initial_incidence_mean`, `seir_i0_prior_sd`, and compartment-level
+`state_init_priors` options are rejected. Offset/temperature configuration options
+are also obsolete. Exported TeX includes the joint prior and machine-readable
+metadata, so retain the metadata when editing it.
+
+## Numerical accuracy and result provenance
+
+The default local-model training solver probes RK4 at two resolutions before
+computing gradients. It compares all saved states with the configured absolute
+and relative tolerances, refines up to `neuralode_train_max_substeps` (128), and
+falls back to adaptive Diffrax for the entire batch. Set
+`neuralode_train_fallback = "error"` to stop before an update instead. These
+checks add forward evaluations and may compile several resolutions. Step doubling
+is an empirical discrepancy check, not a proof of exact state or gradient error.
+Dynamic-global models retain adaptive training by default. Integration state and
+derivatives retain the configured FP32 or FP64 precision even when neural compute
+uses a lower precision.
+
+Version 2 model artifacts include corrected initial-state semantics, numerical
+settings, and parameter counts. Version 1 artifacts and unversioned legacy
+checkpoints require retraining; loading them does not modify their files.
+
+`nParamsTotal` counts stored array elements; `nParamsTrainable` counts the elements
+selected by the role mask used by differentiation and the optimizer.
+`nParamsNonTrainable` is the difference,
+and `nParamsModel` remains a total-count compatibility alias. Trainable zero
+attention queries remain included. Frozen positional arrays, disabled embeddings,
+inactive heads and unused branches are excluded. Parameter-based reporting uses
+`nParamsTrainable`; historical total counts are not relabeled as trainable.
+
+`ndm_summarize_results()` validates saved results and produces result, matched,
+final-pair, unmatched, and cohort tables. Pairing uses experiment, replicate,
+pair identity, horizons and checkpoint; model RNG seeds may differ. Final pairs
+must both reach the same declared budget. Raw real predictions are aggregated
+within their run before pairing, with duplicate examples rejected. Reports use
+horizons `max(1, round(0.75 * H)):H`, where `H` is the training horizon: 9--12 for
+12, 2--3 for 3, and 1 for 1. All-missing summaries are `NA` with count zero.
+Historical files without training-horizon metadata require the explicit
+`training_horizon` argument. Missing structural columns are errors. Different
+training/evaluation horizons receive separate cohort summaries and PDF plots.
+
+```{r, eval=FALSE}
+report <- ndm_summarize_results(
+  lapply(result_files, data.table::fread),
+  output_dir = "Figures/corrected-report"
+)
+report$cohorts
+```

@@ -1,3 +1,9 @@
+initial_composition_center <- function(spec) {
+  prior <- spec$execution_spec$initial_state_prior
+  z <- c(stats::setNames(0, prior$reference_state), prior$logratio_mean)
+  exp(z - max(z)) / sum(exp(z - max(z)))
+}
+
 test_that("built-in model spec presets are available", {
   presets <- ndm_model_spec_presets()
 
@@ -343,14 +349,14 @@ test_that("structured TB balanced incidence variant observes original incidence 
       )
     }
     expect_equal(
-      balanced_spec$execution_spec$state_init_priors[["i_l"]]$prior_mean,
+      unname(initial_composition_center(balanced_spec)[["i_l"]]),
       0.0008 / 1.02,
       tolerance = 1e-12,
       info = preset
     )
     expect_equal(
-      balanced_spec$execution_spec$state_init_priors[["i_l"]]$prior_sd,
-      0.001,
+      balanced_spec$execution_spec$initial_state_prior$logratio_cov["i_l", "i_l"],
+      2,
       tolerance = 1e-12,
       info = preset
     )
@@ -447,14 +453,14 @@ test_that("structured TB seir variant produces sustained SEIR dynamics", {
     expect_equal(spec$execution_spec$constants[["N"]], 1, info = preset)
     # i_l init prior seeded above the disease-free equilibrium: initial_incidence/(gamma+mu).
     expect_equal(
-      spec$execution_spec$state_init_priors[["i_l"]]$prior_mean,
+      unname(initial_composition_center(spec)[["i_l"]]),
       0.0008 / 1.02,
       tolerance = 1e-12,
       info = preset
     )
     expect_equal(
-      spec$execution_spec$state_init_priors[["i_l"]]$prior_sd,
-      0.001,
+      spec$execution_spec$initial_state_prior$logratio_cov["i_l", "i_l"],
+      2,
       tolerance = 1e-12,
       info = preset
     )

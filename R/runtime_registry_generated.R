@@ -6,7 +6,7 @@
   invisible(env)
 }
 
-.ndm_stage_expr_SetupEnv_SuperLModel_helperFxns <- expression(ai <- as.integer, mean2 <- function(x) {
+.ndm_stage_expr_SetupEnv_SuperLModel_helperFxns <- expression(ai <- as.integer, Identity <- function(x) x, mean2 <- function(x) {
     mean(x, na.rm = T)
 }, summary2 <- function(x) {
     summary(x, na.rm = T)
@@ -394,183 +394,6 @@
             return(out)
         }
         cut(x, breaks = n_bins, include.lowest = TRUE, labels = FALSE)
-    }, {
-        oryx <- list()
-        .ensure_key <- function(seed) {
-            if (is.null(seed))
-                stop("seed must be provided")
-            try({
-                shp <- seed$shape
-                if (!is.null(shp) && length(shp) == 1 && as.integer(shp[[1]]) ==
-                  2)
-                  return(seed)
-            }, silent = TRUE)
-            if (!is.null(seed$shape) && length(seed$shape) ==
-                0) {
-                return(jax$random$PRNGKey(as.integer(np$asarray(seed))))
-            }
-            if (is.numeric(seed))
-                return(jax$random$PRNGKey(as.integer(seed)))
-            jax$random$PRNGKey(as.integer(reticulate::py_to_r(seed)))
-        }
-        .shape_of <- function(x) {
-            tryCatch({
-                as.integer(unlist(x$shape))
-            }, error = function(e) integer(0L))
-        }
-        .as_shape <- function(s) {
-            if (is.null(s))
-                return(integer(0L))
-            if (is.list(s))
-                return(as.integer(unlist(s)))
-            if ("python.builtin.object" %in% class(s)) {
-                shp <- tryCatch(as.integer(unlist(s$shape)),
-                  error = function(e) NULL)
-                if (!is.null(shp))
-                  return(shp)
-            }
-            as.integer(s)
-        }
-        .make_dist <- function(name, params, sample_fn, log_prob_fn = NULL) {
-            list(name = name, parameters = params, sample = sample_fn,
-                log_prob = if (is.null(log_prob_fn)) function(...) stop("log_prob not implemented for ",
-                  name) else log_prob_fn)
-        }
-        oryx$Normal <- function(loc, scale) {
-            if (!"python.builtin.object" %in% class(loc))
-                loc <- jnp$array(loc)
-            if (!"python.builtin.object" %in% class(scale))
-                scale <- jnp$array(scale)
-            sample_fn <- function(sample_shape = NULL, seed = NULL) {
-                key <- .ensure_key(seed)
-                shp <- c(.as_shape(sample_shape), .shape_of(loc))
-                eps <- jax$random$normal(key, shape = shp)
-                eps * scale + loc
-            }
-            logp_fn <- function(x) {
-                -0.5 * jnp$square((x - loc)/scale) - jnp$log(scale) -
-                  0.5 * jnp$log(2 * pi)
-            }
-            .make_dist("Normal", list(loc = loc, scale = scale),
-                sample_fn, logp_fn)
-        }
-        oryx$Uniform <- function(low = 0, high = 1) {
-            if (!"python.builtin.object" %in% class(low))
-                low <- jnp$array(low)
-            if (!"python.builtin.object" %in% class(high))
-                high <- jnp$array(high)
-            sample_fn <- function(sample_shape = NULL, seed = NULL) {
-                key <- .ensure_key(seed)
-                jax$random$uniform(key, shape = .as_shape(sample_shape),
-                  minval = low, maxval = high)
-            }
-            logp_fn <- function(x) {
-                jnp$where((x >= low) & (x <= high), -jnp$log(high -
-                  low), -jnp$inf)
-            }
-            .make_dist("Uniform", list(low = low, high = high),
-                sample_fn, logp_fn)
-        }
-        oryx$MultivariateNormalDiag <- function(loc, scale_diag = NULL,
-            scale = NULL) {
-            sd <- if (!is.null(scale_diag))
-                scale_diag
-            else scale
-            if (is.null(sd))
-                stop("Provide 'scale_diag' (preferred) or 'scale'.")
-            if (!"python.builtin.object" %in% class(loc))
-                loc <- jnp$array(loc)
-            if (!"python.builtin.object" %in% class(sd))
-                sd <- jnp$array(sd)
-            k <- as.integer(tail(.shape_of(loc), 1L))
-            sample_fn <- function(sample_shape = NULL, seed = NULL) {
-                key <- .ensure_key(seed)
-                shp <- c(.as_shape(sample_shape), .shape_of(loc))
-                eps <- jax$random$normal(key, shape = shp)
-                eps * sd + loc
-            }
-            logp_fn <- function(x) {
-                diff <- (x - loc)/sd
-                const <- 0.5 * as.numeric(k) * jnp$log(2 * pi)
-                -0.5 * jnp$sum(jnp$square(diff) + 2 * jnp$log(sd),
-                  axis = -1L) - const
-            }
-            .make_dist("MultivariateNormalDiag", list(loc = loc,
-                scale_diag = sd), sample_fn, logp_fn)
-        }
-        oryx$MultivariateNormalTriL <- function(loc, scale_tril) {
-            if (!"python.builtin.object" %in% class(loc))
-                loc <- jnp$array(loc)
-            if (!"python.builtin.object" %in% class(scale_tril))
-                scale_tril <- jnp$array(scale_tril)
-            k <- as.integer(tail(.shape_of(loc), 1L))
-            sample_fn <- function(sample_shape = NULL, seed = NULL) {
-                key <- .ensure_key(seed)
-                shp <- c(.as_shape(sample_shape), k)
-                eps <- jax$random$normal(key, shape = shp)
-                jnp$dot(eps, jnp$transpose(scale_tril)) + loc
-            }
-            logp_fn <- function(x) {
-                diff <- x - loc
-                y <- jax$scipy$linalg$solve_triangular(scale_tril,
-                  jnp$transpose(diff), lower = TRUE, check_finite = FALSE)
-                y <- jnp$transpose(y)
-                logdet <- jnp$sum(jnp$log(jnp$diag(scale_tril)))
-                const <- 0.5 * as.numeric(k) * jnp$log(2 * pi)
-                -0.5 * jnp$sum(jnp$square(y), axis = -1L) - logdet -
-                  const
-            }
-            .make_dist("MultivariateNormalTriL", list(loc = loc,
-                scale_tril = scale_tril), sample_fn, logp_fn)
-        }
-        oryx$MultivariateNormalFullCovariance <- function(loc,
-            covariance_matrix) {
-            if (!"python.builtin.object" %in% class(loc))
-                loc <- jnp$array(loc)
-            if (!"python.builtin.object" %in% class(covariance_matrix))
-                covariance_matrix <- jnp$array(covariance_matrix)
-            L <- jnp$linalg$cholesky(covariance_matrix)
-            d <- oryx$MultivariateNormalTriL(loc = loc, scale_tril = L)
-            d$parameters$covariance_matrix <- covariance_matrix
-            d
-        }
-        oryx$math <- list()
-        oryx$math$fill_triangular <- function(vec) {
-            if (!"python.builtin.object" %in% class(vec))
-                vec <- jnp$array(vec)
-            n_elem <- as.integer(vec$size)
-            m <- as.integer(floor((sqrt(8 * n_elem + 1) - 1)/2))
-            if (m * (m + 1)/2 != n_elem)
-                stop("fill_triangular: length does not match any triangular number")
-            L <- jnp$zeros(list(m, m), dtype = vec$dtype)
-            idx <- jnp$tril_indices(m)
-            L$at[idx[[1]], idx[[2]]]$set(vec)
-        }
-        oryx$kl_divergence <- function(p, q) {
-            if (p$name == "Normal" && q$name == "Normal") {
-                mu1 <- p$parameters$loc
-                sd1 <- p$parameters$scale
-                mu2 <- q$parameters$loc
-                sd2 <- q$parameters$scale
-                return(jnp$log(sd2/sd1) + (jnp$square(sd1) +
-                  jnp$square(mu1 - mu2))/(2 * jnp$square(sd2)) -
-                  0.5)
-            }
-            if (grepl("MultivariateNormal", p$name) && grepl("MultivariateNormal",
-                q$name)) {
-                if (!is.null(p$parameters$scale_diag) && !is.null(q$parameters$scale_diag)) {
-                  s1 <- p$parameters$scale_diag
-                  s2 <- q$parameters$scale_diag
-                  m1 <- p$parameters$loc
-                  m2 <- q$parameters$loc
-                  k <- as.numeric(tail(.shape_of(m1), 1L))
-                  term2 <- jnp$sum(jnp$square(s1)/jnp$square(s2))
-                  term3 <- jnp$sum(jnp$square(m2 - m1)/jnp$square(s2))
-                  return(0.5 * (term2 + term3 - k))
-                }
-            }
-            jnp$zeros(list())
-        }
     }, ndm_runtime_fixed_step_solve <- function(field, y0, args,
         save_ts, substeps = 1L) {
         substeps <- as.integer(substeps)
@@ -580,8 +403,9 @@
                 call. = FALSE)
         }
         n_save <- as.integer(save_ts$shape[[1L]])
-        ts <- save_ts$astype(jnp$float32)
-        dt <- jnp$array(1/substeps, dtype = jnp$float32)
+        ode_dtype <- jax$tree_util$tree_leaves(y0)[[1L]]$dtype
+        ts <- save_ts$astype(ode_dtype)
+        dt <- jnp$array(1/substeps, dtype = ode_dtype)
         axpy <- function(a, k, y) jax$tree_util$tree_map(function(ki,
             yi) yi + a * ki, k, y)
         rk4_step <- function(y, t) {
@@ -596,7 +420,7 @@
                 y, increment)
         }
         unit_interval <- function(y, t_start) {
-            sub_ts <- t_start + dt * jnp$arange(substeps, dtype = jnp$float32)
+            sub_ts <- t_start + dt * jnp$arange(substeps, dtype = ode_dtype)
             out <- jax$lax$scan(function(carry, t) list(rk4_step(carry,
                 t), NULL), y, sub_ts)
             list(out[[1L]], out[[1L]])
@@ -1662,13 +1486,15 @@
 })
 
 .ndm_stage_expr_SetupData_SuperLModel_DataGenerator_Real <- expression(.ndm_real_normalize_column <- function(col_vals, in_sample_indices,
-    time_id, initial_transform, initial_norm_type) {
+    time_id, initial_transform, initial_norm_type, return_fit = FALSE) {
     if (length(in_sample_indices) == 0L) {
         stop("Real-data normalization requires at least one training observation.")
     }
+    lambda <- NULL
     if (identical(initial_transform, "yeoJohnson")) {
         transform_fit <- bestNormalize::yeojohnson(col_vals[in_sample_indices],
             standardize = FALSE)
+        lambda <- transform_fit$lambda
         col_vals <- as.numeric(stats::predict(transform_fit,
             newdata = col_vals))
     }
@@ -1696,87 +1522,69 @@
     if (!is.finite(descaler) || descaler <= 0) {
         stop("Real-data normalization scale must be finite and positive.")
     }
-    (col_vals - demeaner)/(0.001 + descaler)
+    values <- (col_vals - demeaner)/(0.001 + descaler)
+    if (!return_fit)
+        return(values)
+    list(values = values, fit = list(transform = initial_transform,
+        lambda = lambda, normalization = initial_norm_type, center = demeaner,
+        scale = 0.001 + descaler))
+}, .ndm_real_training_partition <- function(data, split_type,
+    times_in, times_out, base_id) {
+    locs <- unique(data$location_id)
+    train_locs <- locs
+    if (split_type %in% c("OutOfPlace", "OutOfPlacetime")) {
+        had_seed <- exists(".Random.seed", envir = .GlobalEnv,
+            inherits = FALSE)
+        if (had_seed)
+            previous_seed <- get(".Random.seed", envir = .GlobalEnv)
+        on.exit({
+            if (had_seed) assign(".Random.seed", previous_seed,
+                envir = .GlobalEnv) else if (exists(".Random.seed",
+                envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed",
+                envir = .GlobalEnv)
+        }, add = TRUE)
+        set.seed(base_id)
+        train_locs <- sample(locs, floor(length(locs) * 0.8),
+            replace = FALSE)
+    }
+    if (identical(split_type, "OutOfPlace"))
+        times_in <- times_out <- unique(data$time_id)
+    train <- switch(split_type, OutOfTime = data$time_id <= max(times_in),
+        OutOfPlace = data$location_id %in% train_locs, OutOfPlacetime = data$location_id %in%
+            train_locs & data$time_id <= max(times_in), stop("Unknown OSSType: ",
+            split_type))
+    test <- switch(split_type, OutOfTime = data$time_id >= min(times_out),
+        OutOfPlace = !data$location_id %in% train_locs, OutOfPlacetime = !data$location_id %in%
+            train_locs & data$time_id >= min(times_out))
+    if (any(train & test) || !any(train) || !any(test))
+        stop("Training and evaluation partitions must be nonempty and disjoint.")
+    list(train = which(train), test = which(test), train_locations = train_locs,
+        times_in = times_in, times_out = times_out)
 }, {
     print2("Setup data infrastructure in DataGenerator_Real")
     {
         context_variables <- NULL
-        input_df_red_tmp <- truth_df_red
-        input_df_red_tmp[, dataInputs_colnames] <- apply(as.matrix(input_df_red_tmp[,
-            dataInputs_colnames]), 2, f2n)
-        dataInputs_colnames_TO_NORMALIZE <- dataInputs_colnames
-        in_sample_red_tmp_indices <- which(input_df_red_tmp$time_id <=
-            max(times_in))
-        input_df_red_tmp[, dataInputs_colnames_TO_NORMALIZE] <- sapply(1:length(dataInputs_colnames_TO_NORMALIZE),
-            function(col_to_norm) {
-                col_vals <- f2n(unlist(truth_df_red[, dataInputs_colnames_TO_NORMALIZE[col_to_norm]]))
-                if (initialTransform == "yeoJohnson") {
-                  print2("---yeojohnson for normality---")
-                }
-                .ndm_real_normalize_column(col_vals = col_vals,
-                  in_sample_indices = in_sample_red_tmp_indices,
-                  time_id = truth_df_red$time_id, initial_transform = initialTransform,
-                  initial_norm_type = initialNormType)
-            })
-        input_df_red_full <- input_df_red_tmp
-        print2(sprintf("Splitting data according to OSSType='%s'",
-            OSSType))
-        if (OSSType == "OutOfTime") {
-            input_df_red_out <- input_df_red_full[input_df_red_full$time_id >=
-                min(times_out), ]
-            input_df_red_in <- input_df_red_full[input_df_red_full$time_id <=
-                max(times_in), ]
-            if (any(input_df_red_out$time_id <= max(times_in)))
-                stop("In-out mismatch-1")
-            if (!all(input_df_red_in$time_id <= max(times_in)))
-                stop("In-out mismatch-2")
-            if (!all(input_df_red_out$time_id >= min(times_out)))
-                stop("In-out mismatch-3")
-            if (any(input_df_red_in$time_id >= min(times_out)))
-                stop("In-out mismatch-4")
-            print2("Using default out-of-time train/test split.")
+        partition <- .ndm_real_training_partition(truth_df_red,
+            OSSType, times_in, times_out, BaseID)
+        times_in <- partition$times_in
+        times_out <- partition$times_out
+        input_df_red_full <- as.data.frame(truth_df_red)
+        RealNormalization <- list(schema_version = 1L, split_type = OSSType,
+            base_id = BaseID, train_locations = partition$train_locations,
+            train_times = sort(unique(truth_df_red$time_id[partition$train])),
+            training_rows = length(partition$train), parameters = list())
+        for (column in dataInputs_colnames) {
+            normalized <- .ndm_real_normalize_column(col_vals = f2n(truth_df_red[[column]]),
+                in_sample_indices = partition$train, time_id = truth_df_red$time_id,
+                initial_transform = initialTransform, initial_norm_type = initialNormType,
+                return_fit = TRUE)
+            input_df_red_full[[column]] <- normalized$values
+            RealNormalization$parameters[[column]] <- normalized$fit
         }
-        if (OSSType == "OutOfPlace") {
-            locs <- unique(input_df_red_full$location_id)
-            frac_train_locs <- 0.8
-            n_train_locs <- floor(length(locs) * frac_train_locs)
-            pre_samp <- sample(1:1000, 1)
-            set.seed(BaseID)
-            train_locs <- sample(locs, n_train_locs, replace = FALSE)
-            set.seed(pre_samp)
-            test_locs <- setdiff(locs, train_locs)
-            times_in <- unique(input_df_red_full$time_id)
-            times_out <- times_in
-            input_df_red_full <- input_df_red_full[input_df_red_full$time_id <=
-                max(times_in), ]
-            input_df_red_in <- input_df_red_full[input_df_red_full$location_id %in%
-                train_locs, ]
-            input_df_red_out <- input_df_red_full[input_df_red_full$location_id %in%
-                test_locs, ]
-            print2("Using out-of-place train/test split (same times, different places).")
-        }
-        if (OSSType == "OutOfPlacetime") {
-            locs <- unique(input_df_red_full$location_id)
-            frac_train_locs <- 0.8
-            n_train_locs <- floor(length(locs) * frac_train_locs)
-            pre_samp <- sample(1:1000, 1)
-            set.seed(BaseID)
-            train_locs <- sample(locs, n_train_locs, replace = FALSE)
-            set.seed(pre_samp)
-            test_locs <- setdiff(locs, train_locs)
-            in_mask <- (input_df_red_full$location_id %in% train_locs) &
-                (input_df_red_full$time_id <= max(times_in))
-            out_mask <- (input_df_red_full$location_id %in% test_locs) &
-                (input_df_red_full$time_id >= min(times_out))
-            input_df_red_in <- input_df_red_full[in_mask, ]
-            input_df_red_out <- input_df_red_full[out_mask, ]
-            print2("Using out-of-place-time train/test split (different places + future times).")
-        }
-        if (!OSSType %in% c("OutOfTime", "OutOfPlace", "OutOfPlacetime")) {
-            stop(sprintf("Unknown OSSType='%s'. Must be one of: {OutOfTime, OutOfPlace, OutOfPlacetime}",
-                OSSType))
-        }
-        rm(input_df_red_tmp)
+        input_df_red_in <- input_df_red_full[partition$train,
+            , drop = FALSE]
+        input_df_red_out <- input_df_red_full[partition$test,
+            , drop = FALSE]
         context_df_red <- truth_df_red[, c("location_id", "time_id",
             "targetTime_id", context_variables)]
         truth_df_red <- truth_df_red[, c("location_id", "location_id_numeric",
@@ -2398,8 +2206,14 @@
     LatentDim <- as.integer(ModelDims/4)
     {
         ODE_NORM_TYPE <- "pre-activation1"
-        nTimeStepsInHistory <- batch_l$XPred$shape[[2]][[1]]
-        TSInputSize <- batch_l$XPred$shape[[3]][[1]]
+        if (exists("batch_l", inherits = FALSE)) {
+            nTimeStepsInHistory <- batch_l$XPred$shape[[2]][[1]]
+            TSInputSize <- batch_l$XPred$shape[[3]][[1]]
+        }
+        else if (!exists("nTimeStepsInHistory", inherits = FALSE) ||
+            !exists("TSInputSize", inherits = FALSE)) {
+            stop("Model construction requires a preview batch or saved input dimensions.")
+        }
         batch_axis_name <- "batch"
         InitTransform_CLS <- InitTransform_EMBED <- function(x) {
             sqrt(2/x)
@@ -2873,11 +2687,15 @@
             FixedLocalTerms = FixedLocalTerms, GlobalTerms = GlobalTerms,
             GlobalNeural = GlobalNeural, LocalNeural = LocalNeural)
         print2("Obtaining approximate parameter count...")
-        nParamsModel <- sum(unlist(lapply(jax$tree$leaves(eq$partition(ModelList,
-            eq$is_array)[[1]]), function(zer) {
-            zer$size
-        })))
-        rm(list = c(names(ListIndices), "TransformerList"))
+        TrainabilityMask <- ndm_trainability_mask(ModelList,
+            environment())
+        ParameterCounts <- ndm_parameter_counts(ModelList, TrainabilityMask,
+            eq, jax)
+        nParamsTotal <- nParamsModel <- ParameterCounts$total
+        nParamsTrainable <- ParameterCounts$trainable
+        nParamsNonTrainable <- ParameterCounts$nontrainable
+        rm(list = intersect(c(names(ListIndices), "TransformerList"),
+            ls()))
     }
     print2("Define functional components of model...")
     {
@@ -3023,13 +2841,13 @@
             globalze, dirichletparams, context_, tze, seed) {
             lDepParamsVec_ <- NeuralDefinitions_jax_STOCHASTIC["DefClean",
                 ][as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",
-                ])]
+                ]), drop = FALSE]
             lDepParamsVec_ <- lDepParamsVec_[!lDepParamsVec_ %in%
                 FixedLocalParams_defns]
             lFixedDepParamsVec_ <- FixedLocalParams_defns
             gDepParamsVec_ <- NeuralDefinitions_jax_STOCHASTIC["DefClean",
                 ][!as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",
-                ])]
+                ]), drop = FALSE]
             dgDepParamsVec_ <- gDepParamsVec_[gDepParamsVec_ %in%
                 uq_globalneural_vec]
             gDepParamsVec_ <- gDepParamsVec_[!gDepParamsVec_ %in%
@@ -3216,101 +3034,27 @@
             args_samp_vec <- c(args_samp_vec, args_context_vec)
             names(args_samp_vec) <- paste(names(args_samp_vec),
                 "_samp", sep = "")
-            uq_initcond_vec <- ndm_runtime_get0("InitStateTerms",
-                ifnotfound = uq_y_vec[!uq_y_vec %in% uq_allneural_vec])
-            uq_initcond_vec <- as.character(uq_initcond_vec)
-            init_state_supported_terms <- unique(uq_initcond_vec)
-            if (length(init_state_supported_terms) == 0L) {
-                stop("NeuralODE init-state softmax requires at least one declared init-state term.",
-                  call. = FALSE)
-            }
-            if (length(init_state_supported_terms) != length(uq_initcond_vec)) {
-                stop("NeuralODE init-state softmax requires unique `InitStateTerms`.",
-                  call. = FALSE)
-            }
-            init_logit_param_names <- ndm_runtime_get0("InitStateLogitParamNames",
-                ifnotfound = paste0("InitStateLogit_", uq_initcond_vec))
-            init_logit_param_names <- as.character(init_logit_param_names)
-            init_scale_param_name <- as.character(ndm_runtime_get0("InitStateScaleParamName",
-                ifnotfound = "InitStateLogitScale"))
-            init_param_indices <- match(init_logit_param_names,
+            init_param_indices <- match(InitStateLogitParamNames,
                 lDepParamsVec_)
-            if (anyNA(init_param_indices)) {
-                stop(sprintf("Missing NeuralODE init-state logit parameters: %s",
-                  paste(init_logit_param_names[is.na(init_param_indices)],
-                    collapse = ", ")), call. = FALSE)
-            }
-            init_scale_index <- match(init_scale_param_name,
-                lDepParamsVec_)
-            if (is.na(init_scale_index)) {
-                stop(sprintf("Missing NeuralODE init-state scale parameter: %s",
-                  init_scale_param_name), call. = FALSE)
-            }
-            {
-                init_m <- jnp$take(localze, jnp$array(init_param_indices -
-                  1L))
-                init_logit_offset_default <- c(10, rep(-1, max(0L,
-                  length(uq_initcond_vec) - 1L)))
-                if (length(init_logit_offset_default) > 0L) {
-                  names(init_logit_offset_default) <- uq_initcond_vec
-                }
-                init_logit_offset_raw <- ndm_runtime_get0("InitStateLogitOffset",
-                  ifnotfound = init_logit_offset_default)
-                init_logit_offset_names <- names(init_logit_offset_raw)
-                init_logit_offset <- as.numeric(init_logit_offset_raw)
-                if (length(init_logit_offset) == 1L) {
-                  init_logit_offset <- rep(init_logit_offset,
-                    length(uq_initcond_vec))
-                }
-                else if (!is.null(init_logit_offset_names) &&
-                  any(nzchar(init_logit_offset_names))) {
-                  names(init_logit_offset) <- init_logit_offset_names
-                  if (!all(uq_initcond_vec %in% init_logit_offset_names)) {
-                    stop(sprintf("InitStateLogitOffset names must cover {%s}.",
-                      paste(uq_initcond_vec, collapse = ", ")),
-                      call. = FALSE)
-                  }
-                  init_logit_offset <- init_logit_offset[uq_initcond_vec]
-                }
-                else {
-                  if (length(init_logit_offset) != length(init_state_supported_terms)) {
-                    stop(sprintf("InitStateLogitOffset must have length 1 or %s, or be named by init-state terms.",
-                      length(init_state_supported_terms)), call. = FALSE)
-                  }
-                  names(init_logit_offset) <- init_state_supported_terms
-                  init_logit_offset <- init_logit_offset[uq_initcond_vec]
-                }
-                init_logit_offset <- jnp$array(as.numeric(init_logit_offset))$astype(init_m$dtype)
-                init_logit_scale_max <- suppressWarnings(as.numeric(ndm_runtime_get0("InitStateLogitScaleMax",
-                  ifnotfound = Inf)))
-                if (length(init_logit_scale_max) == 0L) {
-                  init_logit_scale_max <- Inf
-                }
-                if (length(init_logit_scale_max) != 1L) {
-                  stop("InitStateLogitScaleMax must be scalar.")
-                }
-                init_logit_scale_max <- init_logit_scale_max[[1L]]
-                init_scale <- SoftPlus(InvSoftPlus(1) + jnp$take(localze,
-                  jnp$array(init_scale_index - 1L)) * 1)
-                if (is.finite(init_logit_scale_max)) {
-                  init_scale <- jnp$minimum(init_scale, jnp$array(init_logit_scale_max)$astype(init_scale$dtype))
-                }
-                init_m <- ((init_m + init_logit_offset)) * init_scale
-                init_samp <- jnp$exp(jax$nn$log_softmax(init_m) +
-                  jnp$log(CONST_N))
-            }
-            if ("N_samp" %in% names(args_samp_vec)) {
-                init_samp <- jnp$multiply(init_samp, args_samp_vec$N_samp)
-            }
-            for (j_ in 1L:length(uq_initcond_vec)) {
-                eval(parse(text = sprintf("%s_samp = jnp$take(init_samp, j_ - 1L)",
-                  uq_initcond_vec[j_])))
-            }
-            tmp <- paste0(uq_initcond_vec, "_samp")
-            tmp <- paste("c(args_samp_vec,", paste(paste("'",
-                tmp, "'=", tmp, sep = ""), collapse = ","), ")",
-                collapse = "")
-            return(eval(parse(text = tmp)))
+            if (anyNA(init_param_indices))
+                stop("Missing initial-state log-ratio coordinates.")
+            z <- jnp$take(localze, jnp$array(as.integer(init_param_indices -
+                1L)))
+            population <- if ("N_samp" %in% names(args_samp_vec))
+                args_samp_vec$N_samp
+            else CONST_N
+            init_samp <- ndm_initial_state_draw(z, InitialStatePrior,
+                InitStateTerms, population, jax, jnp)
+            initial_values <- lapply(seq_along(InitStateTerms),
+                function(i) jnp$take(init_samp, as.integer(i -
+                  1L)))
+            names(initial_values) <- paste0(InitStateTerms, "_samp")
+            fixed_values <- lapply(InitialStateValues, function(value) jnp$array(value,
+                dtype = population$dtype))
+            if (length(fixed_values))
+                names(fixed_values) <- paste0(names(InitialStateValues),
+                  "_samp")
+            c(args_samp_vec, initial_values, fixed_values)
         })
         PolicyList <- list(diffrax$LinearInterpolation(jnp$array(as.numeric(0:(nTimesTotal -
             1L))), jnp$array(rep(0, nTimesTotal))), diffrax$LinearInterpolation(jnp$array(as.numeric(0:NTimeSteps_SIM)),
@@ -3378,8 +3122,17 @@
         }
         GetPred <- function(ModelList, x, state, inference, PriorList,
             PolicyList, GetPredSaveAtInfo, seed) {
+            numerical_policy <- if (length(GetPredSaveAtInfo) >=
+                3L)
+                GetPredSaveAtInfo[[3L]]
+            else list(integrator = "diffrax", substeps = 1L)
             use_fixed_step_training_solve <- !isTRUE(inference) &&
-                identical(NeuralODETrainIntegrator, "fixed_rk4")
+                identical(numerical_policy$integrator, "fixed_rk4")
+            global_saved_states <- NULL
+            solve_controller <- if (!isTRUE(inference) && !is.null(numerical_policy$rtol))
+                diffrax$PIDController(rtol = numerical_policy$rtol,
+                  atol = numerical_policy$atol)
+            else stepsize_controller_optim
             context <- x[[2]][[1]]
             loc_indices <- jnp$squeeze(x[[3]][[1]]$astype(jnp$int32))
             time_indices <- jnp$squeeze(x[[4]][[1]]$astype(jnp$int32))
@@ -3551,8 +3304,8 @@
                     0L), 1L)
                   IndicesLocalMuParams <- ai(0:(stop_ <- (nODEParams -
                     1L)))
-                  IndicesLocalLParams <- ai((stop_ + 1):(stop_ <- (stop_ +
-                    1L + nParams_LMat_base - 1L)))
+                  IndicesLocalLParams <- ai(stop_ + seq_len(nParams_LMat_base))
+                  stop_ <- stop_ + nParams_LMat_base
                   localx_LMat_params_ODE <- jnp$take(x, jnp$array(IndicesLocalLParams))
                   if (nParams_DiagMat_neural > 0) {
                     IndicesLocalDiagParams <- ai((stop_ + 1):(stop_ <- (stop_ +
@@ -3571,10 +3324,10 @@
                   localx_mu_params_ODE <- jnp$take(x, jnp$array(IndicesLocalMuParams))
                   NeuralDefinitions_jax_STOCHASTIC_LDep <- NeuralDefinitions_jax_STOCHASTIC[,
                     as.logical(NeuralDefinitions_jax_STOCHASTIC["LDep",
-                      ])]
+                      ]), drop = FALSE]
                   NeuralDefinitions_jax_STOCHASTIC_LDep <- NeuralDefinitions_jax_STOCHASTIC_LDep[,
                     !NeuralDefinitions_jax_STOCHASTIC_LDep["DefClean",
-                      ] %in% FixedLocalParams_defns]
+                      ] %in% FixedLocalParams_defns, drop = FALSE]
                   ref_i_base <- which(!as.logical(NeuralDefinitions_jax_STOCHASTIC_LDep["TDep",
                     ]) & !NeuralDefinitions_jax_STOCHASTIC_LDep["DefClean",
                     ] %in% FixedLocalParams_defns) - 1L
@@ -3776,10 +3529,12 @@
                       gsub(coreNeuralText, pattern = "LocalNeural",
                         replace = "GlobalNeural")))))
                     global_y0 <- ndm_runtime_replicate_tree(list(Neural2 = ModelList$GlobalNeural$NeuralInitialConditions))
+                    global_y0 <- jax$tree_util$tree_map(function(a) a$astype(jaxFloatType),
+                      global_y0)
                     if (use_fixed_step_training_solve) {
                       dynamicglobal_x_params_samp <- ndm_runtime_fixed_step_solve(field = f_VI_ODE_TERM_globalOnly,
                         y0 = global_y0, args = global_args, save_ts = VI_SaveAt_ODE_GlobalNeural$subs$ts,
-                        substeps = NeuralODETrainSubsteps)
+                        substeps = numerical_policy$substeps)
                       global_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(dynamicglobal_x_params_samp)
                     }
                     else {
@@ -3787,10 +3542,11 @@
                         solver = VI_diff_eq_solver_optim, saveat = VI_SaveAt_ODE_GlobalNeural,
                         args = global_args, y0 = global_y0, max_steps = MaxSteps,
                         t0 = 0, t1 = f2n(NTimeGlobalNeuralMax),
-                        dt0 = (dt0_init_optim), stepsize_controller = stepsize_controller_optim,
+                        dt0 = (dt0_init_optim), stepsize_controller = solve_controller,
                         throw = FALSE)
                       global_solver_diagnostics <- ndm_runtime_solution_diagnostics(dynamicglobal_x_params_samp)
                     }
+                    global_saved_states <- dynamicglobal_x_params_samp$ys
                     solver_diagnostics$global_attempted <- jnp$array(TRUE)
                     solver_diagnostics$global_result_success <- global_solver_diagnostics$result_success
                     solver_diagnostics$global_state_finite <- global_solver_diagnostics$state_finite
@@ -3842,7 +3598,7 @@
                     Neural1_samp_before_sigma <- ODEParamsSampList_y0$Neural1_samp
                     ODEParamsSampList_y0$Neural1_samp <- jnp$concatenate(lapply(list(ODEParamsSampList_y0$Neural1_samp,
                       ySigma_init_nODE_untransformed), function(x) {
-                      jnp$ravel(jnp$asarray(x, dtype = jnp$float32))
+                      jnp$ravel(jnp$asarray(x, dtype = jaxFloatType))
                     }), axis = 0L)
                   }
                   globalNeuralArgsText <- ""
@@ -3893,19 +3649,21 @@
                           yes = paste("$", ze, "_0", sep = ""),
                           no = ""))
                     }), collapse = ","), ")", collapse = ""))))
+                  local_y0 <- jax$tree_util$tree_map(function(a) a$astype(jaxFloatType),
+                    local_y0)
                   if (use_fixed_step_training_solve) {
                     diff_eq_sol <- ndm_runtime_fixed_step_solve(field = f_VI_ODE_TERM,
                       y0 = local_y0, args = local_args, save_ts = GetPredSaveAtInfo[[2]]$subs$ts,
-                      substeps = NeuralODETrainSubsteps)
+                      substeps = numerical_policy$substeps)
                     local_solver_diagnostics <- ndm_runtime_fixed_step_diagnostics(diff_eq_sol)
                   }
                   else {
                     diff_eq_sol <- diffrax$diffeqsolve(terms = VI_ODE_term,
                       solver = VI_diff_eq_solver_optim, args = local_args,
                       y0 = local_y0, max_steps = (MaxSteps),
-                      t0 = (jnp$array(0)), t1 = as.integer(GetPredSaveAtInfo[[1]]) -
-                        1L, saveat = GetPredSaveAtInfo[[2]],
-                      dt0 = dt0_init_optim, stepsize_controller = stepsize_controller_optim,
+                      t0 = (jnp$array(0)), t1 = jnp$max(GetPredSaveAtInfo[[2]]$subs$ts),
+                      saveat = GetPredSaveAtInfo[[2]], dt0 = dt0_init_optim,
+                      stepsize_controller = solve_controller,
                       throw = FALSE)
                     local_solver_diagnostics <- ndm_runtime_solution_diagnostics(diff_eq_sol)
                   }
@@ -3917,7 +3675,8 @@
                   solver_diagnostics$local_num_accepted_steps <- local_solver_diagnostics$num_accepted_steps
                   solver_diagnostics$local_num_rejected_steps <- local_solver_diagnostics$num_rejected_steps
                   solver_diagnostics$local_max_steps <- local_solver_diagnostics$max_steps
-                  if (length(ODEParamsSampList_args$p_l_samp$shape) ==
+                  if (!is.null(ODEParamsSampList_args$p_l_samp) &&
+                    !is.null(diff_eq_sol$ys$i_l) && length(ODEParamsSampList_args$p_l_samp$shape) ==
                     0) {
                     ODEParamsSampList_args$p_l_samp <- jnp$array(1) *
                       jnp$ones_like(diff_eq_sol$ys$i_l)
@@ -3955,7 +3714,8 @@
                   KL_TERM = KL_LOCAL + KL_GLOBAL + KL_PLACE,
                   KL_LOCAL = KL_LOCAL, KL_GLOBAL = KL_GLOBAL,
                   KL_PLACE = KL_PLACE, TemporalLatents = TemporalLatents,
-                  solver_diagnostics = solver_diagnostics, ODEParamsSampList = c(ODEParamsSampList_args,
+                  solver_diagnostics = solver_diagnostics, numerical_states = list(local = diff_eq_sol$ys,
+                    global = global_saved_states), ODEParamsSampList = c(ODEParamsSampList_args,
                     ODEParamsSampList_y0, center_param = y_mean,
                     scale_param = y_sigma, diff_eq_sol_ts = diff_eq_sol$ts,
                     diff_eq_sol_ys = diff_eq_sol$ys)), state)
@@ -4012,7 +3772,7 @@
                   PolicyList = PolicyList, GetPredSaveAtInfo = GetPredSaveAtInfo,
                   seed = seed)
             }, in_axes = list(NULL, 0L, NULL, NULL, NULL, NULL,
-                0L), out_axes = list(0L, 0L), axis_name = batch_axis_name))
+                0L), out_axes = list(0L, NULL), axis_name = batch_axis_name))
             GetPred_train_jit <- switch_filter_jit(GetPred_train <- jax$vmap(function(ModelList,
                 x, state, PriorList, PolicyList, GetPredSaveAtInfo,
                 seed) {
@@ -4020,7 +3780,7 @@
                   PolicyList = PolicyList, GetPredSaveAtInfo = GetPredSaveAtInfo,
                   seed = seed)
             }, in_axes = list(NULL, 0L, NULL, NULL, NULL, NULL,
-                0L), out_axes = list(0L, 0L), axis_name = batch_axis_name))
+                0L), out_axes = list(0L, NULL), axis_name = batch_axis_name))
             PriorListLocInGetLoss <- 5L
             getLoss_train <- function(ModelList, x, y, y_mask,
                 i, state, PriorList, PolicyList, GetPredSaveAtInfo,
@@ -4888,8 +4648,7 @@
     NeuralODE_OutputScaler_SliceContext <- InvSoftPlus(1 * 1/sqrt(nTimesTotal))$tolist()
     NeuralODE_OutputScaler_PandemicContext <- InvSoftPlus(1 *
         1/sqrt(NTimeGlobalNeuralSteps))$tolist()
-    PriorText <- unlist(read.table(model_tex_loc, header = F,
-        sep = "\t"))
+    PriorText <- readLines(model_tex_loc, warn = FALSE)
     names(PriorText) <- NULL
     PriorText <- unlist(strsplit(PriorText, split = "\\n"))
     PriorText <- PriorText[PriorText != ""]
@@ -4967,6 +4726,8 @@
             IsContext), silent = TRUE), "assembling a prior definition")
         return(ret_)
     })
+    if (!length(PriorDefinitions))
+        PriorDefinitions_jax <- matrix(character(), 5L, 0L)
     PriorDefinitions_jax <- rbind(PriorDefinitions_jax, gsub(PriorDefinitions_jax[2,
         ], pattern = "_\\{l0\\}", replace = "_l"))
     PriorDefinitions_jax[nrow(PriorDefinitions_jax), ] <- gsub(PriorDefinitions_jax[nrow(PriorDefinitions_jax),
@@ -4976,7 +4737,7 @@
     PriorDefinitions_jax[nrow(PriorDefinitions_jax), ] <- gsub(PriorDefinitions_jax[nrow(PriorDefinitions_jax),
         ], pattern = " ", replace = "")
     PriorDefinitions_jax <- PriorDefinitions_jax[c(1:4, 6, 5),
-        ]
+        , drop = FALSE]
     PriorDefinitions_jax[2, ] <- gsub(PriorDefinitions_jax[2,
         ], pattern = " ", replace = "")
     PriorDefinitions_jax[5, ] <- gsub(PriorDefinitions_jax[5,
@@ -4997,6 +4758,19 @@
     uq_allneural_vec <- c(uq_encneural_vec, uq_globalneural_vec)
     uq_y_vec <- unique(nonuq_y_vec <- uq_y_vec)
     default_bio_state_terms <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
+    initial_execution_spec <- ndm_parse_tex_execution_spec(paste(readLines(model_tex_loc,
+        warn = FALSE), collapse = "\n"))
+    InitStateTerms <- initial_execution_spec$init_state_terms
+    InitialStatePrior <- ndm_validate_initial_state_prior(initial_execution_spec$initial_state_prior,
+        InitStateTerms)
+    InitialStateValues <- initial_execution_spec$initial_state_values
+    if (!all(InitStateTerms %in% default_bio_state_terms) ||
+        !setequal(names(InitialStateValues), setdiff(default_bio_state_terms,
+            InitStateTerms))) {
+        stop("Declare initial_state_values for exactly the ordinary states outside init_state_terms.")
+    }
+    PriorDefinitions_jax <- PriorDefinitions_jax[, !PriorDefinitions_jax[5,
+        ] %in% default_bio_state_terms, drop = FALSE]
     uq_args_vec <- as.vector(PriorDefinitions_jax[5, ])
     uq_args_vec <- gsub(uq_args_vec, pattern = "-", replace = " ")
     uq_args_vec <- gsub(uq_args_vec, pattern = "frac\\{1", replace = "")
@@ -5017,7 +4791,7 @@
     uq_args_vec <- uq_args_vec[!(gsub(uq_args_vec, pattern = "_lt",
         replace = "_l") %in% uq_y_vec)]
     uq_args_vec <- uq_args_vec[!(grepl(uq_args_vec, pattern = "Neural"))]
-    uq_args_vec <- uq_args_vec[is.na(f2n(uq_args_vec))]
+    uq_args_vec <- uq_args_vec[is.na(suppressWarnings(f2n(uq_args_vec)))]
     temporalModelType <- "neuralODE"
     if (temporalModelType == "neuralODE") {
         TDependencyResolution <- nTimesTotal
@@ -5125,70 +4899,6 @@
         split = "="), function(zer) {
         zer[2]
     }))
-    split_top_level <- function(text, operators) {
-        chars <- strsplit(text, split = "")[[1]]
-        tokens <- c()
-        ops_found <- c()
-        depth <- 0L
-        start_idx <- 1L
-        prev_nonspace <- ""
-        for (i in seq_along(chars)) {
-            ch <- chars[[i]]
-            if (ch == "(") {
-                depth <- depth + 1L
-            }
-            if (ch == ")") {
-                depth <- depth - 1L
-            }
-            is_operator <- (depth == 0L) && (ch %in% operators)
-            is_unary_minus <- identical(ch, "-") && (i == 1L ||
-                prev_nonspace %in% c("", "(", "+", "-", "*",
-                  "/", "^", ","))
-            if (is_operator && !is_unary_minus) {
-                tokens <- c(tokens, substr(text, start_idx, i -
-                  1L))
-                ops_found <- c(ops_found, ch)
-                start_idx <- i + 1L
-            }
-            if (!grepl("^\\s$", ch)) {
-                prev_nonspace <- ch
-            }
-        }
-        tokens <- c(tokens, substr(text, start_idx, nchar(text)))
-        list(tokens = trimws(tokens), operators = ops_found)
-    }
-    strip_outer_parens <- function(text) {
-        text <- trimws(text)
-        if (!nzchar(text)) {
-            return(text)
-        }
-        repeat {
-            if (substr(text, 1L, 1L) != "(" || substr(text, nchar(text),
-                nchar(text)) != ")") {
-                break
-            }
-            chars <- strsplit(text, split = "")[[1]]
-            depth <- 0L
-            encloses_all <- TRUE
-            for (i in seq_along(chars)) {
-                if (chars[[i]] == "(") {
-                  depth <- depth + 1L
-                }
-                if (chars[[i]] == ")") {
-                  depth <- depth - 1L
-                }
-                if (depth == 0L && i < length(chars)) {
-                  encloses_all <- FALSE
-                  break
-                }
-            }
-            if (!encloses_all) {
-                break
-            }
-            text <- trimws(substr(text, 2L, nchar(text) - 1L))
-        }
-        text
-    }
     replace_symbol_tokens <- function(text, symbols, prefix) {
         if (length(symbols) == 0L) {
             return(text)
@@ -5200,120 +4910,14 @@
         }
         text
     }
-    compile_math_expr <- NULL
-    compile_math_expr <- function(text) {
-        text <- strip_outer_parens(trimws(text))
-        if (!nzchar(text)) {
-            return("0")
-        }
-        add_split <- split_top_level(text, c("+", "-"))
-        if (length(add_split$operators) > 0L) {
-            ret_ <- compile_math_expr(add_split$tokens[[1L]])
-            for (i in seq_along(add_split$operators)) {
-                rhs_ <- compile_math_expr(add_split$tokens[[i +
-                  1L]])
-                ret_ <- if (add_split$operators[[i]] == "+") {
-                  sprintf("jnp$add(%s, %s)", ret_, rhs_)
-                }
-                else {
-                  sprintf("jnp$subtract(%s, %s)", ret_, rhs_)
-                }
-            }
-            return(ret_)
-        }
-        mul_split <- split_top_level(text, c("*", "/"))
-        if (length(mul_split$operators) > 0L) {
-            ret_ <- compile_math_expr(mul_split$tokens[[1L]])
-            for (i in seq_along(mul_split$operators)) {
-                rhs_ <- compile_math_expr(mul_split$tokens[[i +
-                  1L]])
-                ret_ <- if (mul_split$operators[[i]] == "*") {
-                  sprintf("jnp$multiply(%s, %s)", ret_, rhs_)
-                }
-                else {
-                  sprintf("jnp$divide(%s, %s)", ret_, rhs_)
-                }
-            }
-            return(ret_)
-        }
-        pow_split <- split_top_level(text, "^")
-        if (length(pow_split$operators) > 0L) {
-            ret_ <- compile_math_expr(pow_split$tokens[[length(pow_split$tokens)]])
-            if (length(pow_split$tokens) > 1L) {
-                for (i in rev(seq_len(length(pow_split$tokens) -
-                  1L))) {
-                  ret_ <- sprintf("jnp$power(%s, %s)", compile_math_expr(pow_split$tokens[[i]]),
-                    ret_)
-                }
-            }
-            return(ret_)
-        }
-        if (startsWith(text, "-")) {
-            rhs_ <- trimws(substr(text, 2L, nchar(text)))
-            if (grepl("^[0-9.]+([eE][-+]?[0-9]+)?$", rhs_, perl = TRUE)) {
-                return(paste0("-", rhs_))
-            }
-            return(sprintf("jnp$negative(%s)", compile_math_expr(rhs_)))
-        }
-        if (grepl("^[[:alpha:]_][[:alnum:]_$]*\\s*\\(", text,
-            perl = TRUE) && substr(text, nchar(text), nchar(text)) ==
-            ")") {
-            open_idx <- regexpr("\\(", text, perl = TRUE)[[1]]
-            fn_name <- trimws(substr(text, 1L, open_idx - 1L))
-            fn_args <- substr(text, open_idx + 1L, nchar(text) -
-                1L)
-            args_split <- split_top_level(fn_args, ",")
-            compiled_args <- vapply(args_split$tokens, compile_math_expr,
-                character(1L))
-            if (fn_name == "exp") {
-                return(sprintf("jnp$exp(%s)", compiled_args[[1L]]))
-            }
-            if (fn_name == "sqrt") {
-                return(sprintf("jnp$sqrt(%s)", compiled_args[[1L]]))
-            }
-            if (fn_name == "log") {
-                return(sprintf("jnp$log(%s)", compiled_args[[1L]]))
-            }
-            if (fn_name == "SoftPlus") {
-                return(sprintf("SoftPlus(%s)", compiled_args[[1L]]))
-            }
-            if (fn_name == "Sigmoid") {
-                return(sprintf("Sigmoid(%s)", compiled_args[[1L]]))
-            }
-            if (fn_name == "max") {
-                ret_ <- compiled_args[[1L]]
-                if (length(compiled_args) > 1L) {
-                  for (i in 2:length(compiled_args)) {
-                    ret_ <- sprintf("jnp$maximum(%s, %s)", ret_,
-                      compiled_args[[i]])
-                  }
-                }
-                return(ret_)
-            }
-            if (fn_name == "min") {
-                ret_ <- compiled_args[[1L]]
-                if (length(compiled_args) > 1L) {
-                  for (i in 2:length(compiled_args)) {
-                    ret_ <- sprintf("jnp$minimum(%s, %s)", ret_,
-                      compiled_args[[i]])
-                  }
-                }
-                return(ret_)
-            }
-            return(sprintf("%s(%s)", fn_name, paste(compiled_args,
-                collapse = ", ")))
-        }
-        text
-    }
+    compile_math_expr <- function(text) ndm_compile_math_expr(text,
+        symbols = c("t", paste0("YGOY", uq_y_vec), paste0("ARGSGO",
+            uq_args_vec), paste0("CONSTSGO", ConstantsNames)))
     normalize_rhs_expr <- function(text) {
-        text <- gsub(text, pattern = "cdot", replace = "*")
-        text <- gsub(text, pattern = "frac\\{([^\\}]+)\\}\\{([^\\}]+)\\}",
-            replace = "( \\1 ) / ( \\2 )")
-        text <- gsub(text, pattern = "\\\\", replace = "")
-        text <- gsub(text, pattern = "Neural([[:alnum:]]+)",
-            replace = "Neural\\1___")
-        text <- gsub(text, pattern = "\\{", replace = "")
-        text <- gsub(text, pattern = "\\}", replace = "")
+        neural <- grepl("Neural[[:alnum:]]+", text)
+        text <- ndm_normalize_math_text(text, neural = neural)
+        text <- gsub("Neural([[:alnum:]]+)", "Neural\\1___",
+            text)
         text <- replace_symbol_tokens(text, uq_y_vec, "YGOY")
         text <- replace_symbol_tokens(text, uq_args_vec, "ARGSGO")
         text <- replace_symbol_tokens(text, ConstantsNames, "CONSTSGO")
@@ -5469,6 +5073,20 @@
                 "Neural2"], "'=", righthandside_vec[lefthandside_vec ==
                 "Neural2"], sep = ""), collapse = ","))))
     }
+    raw_local_vector_field <- f_VI_ODE_TERM
+    f_VI_ODE_TERM <- function(t, y, args) {
+        jax$tree_util$tree_map(function(d, initial) d$astype(initial$dtype),
+            raw_local_vector_field(t, y, args), y)
+    }
+    VI_ODE_term <- diffrax$ODETerm(f_VI_ODE_TERM)
+    if (!is.null(VI_ODE_term_globalOnly)) {
+        raw_global_vector_field <- f_VI_ODE_TERM_globalOnly
+        f_VI_ODE_TERM_globalOnly <- function(t, y, args) {
+            jax$tree_util$tree_map(function(d, initial) d$astype(initial$dtype),
+                raw_global_vector_field(t, y, args), y)
+        }
+        VI_ODE_term_globalOnly <- diffrax$ODETerm(f_VI_ODE_TERM_globalOnly)
+    }
     observed_name <- transform_vec_final
     observed_name <- observed_name[grepl(TexTransformationRules,
         pattern = "Observe")]
@@ -5527,7 +5145,7 @@
     type_counter <- 0
     for (type_ in c("Neural", "Prior")) {
         type_counter <- type_counter + 1
-        PriorDefinitions_jax <- sapply(1:ncol(PriorDefinitions_jax_orig),
+        PriorDefinitions_jax <- lapply(seq_len(ncol(PriorDefinitions_jax_orig)),
             function(zr) {
                 TDep_ <- PriorDefinitions_jax_orig[5, zr] %in%
                   TDeps
@@ -5543,7 +5161,9 @@
                 return(ret_)
             })
         if ("list" %in% class(PriorDefinitions_jax)) {
-            PriorDefinitions_jax <- do.call(cbind, PriorDefinitions_jax)
+            PriorDefinitions_jax <- if (length(PriorDefinitions_jax))
+                do.call(cbind, PriorDefinitions_jax)
+            else matrix(character(), 6L, 0L)
         }
         PriorDefinitions_jax <- rbind(PriorDefinitions_jax, PriorDefinitions_jax[5,
             ] %in% unique(uq_args_vec), PriorDefinitions_jax[5,
@@ -5553,7 +5173,8 @@
             "DefOrig", "PriorMean", "PriorSD", "DefClean", "IsContext",
             "argIndicator", "LDep", "TDep", "NoDep")
         if (length(uq_encneural_vec) == 0) {
-            ADDON_ <- PriorDefinitions_jax[, 1:2]
+            ADDON_ <- PriorDefinitions_jax[, seq_len(min(2L,
+                ncol(PriorDefinitions_jax))), drop = FALSE]
             ADDON <- c()
             for (rer in 1:(LocalNeuralEmbedDim)) {
                 addon_mean <- c(Transformation = "Identity",
@@ -5568,24 +5189,22 @@
             }
             PriorDefinitions_jax <- cbind(ADDON, PriorDefinitions_jax)
         }
-        InitStateTerms <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
-        InitStateLogitParamNames <- paste0("InitStateLogit_",
-            InitStateTerms)
-        InitStateScaleParamName <- "InitStateLogitScale"
-        PowerTypeInvTransform <- "Identity"
-        PowerWtInvTransform <- function(x) {
-            x
+        InitStateLogitParamNames <- if (length(InitialStatePrior$logratio_mean))
+            paste0("InitStateLogRatio_", names(InitialStatePrior$logratio_mean))
+        else character()
+        if (length(InitStateLogitParamNames)) {
+            initial_rows <- vapply(seq_along(InitStateLogitParamNames),
+                function(i) {
+                  name <- InitStateLogitParamNames[[i]]
+                  c("Identity", name, as.character(InitialStatePrior$logratio_mean[[i]]),
+                    as.character(sqrt(InitialStatePrior$logratio_cov[i,
+                      i])), name, "FALSE", "FALSE", "TRUE", "FALSE",
+                    "FALSE")
+                }, character(10L))
+            rownames(initial_rows) <- rownames(PriorDefinitions_jax)
+            PriorDefinitions_jax <- cbind(PriorDefinitions_jax,
+                initial_rows)
         }
-        PowerWeightAdds <- cbind(sapply(InitStateLogitParamNames,
-            function(param_name) {
-                c(PowerTypeInvTransform, sprintf("%s_0", param_name),
-                  as.character(PowerWtInvTransform(0)), "1",
-                  param_name, "FALSE", "FALSE", "TRUE", "FALSE",
-                  "FALSE")
-            }), c(PowerTypeInvTransform, sprintf("%s_0", InitStateScaleParamName),
-            as.character(PowerWtInvTransform(0)), "1", InitStateScaleParamName,
-            "FALSE", "FALSE", "TRUE", "FALSE", "FALSE"))
-        PriorDefinitions_jax <- cbind(PriorDefinitions_jax, PowerWeightAdds)
         PriorDefinitions_jax_CONTEXT <- PriorDefinitions_jax[,
             is.na(PriorDefinitions_jax[3, ])]
         if ("character" %in% class(PriorDefinitions_jax_CONTEXT)) {
@@ -5719,17 +5338,27 @@
             jnp$array(VariationalInitNonEncLocalSD * prior_sd_multiplier))
     }
     if (any(local_base_prior_mask_matched)) {
-        localParamPrior_base <- oryx$MultivariateNormalDiag(jnp$array(f2n(local_prior_definitions_matched["PriorMean",
-            local_base_prior_mask_matched])), jnp$array(f2n(local_prior_definitions_matched["PriorSD",
-            local_base_prior_mask_matched]) * prior_sd_multiplier))
+        base_definitions <- local_prior_definitions_matched[,
+            local_base_prior_mask_matched, drop = FALSE]
+        base_covariance <- diag(f2n(base_definitions["PriorSD",
+            ])^2, ncol(base_definitions))
+        initial_indices <- match(InitStateLogitParamNames, base_definitions["DefClean",
+            ])
+        if (anyNA(initial_indices))
+            stop("Missing initial-state log-ratio coordinates in local prior.")
+        if (length(initial_indices))
+            base_covariance[initial_indices, initial_indices] <- InitialStatePrior$logratio_cov
+        base_covariance <- base_covariance * prior_sd_multiplier^2
+        localParamPrior_base <- oryx$MultivariateNormalTriL(jnp$array(f2n(base_definitions["PriorMean",
+            ])), jnp$array(t(chol(base_covariance))), stabilize = FALSE)
     }
     if (length(VariationalInitGlobalMean[!names(VariationalInitGlobalMean) %in%
         TDeps]) > 0) {
-        globalParamPrior_base <- oryx$MultivariateNormalDiag(jnp$array(VariationalInitGlobalMean[!names(VariationalInitGlobalMean) %in%
-            TDeps]), jnp$array(ifelse(length(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in%
-            TDeps]) == 1, yes = list(as.matrix(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in%
-            TDeps] * prior_sd_multiplier)), no = list(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in%
-            TDeps] * prior_sd_multiplier))[[1]]))
+        global_base_mask <- !names(VariationalInitGlobalMean) %in%
+            TDeps
+        globalParamPrior_base <- oryx$MultivariateNormalDiag(jnp$atleast_1d(jnp$array(VariationalInitGlobalMean[global_base_mask])),
+            jnp$atleast_1d(jnp$array(VariationalInitGlobalSD[global_base_mask] *
+                prior_sd_multiplier)))
     }
     if (any(local_neural_prior_mask_matched)) {
         localParamPrior_neural <- oryx$Normal(jnp$array(f2n(local_prior_definitions_matched["PriorMean",
@@ -5847,7 +5476,7 @@
                 block_size = 128L, nesterov = TRUE, exponent_override = 0)
         }
         opt_state <- optax_optimizer$init(eq$partition(ModelList,
-            eq$is_array)[[1]])
+            TrainabilityMask)[[1]])
         if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
             opt_state <- ndm_runtime_replicate_tree(opt_state)
         }
@@ -5907,14 +5536,17 @@
         train_step_impl <- function(ModelList, batch_pkg, y_true,
             y_mask, iteration, state, PriorList, PolicyList,
             GetPredSaveAtInfo, seed, opt_state) {
-            loss_and_grads <- (eq$filter_value_and_grad(getLoss_train,
-                has_aux = T))(ModelList, batch_pkg, y_true, y_mask,
-                iteration, state, PriorList, PolicyList, GetPredSaveAtInfo,
-                seed)
+            model_arrays <- eq$partition(ModelList, TrainabilityMask)
+            trainable_loss <- function(trainable, ...) getLoss_train(eq$combine(trainable,
+                model_arrays[[2L]]), ...)
+            loss_and_grads <- (eq$filter_value_and_grad(trainable_loss,
+                has_aux = T))(model_arrays[[1L]], batch_pkg,
+                y_true, y_mask, iteration, state, PriorList,
+                PolicyList, GetPredSaveAtInfo, seed)
             loss_and_state <- loss_and_grads[[1]]
             loss_aux <- loss_and_state[[2]]
             grads <- loss_and_grads[[2]]
-            model_arrays <- eq$partition(ModelList, eq$is_array)
+            model_arrays <- eq$partition(ModelList, TrainabilityMask)
             model_array_tree <- model_arrays[[1]]
             grad_arrays <- eq$partition(grads, eq$is_inexact_array)[[1]]
             updates_and_state <- optax_optimizer$update(grad_arrays,
@@ -6005,7 +5637,7 @@
             format(Sys.time(), "%Y%m%dT%H%M%S"), Sys.getpid())
     }, dir.create(SavedModelDir, recursive = TRUE, showWarnings = FALSE),
     print2(sprintf("Total trainable parameter count: %s", nParams <- sum(unlist(lapply(jax$tree$leaves(eq$partition(ModelList,
-        eq$is_array)[[1]]), function(zer) {
+        TrainabilityMask)[[1]]), function(zer) {
         zer$size
     }))))), print("Done with SuperLModel_TrainDefine.R"))
 
@@ -6442,6 +6074,9 @@
                 else {
                   GetPredSaveAtInfo_default
                 }
+                GetPredSaveAtInfo_runtime <- ndm_select_training_solver(environment(),
+                  ModelList, batch_pkg, state, PriorList, PolicyList,
+                  GetPredSaveAtInfo_runtime, keys_mat)
                 TrainingStateUsable <- !isTRUE(DonateTrainingState)
                 train_step_result <- train_step_compiled(ModelList,
                   batch_pkg, dat_$YTrue_out, dat_$YTrue_out_mask,
@@ -6515,6 +6150,13 @@
                       report_path = failure_report_path)))
                 }
                 solver_telemetry_i <- solver_iteration_telemetry(solver_diagnostics_host)
+                if (exists("LastSolverAccuracy", inherits = FALSE)) {
+                  accuracy_file <- file.path(HolderFolder, sprintf("solver_accuracy_outer%s.csv",
+                    get0("OUTER_ITERATION", ifnotfound = 1L)))
+                  data.table::fwrite(data.frame(iteration = i,
+                    LastSolverAccuracy, stringsAsFactors = FALSE),
+                    accuracy_file, append = file.exists(accuracy_file))
+                }
                 UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i) &
                   update_accepted_i
                 if (!UpdateParametersCond) {
@@ -6721,6 +6363,9 @@
                   if (save_eqx_enabled) {
                     eq$tree_serialise_leaves(checkpoint_file("ModelList",
                       save_i), checkpoint_model_payload())
+                    saveRDS(list(model_semantics_version = 2L,
+                      trainability_version = 1L), paste0(checkpoint_file("ModelList",
+                      save_i), ".metadata.rds"))
                     if ("ModelList_notshared_set" %in% ls()) {
                       eq$tree_serialise_leaves(checkpoint_file("ModelList_notshared_set",
                         save_i), list(ModelList_notshared_set,
@@ -6729,6 +6374,13 @@
                   }
                   if (save_eqx_enabled && !is.null(recover_checkpoint_at)) {
                     RecoverAt <- recover_checkpoint_at
+                    checkpoint_metadata_file <- paste0(checkpoint_file("ModelList",
+                      RecoverAt), ".metadata.rds")
+                    if (!file.exists(checkpoint_metadata_file) ||
+                      !identical(readRDS(checkpoint_metadata_file)$model_semantics_version,
+                        2L)) {
+                      stop("Incompatible legacy checkpoint: retrain with corrected model semantics. Original files were not changed.")
+                    }
                     ModelList_recovered <- eq$tree_deserialise_leaves(checkpoint_file("ModelList",
                       RecoverAt), checkpoint_model_payload())
                     if ("ModelList_notshared_set" %in% ls()) {
@@ -7172,6 +6824,7 @@
         paste(paste("'", names(unlist(RealEntry)), "'='", unlist(RealEntry),
             "'", sep = ""), collapse = ","))))
     sl_dat <- as.data.frame(sl_dat)
+    sl_dat <- ndm_result_metadata(sl_dat, environment(), nTimesLookValidationInference)
     sl_dat$time_anchor_id <- unlist(sl_dat$time_anchor_id)
     pdf(file.path(HolderFolder, sprintf("diagnostics_%s_EvalTime%s_IsPretraining%s_OuterKey%s.pdf",
         rlang::hash(modelingStrategyNameKey), evaluationTime,
@@ -7697,6 +7350,8 @@
             inherits = TRUE, ifnotfound = NA_integer_), nParamsModel = nParamsModel,
         te_total = te_total, te_grads = te_grads, unlist(SimEntry),
         colMeans(do.call(rbind, res_list))))
+    res_vec <- ndm_result_metadata(as.data.frame(res_vec), environment(),
+        nTimesLookValidationInference)
     print(sprintf("WRITING af of %s", af))
     data.table::fwrite(file = file.path(HolderFolder, sprintf("res%s_i%s.csv",
         af, i)), res_vec)
@@ -7706,1531 +7361,46 @@
 })
 
 .ndm_stage_expr_ResultsAnalyze_SuperLModel_GenFigs <- expression({
-    options(error = NULL)
-    print("Starting SuperLModel_GenFigs.R")
-    print("Define data to use in analysis")
     SimMode <- isTRUE(get0("SimMode", inherits = TRUE, ifnotfound = FALSE))
-    AnalysisName <- as.character(get0("AnalysisName", inherits = TRUE,
-        ifnotfound = NA_character_))
-    if (is.na(AnalysisName) || !nzchar(AnalysisName)) {
+    AnalysisName <- get0("AnalysisName", inherits = TRUE, ifnotfound = NA_character_)
+    if (length(AnalysisName) != 1L || is.na(AnalysisName) ||
+        !nzchar(AnalysisName))
         stop("Figure generation requires the resolved AnalysisName.")
-    }
     analysis2_spec <- get0("analysis2_run_spec", inherits = TRUE,
         ifnotfound = list(project_root = getwd()))
-    project_root <- normalizePath(analysis2_spec$project_root %||%
-        getwd(), winslash = "/", mustWork = TRUE)
-    resultsFolder <- file.path(project_root, "SavedResults",
+    resultsFolder <- file.path(analysis2_spec$project_root, "SavedResults",
         if (SimMode)
             "Sim"
-        else "Real", sprintf("Results_%s", AnalysisName))
-    FiguresTag <- if (SimMode)
-        "SimTag"
-    else "RealTag"
-    TheGrid <- as.data.frame(get0(if (SimMode)
-        "SimGrid"
-    else "RealGrid", inherits = TRUE, ifnotfound = stop("Figure generation requires the resolved frozen grid.")))
-    print("Starting: --Load in and preprocess--")
-    {
-        library(dplyr)
-        library(data.table)
-        ndm_source_extracted("SetupEnv/SuperLModel_helperFxns.R")
-        SaveFolder <- get0("SaveFolder", inherits = TRUE, ifnotfound = "./Figures/")
-        dir.create(SaveFolder, recursive = TRUE, showWarnings = FALSE)
-        cexAxis <- 1.5
-        cexLab <- 2
-        cexMain = 2
-        print2("---Loading in csv's---")
-        library(future.apply)
-        plan(multisession(workers = 10L))
-        result_csv_files <- list.files(resultsFolder, pattern = if (SimMode)
-            "^res.*\\.csv$"
-        else "^predicted_df_out_.*\\.csv$", full.names = TRUE,
-            recursive = TRUE)
-        if (!length(result_csv_files)) {
-            stop("No mode-specific final-result CSV files were found in ",
-                resultsFolder, ".")
-        }
-        dt_list <- future.apply::future_lapply(result_csv_files,
-            function(csv_file_) data.table::fread(csv_file_))
-        future::plan(sequential)
-        res_mat <- data.table::rbindlist(dt_list, fill = TRUE)
-        dim(res_mat <- as.data.frame(res_mat))
-        table(res_mat$i_in_sgd)
-        res_mat$PairID_recon <- if ("pair_id" %in% names(res_mat)) {
-            as.character(res_mat$pair_id)
-        }
-        else paste(as.character(res_mat$BaseID), as.character(res_mat$i_in_sgd),
-            as.character(res_mat$nSamplesTrain), as.character(res_mat$ModelDepth),
-            as.character(res_mat$ModelDims), sep = "_")
-        if (SimMode) {
-            nTimesLookValidationInferenceTrainedTo <- 12L
-            nTimesLookValidationInference <- 50L
-        }
-        if (!SimMode) {
-            print2("---Pre-processing Real csv's (individ -> agg)---")
-            res_mat_orig <- res_mat
-            nTimesLookValidationInferenceTrainedTo <- nTimesLookValidationInference <- 12L
-            ndm_source_extracted("ResultsAnalyze/SuperLModel_GenFigs_RealPreprocess.R")
-            res_mat <- res_mat_agg
-        }
-        StartTime_SkillSummary <- round(nTimesLookValidationInferenceTrainedTo *
-            0.75)
-        res_mat$SkillSummary <- rowMeans(res_mat[, paste0("SkillTime",
-            StartTime_SkillSummary:nTimesLookValidationInferenceTrainedTo)],
-            na.rm = T)
-        res_mat$RSSBaselineSummary <- rowMeans(res_mat[, paste0("RSSBaselineTime",
-            StartTime_SkillSummary:nTimesLookValidationInferenceTrainedTo)],
-            na.rm = T)
-        res_mat$RSSPredSummary <- rowMeans(res_mat[, paste0("RSSPredTime",
-            StartTime_SkillSummary:nTimesLookValidationInferenceTrainedTo)],
-            na.rm = T)
-        data.table::fwrite(res_mat, file = file.path(SaveFolder,
-            sprintf("%s.csv", ifelse(SimMode, yes = "res_mat_sim",
-                no = "res_mat_real"))))
-    }
-    print("Some initial analyses")
-    {
-        res_mat_ <- res_mat[res_mat$i_in_sgd == max(res_mat$i_in_sgd),
-            ]
-        print(sprintf("---Marginal skill at training's end at week 11 with matrix dimensions %s---",
-            nrow(res_mat_)))
-        print(tapply(res_mat_$SkillTime11, res_mat_$ModelType,
-            summary))
-        myForest_ <- randomForest::randomForest(y = res_mat_$SkillSummary,
-            x = res_mat_[, setdiff(paste0(colnames(TheGrid),
-                ""), "BaseID")])
-        myForest_$importance[order(myForest_$importance), ]
-        res_mat$nParamsModel_log <- log(f2n(res_mat$nParamsModel),
-            base = 10)
-        res_mat$nSamplesTrain_log <- log(f2n(res_mat$nSamplesTrain),
-            base = 10)
-        res_mat$i_in_sgd_log <- log(f2n(res_mat$i_in_sgd), base = 10)
-        res_mat$atEpoch_log <- log(f2n(res_mat$atEpoch), base = 10)
-        res_mat$ContextLength_log <- log(f2n(res_mat$ContextLength),
-            base = 2)
-        res_mat$ModelDepth_log <- log(f2n(res_mat$ModelDepth),
-            base = 2)
-        res_mat$ModelDims_log <- log(f2n(res_mat$ModelDims),
-            base = 2)
-        res_mat$TimesSeen <- f2n(res_mat$ContextLength) * f2n(res_mat$nSamplesTrain)
-        res_mat$TimesSeen_log <- log10(res_mat$TimesSeen)
-        res_mat$UpdatesPerParam <- res_mat$i_in_sgd/res_mat$nParamsModel
-        res_mat$UpdatesPerParam_log <- log10(res_mat$UpdatesPerParam)
-        res_mat$DataParamRatio <- res_mat$nSamplesTrain/res_mat$nParamsModel
-        res_mat$DataParamRatio_log10 <- log10(res_mat$DataParamRatio)
-        Map2ConstrainedSkill <- ndm_skill_from_unconstrained
-        InvMap2ConstrainedSkill <- ndm_skill_to_unconstrained
-        InvMap2ConstrainedSkill(1)
-        res_mat$SkillSummary_inv <- InvMap2ConstrainedSkill(res_mat$SkillSummary)
-        cor(res_mat$SkillSummary, res_mat$SkillSummary_inv)
-        max(Map2ConstrainedSkill(InvMap2ConstrainedSkill(res_mat$SkillSummary)) -
-            res_mat$SkillSummary)
-        Map2ConstrainedBaselineRSS <- function(x) {
-            ifelse(x > 20, x, log1p(exp(x)))
-        }
-        InvMap2ConstrainedBaselineRSS <- function(y) {
-            log(expm1(y))
-        }
-        res_mat$RSSBaselineSummary_inv <- InvMap2ConstrainedBaselineRSS(res_mat$RSSBaselineSummary)
-        max(Map2ConstrainedBaselineRSS(InvMap2ConstrainedBaselineRSS(res_mat$RSSBaselineSummary)) -
-            res_mat$RSSBaselineSummary)
-        if (any(tapply(as.character(res_mat_$model_tex_loc),
-            res_mat_$PairID_recon, table)) > 2) {
-            stop("Stopping: Some PairIDs are tripliced; REQUIRE 2 per only")
-        }
-        print("Starting: --Done with load in and preprocess--")
-    }
-    print("Plotting comparision for skill results")
-    {
-        print2("---Starting pairwise comparisions (Decoder vs. NeuralODE)---")
-        library(dplyr)
-        library(ggplot2)
-        res_mat_forpair <- res_mat
-        res_decoder <- subset(res_mat_forpair, ModelType == "DecoderOnly")
-        res_neuralODE <- subset(res_mat_forpair, ModelType ==
-            "NeuralODE")
-        table(table(res_decoder$PairID_recon))
-        table(table(res_neuralODE$PairID_recon))
-        print2("---Merging pairwise (Decoder vs. NeuralODE)---")
-        paired_df <- merge(res_decoder, res_neuralODE, by = "PairID_recon",
-            suffixes = c("_Decoder", "_NeuralODE"))
-        if (mean(res_decoder$PairID_recon %in% res_neuralODE$PairID_recon) <
-            0.1) {
-            stop("Not enough overlap between PairID_recon in Decoder vs. NeuralODE -- Check code!")
-        }
-        head(cbind(sort(res_decoder$PairID_recon)[1:5], sort(res_neuralODE$PairID_recon)[1:5]))
-        print2("---Comparision scatterplots - Decoder vs. NeuralODE---")
-        {
-            gsvs <- ggplot(paired_df[paired_df$i_in_sgd_Decoder ==
-                max(paired_df$i_in_sgd_Decoder), ], aes(x = SkillSummary_Decoder,
-                y = SkillSummary_NeuralODE)) + geom_point(alpha = 0.7) +
-                geom_abline(slope = 1, intercept = 0, color = "red",
-                  linetype = "dashed") + theme_minimal(base_size = 14,
-                base_line_size = 0) + labs(title = "Comparison of Skill Index: Decoder vs NeuralODE",
-                x = "Skill Index (Decoder)", y = "Skill Index (NeuralODE)")
-            ggsave(sprintf("./Figures/gsvs_SimMode%s.pdf", SimMode),
-                plot = gsvs, device = "pdf", width = 8, height = 8)
-        }
-        paired_df$WinNeuralODE <- 1 * (paired_df$SkillSummary_NeuralODE >=
-            paired_df$SkillSummary_Decoder)
-        res_mat$WinNeuralODE_indicator <- paired_df$WinNeuralODE[match(res_mat$PairID_recon,
-            paired_df$PairID_recon)]
-        i_seq <- NeuralWinProb <- c()
-        for (i___ in sort(unique(paired_df$i_in_sgd_Decoder))) {
-            paired_df_ <- paired_df[paired_df$i_in_sgd_Decoder ==
-                i___, ]
-            vals <- sort(unique(c(paired_df_$SkillSummary_Decoder,
-                paired_df_$SkillSummary_NeuralODE)))
-            decoder_cdf <- sapply(vals, function(v) mean(paired_df_$SkillSummary_Decoder <=
-                v))
-            neuralode_cdf <- sapply(vals, function(v) mean(paired_df_$SkillSummary_NeuralODE <=
-                v))
-            ks_stat <- ks.test(x = paired_df_$SkillSummary_Decoder,
-                y = paired_df_$SkillSummary_NeuralODE, alternative = "two.sided")
-            print2(ks_stat$p.value)
-            i_seq <- c(i_seq, i___)
-            NeuralWinProb <- c(NeuralWinProb, mean(paired_df_$SkillSummary_NeuralODE >=
-                paired_df_$SkillSummary_Decoder))
-            cdf_df <- data.frame(value = vals, DecoderCDF = decoder_cdf,
-                NeuralODECDF = neuralode_cdf)
-            gcdfcdf <- ggplot(cdf_df, aes(x = DecoderCDF, y = NeuralODECDF)) +
-                geom_line(color = "blue", size = 1) + geom_abline(slope = 1,
-                intercept = 0, color = "red", linetype = "dashed") +
-                coord_fixed() + theme_minimal(base_size = 14,
-                base_line_size = 0) + labs(title = sprintf("P\u2013P (CDF-vs-CDF) plot: Decoder vs NeuralODE (%s)",
-                i___), subtitle = "Below 45 degree line indicates better NeuralODE skill",
-                x = "CDF(Decoder)", y = "CDF(NeuralODE)")
-            ggsave(sprintf("./Figures/gcdfcdf_%s.pdf", i___),
-                plot = gcdfcdf, device = "pdf", width = 8, height = 6)
-            {
-                SkillSummary_ <- rbind(Decoder = summary(paired_df_$SkillSummary_Decoder)[-4],
-                  `Neural ODE` = summary(paired_df_$SkillSummary_NeuralODE)[-4])
-                SkillSummary_[] <- helpeRs::fixZeroEndings(as.character(round(SkillSummary_[],
-                  3)), 3)
-                latex_code <- capture.output(stargazer::stargazer(as.matrix(SkillSummary_),
-                  label = sprintf("tab:SkillSummarySimMode%s",
-                    SimMode), font.size = "small", title = sprintf("\n                                                        Summary statistics of skill distributions for decoder-only and neural models.\n                                                                      %s",
-                    ifelse(SimMode, yes = "Case: simulation.",
-                      no = "Case: COVID-19 analysis."))))
-                writeLines(latex_code, con = sprintf("./Figures/SkillSummaryTab_SimMode%s_i%s.tex",
-                  SimMode, i___))
-            }
-        }
-        writeLines(latex_code, con = sprintf("./Figures/SkillSummaryTab_SimMode%s_i%s.tex",
-            SimMode, "Final"))
-        pdf(sprintf("./Figures/NeuralODEWinByIter_SimMode%s.pdf",
-            SimMode))
-        {
-            par(mar = c(5, 5, 5, 1))
-            plot(i_seq, NeuralWinProb, type = "p", log = "x",
-                pch = 19, xlab = "Iteration (log scale)", ylab = "Probability(NeuralODE Skill > Decoder)",
-                main = "NeuralODE vs Decoder\nWin Probability by Iteration",
-                lwd = 2, cex.lab = 1.75, cex.main = 1.75, col = "black",
-                ylim = c(0.5 - 0.2, 0.5 + 0.2))
-            fit <- lm(NeuralWinProb ~ log(i_seq))
-            abline(h = 0.5, lty = 3, col = "gray", lwd = 2)
-            fit <- lm(NeuralWinProb ~ log(i_seq))
-            pred <- predict(fit, newdata = data.frame(i_seq = i_seq),
-                interval = "confidence")
-            lines(i_seq, pred[, "fit"], col = "red", lwd = 2)
-            lines(i_seq, pred[, "lwr"], col = "red", lty = 2)
-            lines(i_seq, pred[, "upr"], col = "red", lty = 2)
-        }
-        dev.off()
-        {
-            print2("---NeuralODE vs Decoder win probability by DATA\u2011SET SIZE---")
-            paired_df_EndOfTraining <- paired_df[paired_df$i_in_sgd_Decoder ==
-                max(paired_df$i_in_sgd_Decoder), ]
-            dsizes <- sort(unique(paired_df_EndOfTraining$nSamplesTrain_Decoder))
-            NeuralWinProb_ds <- sapply(dsizes, function(ds) {
-                rows <- paired_df_EndOfTraining$nSamplesTrain_Decoder ==
-                  ds
-                mean(paired_df_EndOfTraining$SkillSummary_NeuralODE[rows] >=
-                  paired_df_EndOfTraining$SkillSummary_Decoder[rows])
-            })
-            n_per_ds <- sapply(dsizes, function(ds) sum(paired_df_EndOfTraining$nSamplesTrain_Decoder ==
-                ds))
-            se_ <- sqrt(NeuralWinProb_ds * (1 - NeuralWinProb_ds)/n_per_ds)
-            ci_low <- pmax(0, NeuralWinProb_ds - 1.96 * se_)
-            ci_high <- pmin(1, NeuralWinProb_ds + 1.96 * se_)
-            pdf(sprintf("./Figures/NeuralODEWinByDatasetSize_SimMode%s.pdf",
-                SimMode))
-            {
-                par(mar = c(5, 5, 5, 1))
-                plot(dsizes, NeuralWinProb_ds, log = "x", type = "p",
-                  pch = 19, col = "black", ylim = c(0.3, 0.9),
-                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \u2265 Decoder )",
-                  main = "NeuralODE vs Decoder\nWin Probability by Training Set Size",
-                  cex.lab = 1.75, cex.main = 1.75)
-                abline(h = 0.5, lty = 3, col = "gray", lwd = 2)
-                arrows(x0 = dsizes, y0 = ci_low, x1 = dsizes,
-                  y1 = ci_high, angle = 90, code = 3, length = 0.05,
-                  col = "darkred", lwd = 2)
-            }
-            dev.off()
-            val_ <- sort(unique(paired_df_EndOfTraining$UpdatesPerParam_Decoder))
-            NeuralWinProb_ds <- sapply(val_, function(ds) {
-                rows <- paired_df_EndOfTraining$UpdatesPerParam_Decoder ==
-                  ds
-                mean(paired_df_EndOfTraining$SkillSummary_NeuralODE[rows] >=
-                  paired_df_EndOfTraining$SkillSummary_Decoder[rows])
-            })
-            n_per_ds <- sapply(val_, function(ds) sum(paired_df_EndOfTraining$UpdatesPerParam_Decoder ==
-                ds))
-            se_ <- sqrt(NeuralWinProb_ds * (1 - NeuralWinProb_ds)/n_per_ds)
-            ci_low <- pmax(0, NeuralWinProb_ds - 1.96 * se_)
-            ci_high <- pmin(1, NeuralWinProb_ds + 1.96 * se_)
-            pdf(sprintf("./Figures/NeuralODEWinByPerParamData_SimMode%s.pdf",
-                SimMode))
-            {
-                par(mar = c(5, 5, 5, 1))
-                plot(val_, NeuralWinProb_ds, log = "x", type = "p",
-                  pch = 19, col = "black", ylim = c(0, 1.1),
-                  xlab = "Training Set Size", ylab = "Prob( NeuralODE Skill \u2265 Decoder )",
-                  main = "NeuralODE vs Decoder\nWin Probability by Training Set Size",
-                  cex.lab = 1.75, cex.main = 1.75)
-                abline(h = 0.5, lty = 3, col = "gray", lwd = 2)
-                arrows(x0 = dsizes, y0 = ci_low, x1 = dsizes,
-                  y1 = ci_high, angle = 90, code = 3, length = 0.05,
-                  col = "darkred", lwd = 2)
-            }
-            dev.off()
-            plot(tapply(paired_df_EndOfTraining$SkillSummary_Decoder,
-                paired_df_EndOfTraining$ContextLength_Decoder,
-                median))
-            plot(tapply(paired_df_EndOfTraining$SkillSummary_Decoder,
-                paired_df_EndOfTraining$ModelDims_Decoder, median))
-            plot(tapply(paired_df_EndOfTraining$SkillSummary_Decoder,
-                paired_df_EndOfTraining$nSamplesTrain_Decoder,
-                median))
-            DecoderForest <- randomForest::randomForest(y = paired_df_EndOfTraining$SkillSummary_inv_Decoder,
-                x = paired_df_EndOfTraining[, setdiff(paste0(colnames(TheGrid),
-                  "_Decoder"), c("BaseID_Decoder", "ResaveThisTFRecord_Decoder"))])
-            DecoderImport <- DecoderForest$importance
-            NeuralODEForest <- randomForest::randomForest(y = paired_df_EndOfTraining$SkillSummary_inv_NeuralODE,
-                x = paired_df_EndOfTraining[, setdiff(paste0(colnames(TheGrid),
-                  "_NeuralODE"), c("BaseID_NeuralODE", "ResaveThisTFRecord_NeuralODE"))])
-            NeuralODEImport <- NeuralODEForest$importance
-            DiffForest <- randomForest::randomForest(y = paired_df_EndOfTraining$SkillSummary_inv_NeuralODE -
-                paired_df_EndOfTraining$SkillSummary_inv_Decoder,
-                x = paired_df_EndOfTraining[, setdiff(paste0(colnames(TheGrid),
-                  "_Decoder"), c("BaseID_Decoder", "ResaveThisTFRecord_Decoder"))])
-            DiffImport <- DiffForest$importance
-            DiffForest$importance[order(NeuralODEForest$importance),
-                ]
-            if (FALSE) {
-                med_ctx <- median(paired_df_EndOfTraining$ContextLength_Decoder)
-                for (grp in c("Short", "Long")) {
-                  df <- paired_df_EndOfTraining[(grp == "Short" &
-                    paired_df_EndOfTraining$ContextLength_Decoder <
-                      med_ctx) | (grp == "Long" & paired_df_EndOfTraining$ContextLength_Decoder >=
-                    med_ctx), ]
-                  rf <- randomForest::randomForest(y = df$SkillSummary_inv_NeuralODE -
-                    df$SkillSummary_inv_Decoder, x = df[, setdiff(paste0(colnames(TheGrid),
-                    "_Decoder"), c("BaseID_Decoder", "ResaveThisTFRecord_Decoder"))])
-                  cat("\nVariable importance for", grp, "contexts:\n")
-                  print(rf$importance[order(rf$importance), ,
-                    drop = FALSE])
-                }
-            }
-            row.names(DiffImport) <- gsub(row.names(DiffImport),
-                pattern = "_Decoder", replace = "")
-            row.names(DecoderImport) <- gsub(row.names(DecoderImport),
-                pattern = "_Decoder", replace = "")
-            row.names(NeuralODEImport) <- gsub(row.names(NeuralODEImport),
-                pattern = "_NeuralODE", replace = "")
-            mean(row.names(NeuralODEImport) == row.names(DecoderImport))
-            plot(DecoderImport, NeuralODEImport)
-            abline(a = 0, b = 1)
-            plot(DecoderImport, DiffImport)
-            abline(a = 0, b = 1)
-            plot(NeuralODEImport, DiffImport)
-            abline(a = 0, b = 1)
-            DecoderImport[order(DecoderImport), ]
-            NeuralODEImport[order(NeuralODEImport), ]
-            DiffImport[order(DiffImport), ]
-            cor(cbind(DecoderImport, NeuralODEImport, DiffImport))
-            {
-                paired_df_EndOfTraining$b_ctx <- as.factor(paired_df_EndOfTraining$ContextLength_Decoder)
-                paired_df_EndOfTraining$b_nsamp <- as.factor(paired_df_EndOfTraining$nSamplesTrain_Decoder)
-                phase <- filter(summarise(group_by(paired_df_EndOfTraining,
-                  b_ctx, b_nsamp), p_win = mean(SkillSummary_NeuralODE >=
-                  SkillSummary_Decoder), gap = median(abs(SkillSummary_NeuralODE -
-                  SkillSummary_Decoder)), n = n(), .groups = "drop"),
-                  n >= 20)
-                p <- ggplot(phase, aes(x = b_ctx, y = b_nsamp,
-                  fill = p_win)) + geom_tile() + geom_contour(aes(z = p_win),
-                  breaks = 0.5, colour = "black", linetype = "dashed",
-                  size = 1.2) + geom_text(aes(label = scales::percent(p_win,
-                  accuracy = 1)), colour = "white", size = 3) +
-                  scale_fill_viridis_c(name = "P(NeuralODE > Decoder)",
-                    limits = c(0, 1)) + scale_x_discrete(expand = c(0,
-                  0)) + scale_y_discrete(expand = c(0, 0)) +
-                  labs(title = "When does NeuralODE beat a Decoder\u2011only model?",
-                    x = "Context length", y = "Training-set size") +
-                  theme_minimal(base_size = 14) + theme(axis.text.x = element_text(angle = 45,
-                  hjust = 1))
-                ggsave(p, file = sprintf("./Figures/PhaseDiagram_NeuralODEvsDecoder_SimMode%s.pdf",
-                  SimMode), width = 8, height = 6)
-            }
-        }
-        print2("---Logistic regression: Probability( NeuralODE wins | predictors )---")
-        if (SimMode) {
-            m_logit <- glm(WinNeuralODE ~ sigma_NeuralODE + gamma_NeuralODE +
-                c_endogeneous_NeuralODE + policy_effectiveness_NeuralODE +
-                ContextLength_NeuralODE + nParamsModel_log_NeuralODE +
-                nSamplesTrain_log_NeuralODE, data = paired_df[paired_df$i_in_sgd_Decoder ==
-                max(paired_df$i_in_sgd_Decoder), ], family = binomial("logit"))
-            summary(m_logit)
-            paired_df$pred_prob_logit <- predict(m_logit, newdata = paired_df,
-                type = "response")
-            roc_logit <- pROC::roc(paired_df$WinNeuralODE, paired_df$pred_prob_logit)
-            cat("AUC (Logistic) =", round(pROC::auc(roc_logit),
-                3), "\n")
-            table(paired_df$WinNeuralODE)
-            plot(paired_df$WinNeuralODE, paired_df$pred_prob_logit)
-            MakeHeatMap(factor1 = c(`log(Context length)` = "ContextLength_NeuralODE"),
-                factor2 = c(`log(# of Samples)` = "nSamplesTrain_log_NeuralODE"),
-                outcome = "WinNeuralODE", pdf_path = sprintf("./Figures/Heat_Win.pdf"),
-                useLog = "", dat = (paired_df[paired_df$i_in_sgd_Decoder ==
-                  max(paired_df$i_in_sgd_Decoder), colnames(m_logit$model)]),
-                lm_obj = m_logit, extrap_factor1 = 1, extrap_factor2 = 1,
-                OutcomeTransformFxn = function(x) {
-                  e1071::sigmoid(x)
-                }, openBrowser = F)
-            {
-                test_ <- glm(SkillSummary_NeuralODE ~ floatType_NeuralODE +
-                  sigma_NeuralODE + gamma_NeuralODE + c_endogeneous_NeuralODE +
-                  policy_effectiveness_NeuralODE + ContextLength_NeuralODE +
-                  nParamsModel_log_NeuralODE + nSamplesTrain_log_NeuralODE,
-                  data = paired_df[paired_df$i_in_sgd_NeuralODE ==
-                    max(paired_df$i_in_sgd_NeuralODE), ], family = "gaussian")
-                df_ <- paired_df[paired_df$i_in_sgd_NeuralODE ==
-                  max(paired_df$i_in_sgd_NeuralODE), ]
-                myForest_NeuralODESkill <- randomForest::randomForest(y = df_$SkillSummary_NeuralODE,
-                  x = df_[, paste0(colnames(TheGrid), "_NeuralODE")])
-                myForest_NeuralODESkill$importance[order(myForest_NeuralODESkill$importance),
-                  ]
-                myForest_DiffSkill <- randomForest::randomForest(y = df_$SkillSummary_Decoder -
-                  df_$SkillSummary_NeuralODE, x = df_[, paste0(colnames(TheGrid),
-                  "_NeuralODE")])
-                myForest_DiffSkill$importance[order(myForest_DiffSkill$importance),
-                  ]
-                test_ <- glm(SkillSummary_NeuralODE ~ floatType_NeuralODE +
-                  sigma_NeuralODE + gamma_NeuralODE + c_endogeneous_NeuralODE +
-                  policy_effectiveness_NeuralODE + ContextLength_NeuralODE +
-                  nParamsModel_log_NeuralODE + nSamplesTrain_log_NeuralODE,
-                  data = df_, family = "gaussian")
-                summary(test_)
-                paired_df$floatType_NeuralODE
-            }
-        }
-        {
-            library(patchwork)
-            library(tidyr)
-            long_scaling <- mutate(pivot_longer(dplyr::select(paired_df_EndOfTraining,
-                PairID_recon, ContextLength_Decoder, SkillSummary_Decoder,
-                ContextLength_NeuralODE, SkillSummary_NeuralODE,
-                nSamplesTrain_Decoder, SkillSummary_Decoder,
-                nSamplesTrain_NeuralODE, SkillSummary_NeuralODE,
-                ModelDims_Decoder, ModelDims_NeuralODE), cols = -PairID_recon,
-                names_to = c(".value", "Model"), names_sep = "_(?=[^_]+$)"),
-                Model = factor(Model, levels = c("Decoder", "NeuralODE"),
-                  labels = c("Decoder", "NeuralODE")))
-            base_theme <- theme_minimal(base_size = 14) + theme(panel.grid.major = element_line(size = 0.3),
-                panel.grid.minor = element_blank(), legend.position = "bottom")
-            pal <- c(Decoder = "#e64b35", NeuralODE = "#4da6ff")
-            lowess_span <- 5
-            p_context <- ggplot(long_scaling, aes(x = ContextLength,
-                y = SkillSummary, colour = Model)) + geom_point(alpha = 0.65,
-                size = 1.5) + geom_smooth(se = FALSE, method = "loess",
-                span = lowess_span, linewidth = 1.2) + scale_colour_manual(values = pal,
-                breaks = c("Decoder", "NeuralODE"), name = NULL) +
-                guides(colour = guide_legend(nrow = 2, byrow = TRUE)) +
-                scale_x_continuous(trans = scales::log2_trans(),
-                  breaks = scales::trans_breaks("log2", function(x) 2^x),
-                  labels = scales::trans_format("log2", scales::math_format(2^.x))) +
-                coord_cartesian(ylim = c(-0.5, 1)) + labs(x = "log(Context length)",
-                y = "Skill index", title = "A. Scaling with context length") +
-                base_theme
-            p_nsamp <- ggplot(long_scaling, aes(x = nSamplesTrain,
-                y = SkillSummary, colour = Model)) + geom_point(alpha = 0.65,
-                size = 1.5) + geom_smooth(se = FALSE, method = "loess",
-                span = lowess_span, linewidth = 1.2) + scale_colour_manual(values = pal,
-                breaks = c("Decoder", "NeuralODE"), name = NULL) +
-                guides(colour = guide_legend(nrow = 2, byrow = TRUE)) +
-                labs(x = "Training-set size", y = NULL, title = "B. Scaling with number of observations") +
-                base_theme + scale_x_continuous(trans = scales::log10_trans(),
-                breaks = scales::trans_breaks("log10", function(x) 10^x),
-                labels = scales::trans_format("log10", scales::math_format(10^.x))) +
-                coord_cartesian(ylim = c(-0.5, 1)) + theme(axis.text.y = element_blank(),
-                axis.ticks.y = element_blank())
-            p_ <- ggplot(long_scaling, aes(x = ModelDims, y = SkillSummary,
-                colour = Model)) + geom_point(alpha = 0.65, size = 1.5) +
-                geom_smooth(se = FALSE, method = "loess", span = lowess_span,
-                  linewidth = 1.2) + scale_colour_manual(values = pal,
-                limits = c("Decoder", "NeuralODE"), name = NULL) +
-                guides(colour = guide_legend(nrow = 2, byrow = TRUE)) +
-                scale_x_continuous(trans = scales::log10_trans(),
-                  breaks = scales::trans_breaks("log2", function(x) 2^x),
-                  labels = scales::trans_format("log2", scales::math_format(2^.x))) +
-                coord_cartesian(ylim = c(-0.5, 1)) + labs(x = "",
-                y = NULL, title = "C. Model Dimensions") + base_theme +
-                theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
-            scaling_plot <- (p_context | p_nsamp | p_) + plot_layout(guides = "collect")
-            scaling_plot
-            ggsave(sprintf("./Figures/Scaling_Decoder_vs_NeuralODE_%s.pdf",
-                SimMode), scaling_plot, device = "pdf", width = 10,
-                height = 5)
-        }
-        print("Done plotting comparision for skill results...")
-    }
-    print("source the scaling results")
-    ndm_source_extracted("ResultsAnalyze/SuperLModel_GenScalingResults.R")
-    print("source the input stats")
-    ndm_source_extracted("ResultsAnalyze/SuperLModel_GenFigs_GenInputStats.R")
-    Decoder_ <- res_mat_[res_mat_$ModelType == "DecoderOnly",
-        ]
-    NeuralODE <- res_mat_[res_mat_$ModelType == "NeuralODE",
-        ]
-    print("Results evolution figs")
-    {
-        GroupPolicyResultsBy_cols <- c("ContextLength", "ModelDepth",
-            "nSamplesTrain")
-        res_mat$GroupPolicyResultsBy <- apply(res_mat[, GroupPolicyResultsBy_cols],
-            1, function(x) {
-                paste(x, collapse = "_")
-            })
-        res_mat_Start <- res_mat[res_mat$i_in_sgd %in% min(res_mat$i_in_sgd),
-            ]
-        res_mat_End <- res_mat[res_mat$i_in_sgd %in% (res_mat$nSGD),
-            ]
-        tapply(res_mat_End$SkillSummary, res_mat_End$ModelDepth,
-            mean2)
-        v_seq <- quantile(sort(unique(f2n(res_mat$i_in_sgd))),
-            c(0, 0.33, 0.66, 1))
-        v_seq <- sapply(v_seq, function(x) {
-            sort(unique(f2n(res_mat$i_in_sgd)))[which.min(abs(x -
-                sort(unique(f2n(res_mat$i_in_sgd)))))]
-        })
-        v_ct_ <- 0
-        for (v_ in v_seq) {
-            v_ct_ <- v_ct_ + 1
-            pdf(file.path(SaveFolder, sprintf("SkillAnimation_%s_%s.pdf",
-                FiguresTag, v_ct_)))
-            par(mar = c(5, 5, 3, 1))
-            hist(ifelse(f2n(res_mat[j_ <- res_mat$i_in_sgd ==
-                v_, ]$SkillSummary) < 0, 0, f2n(res_mat$SkillSummary)[j_]),
-                xlim = c(0, 1), xlab = "Skill", ylab = "Frequency",
-                cex.main = 2, cex.lab = 2, breaks = seq(0, 1,
-                  length.out = 10), main = sprintf("Iteration %s of %s",
-                  v_, max(unique(f2n(res_mat$i_in_sgd)))))
-            dev.off()
-        }
-        print2("---Baseline skill visualizations---")
-        pdf(sprintf("./Figures/RSSBaseVSkillAtInitialization_%s.pdf",
-            FiguresTag))
-        {
-            par(mar = c(5, 5, 1, 1), mfrow = c(1, 1))
-            plot(res_mat_Start$RSSBaselineSummary, ytrans_ <- -log(abs(res_mat_Start$SkillSummary)),
-                log = "x", yaxt = "n", cex.lab = 1.5, xlab = "RSS Baseline",
-                ylab = "Skill at Initialization")
-            axis(side = 2, at = seq(summary(ytrans_)[1], summary(ytrans_)[6],
-                length.out = 4), labels = round(seq(summary(res_mat$SkillSummary)[1],
-                summary(res_mat$SkillSummary)[6], length.out = 4),
-                2))
-        }
-        dev.off()
-        pdf(sprintf("./Figures/RSSBaseline_c1_%s.pdf", FiguresTag))
-        {
-            par(mfrow = c(2, 2), mar = c(2, 2, 4, 1))
-            theLims <- c(0, 1.5 * max(eval(parse(text = sprintf("res_mat_Start$RSSBaselineTime%s",
-                nTimesLookValidationInferenceTrainedTo))), na.rm = T))
-            for (f_ in 4:1) {
-                hist(eval(parse(text = sprintf("res_mat_Start$RSSBaselineTime%s",
-                  wk_ <- round(nTimesLookValidationInferenceTrainedTo/f_)))),
-                  xlim = theLims, main = sprintf("RSS, Time %s",
-                    wk_), xlab = "", cex.main = 1.5, breaks = seq(0,
-                    theLims[2], length.out = 40))
-            }
-        }
-        dev.off()
-        if (SimMode & T == F) {
-            for (GroupPolicyByThis_ in unique(res_mat$GroupPolicyResultsBy)) {
-                for (ty_ in c("BaselineRSS", "Skill")) {
-                  res_mat_ <- res_mat[res_mat$i_in_sgd %in% max(res_mat$i_in_sgd) &
-                    res_mat$GroupPolicyResultsBy %in% GroupPolicyByThis_,
-                    ]
-                  if (ty_ == "Skill") {
-                    theOutcome <- "SkillSummary"
-                  }
-                  if (ty_ == "BaselineRSS") {
-                    theOutcome <- "RSSBaselineSummary"
-                  }
-                  aggregated_data_median <- res_mat_ %>% group_by(c_endogeneous,
-                    policy_effectiveness) %>% summarise(Ave = median(eval(parse(text = theOutcome))))
-                  aggregated_data_median <- reshape2::acast(aggregated_data_median,
-                    c_endogeneous ~ policy_effectiveness, value.var = "Ave")
-                  aggregated_data_mean <- res_mat_ %>% group_by(c_endogeneous,
-                    policy_effectiveness) %>% summarise(Ave = mean(eval(parse(text = theOutcome))))
-                  aggregated_data_mean <- reshape2::acast(aggregated_data_mean,
-                    c_endogeneous ~ policy_effectiveness, value.var = "Ave")
-                  aggregated_data_mean_untrimmed <- res_mat_ %>%
-                    group_by(c_endogeneous, policy_effectiveness) %>%
-                    summarise(Ave = mean2(eval(parse(text = theOutcome))))
-                  aggregated_data_mean_untrimmed <- reshape2::acast(aggregated_data_mean_untrimmed,
-                    c_endogeneous ~ policy_effectiveness, value.var = "Ave")
-                  aggregated_data_var <- res_mat_ %>% group_by(c_endogeneous,
-                    policy_effectiveness) %>% summarise(Ave = var(eval(parse(text = theOutcome))))
-                  aggregated_data_var <- reshape2::acast(aggregated_data_var,
-                    c_endogeneous ~ policy_effectiveness, value.var = "Ave")
-                  aggregated_data_n <- res_mat_ %>% group_by(c_endogeneous,
-                    policy_effectiveness) %>% summarise(Ave = length(eval(parse(text = theOutcome))))
-                  aggregated_data_n <- reshape2::acast(aggregated_data_n,
-                    c_endogeneous ~ policy_effectiveness, value.var = "Ave")
-                  sum(aggregated_data_n, na.rm = T)
-                  aggregated_data_se <- sqrt(aggregated_data_var/aggregated_data_n)
-                  aggregated_data_lb <- aggregated_data_mean -
-                    sqrt(1/aggregated_data_n * aggregated_data_var)
-                  RowKey <- c("Endo.")
-                  ColKey <- c("P. Effect")
-                  ProcessAggMatFxn <- function(m) {
-                    m[] <- helpeRs::fixZeroEndings(round(m, 2))
-                    row.names(m) <- helpeRs::fixZeroEndings(round(f2n(row.names(m)),
-                      3), roundAt = 3)
-                    colnames(m) <- helpeRs::fixZeroEndings(round(f2n(colnames(m)),
-                      3), roundAt = 3)
-                    row.names(m)[1] <- paste(sprintf("%s$=$",
-                      RowKey), rownames(m)[1])
-                    colnames(m)[1] <- paste(sprintf("%s$=$",
-                      ColKey), colnames(m)[1])
-                    return(m)
-                  }
-                  GroupPolicyByThisText_ <- paste(sapply(1:length(GroupPolicyResultsBy_cols),
-                    function(s_) {
-                      tmp_ <- res_mat[1, GroupPolicyResultsBy_cols][s_]
-                      paste0(names(tmp_)[1], "=", format(tmp_[1],
-                        scientific = FALSE))
-                    }), collapse = ", ")
-                  write(file = sprintf("%s/Heat%s_%s.tex", SaveFolder,
-                    ty_, FiguresTag), stargazer::stargazer(ProcessAggMatFxn(aggregated_data_mean),
-                    type = "latex", label = sprintf("tab:Heat%s",
-                      ty_), title = sprintf("%s Rows denote endogeneity levels; columns denote policy effectiveness levels. \n                                                   %s. %s observations per grid cell.",
-                      ifelse(ty_ == "BaselineRSS", yes = "Baseline RSS analysis. ",
-                        no = "Skill analysis."), GroupPolicyByThisText_,
-                      theN <- median(aggregated_data_n))))
-                  write(file = sprintf("%s/Heat%sVar_%s.tex",
-                    SaveFolder, ty_, FiguresTag), stargazer::stargazer(ProcessAggMatFxn(aggregated_data_se),
-                    type = "latex", label = sprintf("tab:Heat%sSE",
-                      ty_), title = sprintf("%s Rows denote endogeneity levels; columns denote policy effectiveness levels. \n                                                   %s. %s observations per grid cell.",
-                      ifelse(ty_ == "BaselineRSS", yes = "Baseline RSS analysis, standard error. ",
-                        no = "Skill analysis, standard error."),
-                      GroupPolicyByThisText_, theN)))
-                }
-            }
-        }
-    }
-    stop("XXX")
-    {
-        print("--- XXX12344321XXX: Generating 3 Powerful Insight Figures ---")
-        {
-            library(ggplot2)
-            library(dplyr)
-            if (exists("paired_df")) {
-                df_test <- paired_df[paired_df$i_in_sgd_Decoder ==
-                  max(paired_df$i_in_sgd_Decoder), ]
-            }
-            else {
-                df_test <- res_mat[res_mat$i_in_sgd == max(res_mat$i_in_sgd),
-                  ] %>% filter(ModelType %in% c("DecoderOnly",
-                  "NeuralODE")) %>% tidyr::pivot_wider(names_from = ModelType,
-                  values_from = c(SkillSummary, RSSBaselineSummary)) %>%
-                  rename(SkillSummary_Decoder = SkillSummary_DecoderOnly,
-                    SkillSummary_NeuralODE = SkillSummary_NeuralODE,
-                    RSSBaselineSummary_Decoder = RSSBaselineSummary_DecoderOnly)
-                names(df_test) <- paste0(names(df_test), "_Decoder")
-            }
-            df_test$g_Skill_Dec <- -log(1 - df_test$SkillSummary_Decoder +
-                0.001)
-            df_test$g_Skill_Node <- -log(1 - df_test$SkillSummary_NeuralODE +
-                0.001)
-            library(scales)
-            p1 <- {
-                ggplot(df_test, aes(x = nSamplesTrain_Decoder)) +
-                  geom_smooth(aes(y = g_Skill_Node, color = "Hybrid (NeuralODE)",
-                    fill = "Hybrid (NeuralODE)"), method = "lm",
-                    formula = y ~ log(x), alpha = 0.15) + geom_smooth(aes(y = g_Skill_Dec,
-                  color = "Decoder-Only", fill = "Decoder-Only"),
-                  method = "lm", formula = y ~ log(x), alpha = 0.15) +
-                  scale_x_log10(labels = scales::trans_format("log10",
-                    scales::math_format(10^.x))) + scale_color_manual(name = NULL,
-                  values = c(`Hybrid (NeuralODE)` = "#e41a1c",
-                    `Decoder-Only` = "#377eb8")) + scale_fill_manual(name = NULL,
-                  values = c(`Hybrid (NeuralODE)` = "#e41a1c",
-                    `Decoder-Only` = "#377eb8")) + labs(title = "Data Efficiency",
-                  y = "Stabilized Skill -log(1-S)", x = "Training Samples") +
-                  theme_minimal(base_size = 14, base_line_size = 1) +
-                  theme(legend.position = "bottom", panel.grid = element_blank())
-            }
-            p1
-            ggsave(sprintf("%s/MarginalDataScaling_%s.pdf", SaveFolder,
-                FiguresTag), p1, width = 7, height = 6)
-            if ("c_endogeneous_Decoder" %in% names(df_test)) {
-                agg_endo <- df_test %>% group_by(c_endogeneous_Decoder) %>%
-                  summarise(BaseRSS = median(RSSBaselineSummary_Decoder,
-                    na.rm = T), SkillGap = median(SkillSummary_NeuralODE -
-                    SkillSummary_Decoder, na.rm = T))
-                coeff <- max(agg_endo$SkillGap)/max(agg_endo$BaseRSS)
-                p2 <- ggplot(agg_endo, aes(x = c_endogeneous_Decoder)) +
-                  geom_line(aes(y = BaseRSS * coeff, linetype = "Baseline Difficulty (RSS)"),
-                    color = "gray50", size = 1.2) + geom_line(aes(y = SkillGap,
-                  color = "Hybrid Advantage (Gap)"), size = 1.5) +
-                  scale_y_continuous(name = "Hybrid Skill Advantage (Gap)",
-                    sec.axis = sec_axis(~./coeff, name = "Baseline RSS (Lower = 'Easier')")) +
-                  scale_color_manual(values = c(`Hybrid Advantage (Gap)` = "#e41a1c")) +
-                  labs(title = "2. The Endogeneity Paradox",
-                    subtitle = "As feedback strengthens (x), the task becomes 'easier' (RSS drops),\nyet the Hybrid's advantage persists or grows.",
-                    x = "Endogeneity Strength (Feedback)") +
-                  theme_minimal(base_size = 14) + theme(legend.position = "bottom")
-                ggsave(sprintf("%s/Insight2_Endogeneity_%s.pdf",
-                  SaveFolder, FiguresTag), p2, width = 7, height = 6)
-            }
-            if ("c_endogeneous_Decoder" %in% names(df_test)) {
-                df_test$Win <- df_test$SkillSummary_NeuralODE >
-                  df_test$SkillSummary_Decoder
-                agg_map <- df_test %>% group_by(c_endogeneous_Decoder,
-                  nSamplesTrain_Decoder) %>% summarise(WinProb = mean(Win,
-                  na.rm = T), .groups = "drop")
-                p3 <- ggplot(agg_map, aes(x = factor(nSamplesTrain_Decoder),
-                  y = factor(c_endogeneous_Decoder), fill = WinProb)) +
-                  geom_tile(color = "white") + scale_fill_gradient2(low = "#377eb8",
-                  mid = "white", high = "#e41a1c", midpoint = 0.5,
-                  limits = c(0, 1), name = "P(Hybrid > Dec)") +
-                  labs(title = "3. Regime Robustness Map", subtitle = "Red = Hybrid Wins. The Hybrid dominates in the\nHigh-Feedback / Low-Data corner (Top Left).",
-                    x = "Training Samples", y = "Endogeneity Strength") +
-                  theme_minimal(base_size = 14)
-                ggsave(sprintf("%s/Insight3_RegimeMap_%s.pdf",
-                  SaveFolder, FiguresTag), p3, width = 8, height = 6)
-            }
-            print("--- Finished generating 3 Insight Figures ---")
-        }
-    }
-    print("Making heat maps")
-    stop("XXX")
-    {
-        MakeHeatMaps <- FALSE
-        ModelsUseInLms <- c("NeuralODE", "DecoderOnly")
-        for (TypeMultivariateModel in c("lm")) {
-            print2(sprintf("Starting multivariate analysis [type: %s]...",
-                TypeMultivariateModel))
-            if (SimMode) {
-                if (TypeMultivariateModel == "randomForest") {
-                  res_mat$SkillSummary[res_mat$SkillSummary <
-                    -100] <- -100
-                  TrainedModel_RSS <- randomForest::randomForest(y = res_mat$RSSBaselineSummary_inv,
-                    x = cols2numeric(res_mat[, theCovars_ <- c("ContextLength_log",
-                      "ModelDepth_log", "c_endogeneous", "policy_decay",
-                      "policy_effectiveness", "policy_responsiveness",
-                      "invbetat_sd", "gamma", "sigma", "xi",
-                      "i0_a", "i0_b", "i_in_sgd")]), ntrees = 10000)
-                  TrainedModel_Skill <- randomForest::randomForest(y = res_mat$SkillSummary,
-                    x = cols2numeric(res_mat[, c(theCovars_,
-                      "RSSBaselineTime1")]), ntrees = 10000,
-                    localImp = T, importance = T)
-                  TrainedModel_Skill$importance[order(TrainedModel_Skill$importance[,
-                    1], decreasing = T), ]
-                }
-                if (TypeMultivariateModel == "lm") {
-                  ModelTrained_RSS <- lm(RSSBaselineSummary_inv ~
-                    f2n(c_endogeneous) + f2n(policy_effectiveness) +
-                      f2n(policy_decay) + f2n(policy_effectiveness) *
-                      f2n(c_endogeneous) + f2n(policy_responsiveness) +
-                      f2n(invbetat_sd) + f2n(gamma) + f2n(sigma) +
-                      f2n(xi) + f2n(i0_a) + f2n(i0_b) + f2n(r0_a) +
-                      f2n(r0_b), data = res_mat[res_mat$i_in_sgd ==
-                    min(res_mat$i_in_sgd) & res_mat$ModelType ==
-                    ModelsUseInLms[1], ])
-                  summary(ModelTrained_RSS)
-                  for (re_ in c("all", "StartOfTraining", "AtEpoch1",
-                    "EndOfTraining")) {
-                    i_in_sgd_text <- ifelse(re_ == "all", yes = "*I(f2n(atEpoch_log))",
-                      no = "")
-                    GrabModelCond <- res_mat$ModelType %in% ModelsUseInLms
-                    if (re_ == "all") {
-                      res_mat_use <- res_mat
-                    }
-                    if (re_ == "StartOfTraining") {
-                      res_mat_use <- res_mat[res_mat$i_in_sgd ==
-                        min(res_mat$i_in_sgd) & GrabModelCond,
-                        ]
-                    }
-                    if (re_ == "AtEpoch1") {
-                      res_mat_use <- res_mat[res_mat$atEpoch >=
-                        1 & res_mat$atEpoch < 2 & GrabModelCond,
-                        ]
-                    }
-                    if (re_ == "EndOfTraining") {
-                      res_mat_use <- res_mat[res_mat$i_in_sgd ==
-                        max(res_mat$i_in_sgd) & GrabModelCond,
-                        ]
-                    }
-                    TrainedModel_Skill <- lm(eval(parse(text = sprintf("as.formula(SkillSummary_inv ~\n                                     # causal parameters of interest \n                                     f2n(c_endogeneous) +\n                                     f2n(policy_effectiveness) + \n                                     f2n(policy_decay) + \n                                     f2n(policy_responsiveness) + \n                                     f2n(policy_effectiveness)*f2n(c_endogeneous)%s + \n                                     \n                                     # training & model parameters \n                                     f2n(nSamplesTrain_log)+\n                                     f2n(nParamsModel_log)+\n                                     f2n(ContextLength_log)+\n                                     #I((f2n(nSamplesTrain_log)))*I((f2n(nParamsModel_log)))%s +\n                                     #f2n(ContextLength_log)*(I(f2n(nParamsModel_log)))%s + \n                                     \n                                     ## #I(f2n(i_in_sgd_log)) + \n                                     \n                                     # other factors to marginalize over\n                                     f2n(invbetat_sd) + \n                                     f2n(gamma) +\n                                     f2n(sigma) +\n                                     f2n(xi) +\n                                     f2n(i0_a) + f2n(i0_b) + \n                                     f2n(i0_a) * f2n(i0_b) + \n                                     f2n(r0_a) + f2n(r0_b)\n                                     )",
-                      i_in_sgd_text, i_in_sgd_text, i_in_sgd_text))),
-                      data = res_mat_use)
-                    if (re_ == "all") {
-                      TrainedModel_Skill_all <- TrainedModel_Skill
-                    }
-                    if (re_ == "StartOfTraining") {
-                      TrainedModel_Skill_StartOfTraining <- TrainedModel_Skill
-                    }
-                    if (re_ == "AtEpoch1") {
-                      TrainedModel_Skill_AtEpoch1 <- TrainedModel_Skill
-                    }
-                    if (re_ == "EndOfTraining") {
-                      TrainedModel_Skill_EndOfTraining <- TrainedModel_Skill
-                    }
-                    rm(TrainedModel_Skill)
-                  }
-                }
-            }
-            if (!SimMode) {
-                res_mat$nCovars <- unlist(lapply(strsplit(res_mat$dataInputs,
-                  split = "__"), length))
-                if (TypeMultivariateModel == "randomForest") {
-                  res_mat$SkillSummary[res_mat$SkillSummary <
-                    -100] <- -100
-                  TrainedModel_RSS <- randomForest::randomForest(y = res_mat$RSSBaselineSummary_inv,
-                    x = cols2numeric(res_mat[, c("ContextLength_log",
-                      "ModelDepth_log", "nSamplesTrain_log",
-                      "i_in_sgd_log", "evaluationTime")]), ntrees = 10000)
-                  CovarMat_ <- sapply(unique(unlist(strsplit(res_mat$dataInputs,
-                    split = "__"))), function(x) {
-                    lapply(strsplit(res_mat$dataInputs, split = "__"),
-                      function(y) {
-                        1 * (x %in% y)
-                      })
-                  })
-                  res_mat <- cbind(res_mat, CovarMat_)
-                  TrainedModel_Skill <- randomForest::randomForest(y = res_mat$SkillSummary_inv,
-                    x = cols2numeric(res_mat[, c("ContextLength_log",
-                      "ModelDepth_log", "nSamplesTrain", "RSSBaselineTime1",
-                      "atEpoch_log", colnames(CovarMat_), "evaluationTime")]),
-                    ntrees = 10000, localImp = T, importance = T)
-                  TrainedModel_Skill$importance[order(TrainedModel_Skill$importance[,
-                    1], decreasing = T), ]
-                }
-                if (TypeMultivariateModel == "lm") {
-                  ModelTrained_RSS <- lm(RSSBaselineSummary_inv ~
-                    f2n(maxInSampleTime_id), data = res_mat)
-                  png(sprintf("%s/RealRSS_ByTime_%s.png", SaveFolder,
-                    FiguresTag))
-                  {
-                    par(mfrow = c(1, 1), mar = c(5, 5, 1, 1))
-                    y_ <- res_mat_orig_WithSkills$RSSBaselineTime8 +
-                      res_mat_orig_WithSkills$RSSBaselineTime9 +
-                      res_mat_orig_WithSkills$RSSBaselineTime10 +
-                      0.01
-                    colPal <- tapply(y_[res_mat_orig_WithSkills$evaluationTime ==
-                      1], res_mat_orig_WithSkills$location_id[res_mat_orig_WithSkills$evaluationTime ==
-                      1], function(z) {
-                      mean(z, na.rm = T)
-                    })
-                    colPal_ordered <- viridis::magma(n = length(colPal),
-                      alpha = 0.9, begin = 0.15, end = 0.85)
-                    names(colPal_ordered) <- names(colPal)[order(colPal)]
-                    plot(x_ <- res_mat_orig_WithSkills$time_anchor_id,
-                      y_, yaxt = "n", col = colPal_ordered[as.character(res_mat_orig_WithSkills$location_id)],
-                      xlab = "Evaluation Time", ylab = "RSS",
-                      pch = 19, cex.axis = 1.5, log = "y", cex = 0.5,
-                      cex.lab = 1.5)
-                    axis(2, at = c(0.01, 0.1, 1, 10), labels = c(0.01,
-                      0.1, 1, 10))
-                  }
-                  dev.off()
-                  pdf(sprintf("%s/RealRSS_ByPlace_%s.pdf", SaveFolder,
-                    FiguresTag))
-                  {
-                    par(mfrow = c(1, 1), mar = c(5, 5, 1, 1))
-                    colPal <- tapply(y_[res_mat_orig_WithSkills$evaluationTime ==
-                      1], res_mat_orig_WithSkills$location_id[res_mat_orig_WithSkills$evaluationTime ==
-                      1], function(z) {
-                      sd(z, na.rm = T)
-                    })
-                    colPal_ordered <- viridis::magma(n = length(colPal),
-                      alpha = 0.9, begin = 0.15, end = 0.85)
-                    names(colPal_ordered) <- names(colPal)[order(colPal)]
-                    x_ <- tapply(res_mat_orig_WithSkills$location_id,
-                      res_mat_orig_WithSkills$location_id, unique)
-                    y_ <- tapply(res_mat_orig_WithSkills$RSSBaselineTime8 +
-                      res_mat_orig_WithSkills$RSSBaselineTime9 +
-                      res_mat_orig_WithSkills$RSSBaselineTime10 +
-                      0.01, res_mat_orig_WithSkills$location_id,
-                      sd)
-                    plot(0.001 + y_[order(y_)], yaxt = "n", xlab = "Locations, Sorted",
-                      ylab = "sd(RSS)", pch = 19, cex.axis = 1.5,
-                      log = "y", cex = 0.9, cex.lab = 1.5)
-                    axis(2, at = c(0.01, 0.1, 1, 10), labels = c(0.01,
-                      0.1, 1, 10))
-                  }
-                  dev.off()
-                  for (re_ in c("all", "StartOfTraining", "AtEpoch1",
-                    "EndOfTraining")) {
-                    if (re_ == "all") {
-                      res_mat_use <- res_mat
-                    }
-                    if (re_ == "StartOfTraining") {
-                      res_mat_use <- res_mat[res_mat$i_in_sgd ==
-                        min(res_mat$i_in_sgd), ]
-                    }
-                    if (re_ == "AtEpoch1") {
-                      res_mat_use <- res_mat[res_mat$atEpoch >=
-                        1 & res_mat$atEpoch < 2, ]
-                    }
-                    if (re_ == "EndOfTraining") {
-                      res_mat_use <- res_mat[res_mat$i_in_sgd ==
-                        max(res_mat$i_in_sgd), ]
-                    }
-                    i_in_sgd_text <- ifelse(re_ == "all", yes = "*I(f2n(i_in_sgd_log))",
-                      no = "")
-                    TrainedModel_Skill <- lm(eval(parse(text = sprintf("as.formula(SkillSummary_inv ~   \n                                     # training & model parameters \n                                     f2n(ContextLength_log)*(I(f2n(nParamsModel_log)))%s + \n                                     I(f2n(i_in_sgd_log)) + \n                                     I((f2n(nSamplesTrain_log)))*I((f2n(nParamsModel_log)))%s +\n                                     f2n(nCovars)*(I(f2n(nParamsModel_log)))%s + \n                                     \n                                     # other factors to marginalize over\n                                     f2n(evaluationTime))",
-                      i_in_sgd_text, i_in_sgd_text, i_in_sgd_text))),
-                      data = res_mat_use)
-                    if (re_ == "all") {
-                      TrainedModel_Skill_all <- TrainedModel_Skill
-                    }
-                    if (re_ == "StartOfTraining") {
-                      TrainedModel_Skill_StartOfTraining <- TrainedModel_Skill
-                    }
-                    if (re_ == "AtEpoch1") {
-                      TrainedModel_Skill_AtEpoch1 <- TrainedModel_Skill
-                    }
-                    if (re_ == "EndOfTraining") {
-                      TrainedModel_Skill_EndOfTraining <- TrainedModel_Skill
-                    }
-                  }
-                }
-            }
-            print2(sprintf("Starting MakeHeatMaps in multivariate analysis [type: %s]...",
-                TypeMultivariateModel))
-            if (MakeHeatMaps <- FALSE) {
-                options(scipen = 10)
-                MakeHeatMap(factor1 = c(`log(Context length)` = "ContextLength_log"),
-                  factor2 = c(`log(# of Parameters)` = "nParamsModel_log"),
-                  outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_ContextVParams_%s_%s.pdf",
-                    FiguresTag, TypeMultivariateModel), useLog = "",
-                  dat = res_mat[res_mat$i_in_sgd == res_mat$nSGD,
-                    ], lm_obj = TrainedModel_Skill_EndOfTraining,
-                  extrap_factor1 = 1, extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedSkill,
-                  openBrowser = F)
-                MakeHeatMap(factor1 = c(`log(Training Samples)` = "nSamplesTrain_log"),
-                  factor2 = c(`log(Context length)` = "ContextLength_log"),
-                  outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_DataVsContext_%s_%s.pdf",
-                    FiguresTag, TypeMultivariateModel), useLog = "",
-                  dat = res_mat[res_mat$i_in_sgd == res_mat$nSGD,
-                    ], lm_obj = TrainedModel_Skill_AtEpoch1,
-                  extrap_factor1 = 1, extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedSkill,
-                  openBrowser = F)
-                MakeHeatMap(factor1 = c(`log(Iteration #)` = "i_in_sgd_log"),
-                  factor2 = c(`log(# of Parameters)` = "nParamsModel_log"),
-                  outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_IterNumbVDepth_%s_%s.pdf",
-                    FiguresTag, TypeMultivariateModel), dat = res_mat,
-                  lm_obj = TrainedModel_Skill_all, extrap_factor1 = 1,
-                  extrap_factor2 = 1, OUTCOME_SCALER = 1, OutcomeTransformFxn = Map2ConstrainedSkill)
-                MakeHeatMap(factor1 = c(`log(Iteration #)` = "i_in_sgd_log"),
-                  factor2 = c(`log(Context length)` = "ContextLength_log"),
-                  outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_IterNumbVContext_%s_%s.pdf",
-                    FiguresTag, TypeMultivariateModel), dat = res_mat,
-                  lm_obj = TrainedModel_Skill_all, extrap_factor1 = 1,
-                  extrap_factor2 = 1, OUTCOME_SCALER = 1, OutcomeTransformFxn = Map2ConstrainedSkill)
-                MakeHeatMap(factor1 = c(`log(Training Samples)` = "nSamplesTrain_log"),
-                  factor2 = c(`log(Parameter #)` = "nParamsModel_log"),
-                  outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_SamplesVContext_%s_%s.pdf",
-                    FiguresTag, TypeMultivariateModel), useLog = "x",
-                  dat = res_mat[f2n(res_mat$i_in_sgd) == (f2n(res_mat$nSGD)),
-                    ], lm_obj = TrainedModel_Skill_EndOfTraining,
-                  extrap_factor1 = 1, extrap_factor2 = 1, OUTCOME_SCALER = 1,
-                  OutcomeTransformFxn = Map2ConstrainedSkill,
-                  openBrowser = F)
-                plot(res_mat$RSSBaselineSummary_inv, res_mat$RSSBaselineSummary)
-                plot(res_mat$c_endogeneous, res_mat$RSSBaselineSummary_inv)
-                plot(res_mat$policy_effectiveness, res_mat$RSSBaselineSummary_inv)
-                hist(res_mat$RSSBaselineSummary_inv)
-                hist(res_mat$RSSBaselineSummary)
-                if (SimMode) {
-                  MakeHeatMap(factor1 = c(Endogeneity = "c_endogeneous"),
-                    factor2 = c(`Policy effectiveness` = "policy_effectiveness"),
-                    outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_EndogVPolicyEffectiveness_%s_%s.pdf",
-                      FiguresTag, TypeMultivariateModel), dat = res_mat[res_mat$i_in_sgd ==
-                      res_mat$nSGD, ], lm_obj = TrainedModel_Skill_EndOfTraining,
-                    extrap_factor1 = 1, extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedSkill)
-                  MakeHeatMap(factor1 = c(Endogeneity = "c_endogeneous"),
-                    factor2 = c(`Policy effectiveness` = "policy_effectiveness"),
-                    outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_BaseRSS_EndogVPolicyEffectiveness_%s_%s.pdf",
-                      FiguresTag, TypeMultivariateModel), dat = res_mat,
-                    lm_obj = ModelTrained_RSS, extrap_factor1 = 1,
-                    extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedSkill)
-                  MakeHeatMap(factor1 = c(Endogeneity = "c_endogeneous"),
-                    factor2 = c(`Policy effectiveness` = "policy_effectiveness"),
-                    outcome = "RSSBaselineSummary_inv", pdf_path = sprintf("./Figures/Heat_BaseRSS_EndogVPolicyEffectiveness_%s_%s.pdf",
-                      FiguresTag, TypeMultivariateModel), dat = res_mat,
-                    lm_obj = ModelTrained_RSS, extrap_factor1 = 1,
-                    extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedBaselineRSS)
-                  print2("MakeHeatMap: Pop Mean vs. Variability...")
-                  MakeHeatMap(factor1 = c(`Population Mean, Initial infections` = "i0_a"),
-                    factor2 = c(`Population Variability, Initial infections` = "i0_b"),
-                    outcome = "RSSBaselineSummary_inv", pdf_path = sprintf("./Figures/Heat_BaseRSS_InitialCond_%s_%s.pdf",
-                      FiguresTag, TypeMultivariateModel), dat = res_mat,
-                    lm_obj = ModelTrained_RSS, extrap_factor1 = 1,
-                    extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedBaselineRSS)
-                  print2("MakeHeatMap: Endogeneity vs. Effectiveness...")
-                  MakeHeatMap(factor1 = c(Endogeneity = "c_endogeneous"),
-                    factor2 = c(`Policy effectiveness` = "policy_effectiveness"),
-                    outcome = "RSSBaselineSummary_inv", pdf_path = sprintf("./Figures/Heat_BaseRSS_EndogVPolicyEffectiveness_%s_%s.pdf",
-                      FiguresTag, TypeMultivariateModel), dat = res_mat,
-                    lm_obj = ModelTrained_RSS, extrap_factor1 = 1,
-                    extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedBaselineRSS)
-                }
-                if (!SimMode) {
-                  print2("MakeHeatMap: Iters vs. Input Covars...")
-                  MakeHeatMap(factor1 = c(`log(Iteration #)` = "i_in_sgd_log"),
-                    factor2 = c(`Input Covariates` = "nCovars"),
-                    outcome = "SkillSummary_inv", pdf_path = sprintf("./Figures/Heat_Test_EndogVPolicyEffectiveness_%s_%s.pdf",
-                      FiguresTag, TypeMultivariateModel), dat = res_mat,
-                    lm_obj = TrainedModel_Skill_all, extrap_factor1 = 1,
-                    extrap_factor2 = 1, OutcomeTransformFxn = Map2ConstrainedSkill)
-                }
-            }
-            name_conversion_matrix <- {
-                matrix(c("StartEmphDisease..ParametersEndEmph",
-                  "StartEmphDisease ParametersEndEmph", "c_endogeneous",
-                  "Endogeneity", "policy_effectiveness", "Policy effectiveness",
-                  "policy_responsiveness", "Policy responsiveness",
-                  "invbetat_sd", "Beta, random walk SD", "gamma",
-                  "Gamma", "sigma", "Sigma", "xi", "Xi", "i0_a",
-                  "Average initial proportion infected", "i0_b",
-                  "SD(initial proportion infected)", "r0_a",
-                  "Average initial proportion recovered", "r0_b",
-                  "SD(initial proportion recovered)", "space1",
-                  "space1", "StartEmphModeling..ParametersEndEmph",
-                  "StartEmphModeling ParametersEndEmph", "nParamsModel_log",
-                  "log(# of parameters)", "nSamplesTrain_log",
-                  "log(# of data samples)", "ContextLength_log",
-                  "log(Context Length)", "space2", "space2",
-                  "Other statistics", "Other statistics", "Countries",
-                  "Countries", "Adjusted R-squared", "Adjusted R-squared",
-                  "AIC", "AIC", "Weak instruments", "Weak instruments",
-                  "Wu-Hausman", "Wu-Hausman"), byrow = T, ncol = 2)
-            }
-            stop("XXX")
-            if (TypeMultivariateModel == "lm") {
-                print2("Tables2Tex: Main Table...")
-                helpeRs::Tables2Tex(reg_list = list(ModelTrained_RSS,
-                  TrainedModel_Skill_EndOfTraining), model.names = c("Baseline RSS",
-                  "Skill, Epoch 1"), checkmark_list = list(Disease..parameters..with..interactions = c(1,
-                  1), Modeling..parameters..with..interactions = c(1,
-                  1)), addrow_list = list(StartEmphDisease..ParametersEndEmph = rep("",
-                  times = 2), StartEmphModeling..ParametersEndEmph = rep("",
-                  times = 2)), clust_id = NULL, superunit_covariateName = NULL,
-                  superunit_label = "", seType = "analytical",
-                  saveFull = F, DoFullTableKey = F, NameConversionMat = name_conversion_matrix,
-                  saveFolder = SaveFolder, nameTag = sprintf("Baselines_%s_%s",
-                    FiguresTag, TypeMultivariateModel), tabCaption = "Estimator: OLS. \n                      $t$-values in parentheses, heteroskedasticity-consistent standard errors used. \n                      $*$ indicates $p<$0.05.")
-            }
-        }
-        y_summary_mat <- tapply(1:nrow(res_mat), res_mat$i_in_sgd,
-            function(i_) {
-                apply(res_mat[i_, paste("SkillTime", 1:nTimesLookValidationInference,
-                  sep = "")], 2, mean2)
-            })
-        names(y_summary_mat)
-        grayCols <- gray.colors(length(y_summary_mat), start = 0.2,
-            end = 0.9)
-        plot(y_summary_mat[[1]], pch = "1", ylim = c(-2, 1),
-            col = grayCols[4], cex = 2)
-        for (jr in 2:length(y_summary_mat)) {
-            text(1:length(y_summary_mat[[jr]]), y_summary_mat[[jr]],
-                labels = as.character(jr), col = grayCols[3],
-                cex = 1)
-        }
-        res_mat_MaxIters <- res_mat[res_mat$i_in_sgd == max(res_mat$i_in_sgd),
-            ]
-        if (SimMode) {
-            for (j_ in c(0:4)) {
-                if (j_ == 0) {
-                  y_summary0 <- y_summary <- apply(res_mat_MaxIters[,
-                    paste("SkillTime", 1:nTimesLookValidationInference,
-                      sep = "")], 2, mean2)
-                  tag0_ <- tag_ <- "All"
-                }
-                if (j_ == 1) {
-                  y_summary1 <- y_summary <- apply(res_mat_MaxIters[res_mat_MaxIters$c_endogeneous ==
-                    0 & res_mat_MaxIters$policy_effectiveness ==
-                    0, paste("SkillTime", 1:nTimesLookValidationInference,
-                    sep = "")], 2, mean2)
-                  tag1_ <- tag_ <- "No Endogeneity; \n No Policy Effectiveness "
-                }
-                if (j_ == 2) {
-                  y_summary2 <- y_summary <- apply(res_mat_MaxIters[res_mat_MaxIters$c_endogeneous ==
-                    0 & res_mat_MaxIters$policy_effectiveness ==
-                    max(res_mat_MaxIters$policy_effectiveness),
-                    paste("SkillTime", 1:nTimesLookValidationInference,
-                      sep = "")], 2, mean2)
-                  tag2_ <- tag_ <- "No Endogeneity; \n Max Policy Effectiveness "
-                }
-                if (j_ == 3) {
-                  y_summary3 <- y_summary <- apply(res_mat_MaxIters[res_mat_MaxIters$c_endogeneous ==
-                    max(res_mat_MaxIters$c_endogeneous) & res_mat_MaxIters$policy_effectiveness ==
-                    0, paste("SkillTime", 1:nTimesLookValidationInference,
-                    sep = "")], 2, mean2)
-                  tag3_ <- tag_ <- "Max Endogeneity; \n No Policy Effectiveness "
-                }
-                if (j_ == 4) {
-                  y_summary4 <- y_summary <- apply(res_mat_MaxIters[res_mat_MaxIters$c_endogeneous ==
-                    max(res_mat_MaxIters$c_endogeneous) & res_mat_MaxIters$policy_effectiveness ==
-                    max(res_mat$policy_effectiveness), paste("SkillTime",
-                    1:nTimesLookValidationInference, sep = "")],
-                    2, mean2)
-                  tag4_ <- tag_ <- "Max Endogeneity; \n Max Policy Effectiveness "
-                }
-                print2("Skill fig gen...")
-                pdf(sprintf("%s/SimSkill_%s_%s.pdf", SaveFolder,
-                  j_, FiguresTag))
-                {
-                  par(mar = c(4.5, 5, 6, 1))
-                  plot(y_summary, type = "b", main = tag_, ylim = c(0,
-                    1), xaxt = "n", cex.axis = cexAxis, cex.lab = cexLab,
-                    bty = "n", pch = 19, cex = 1.6, cex.main = 1.9,
-                    cex.lab = 2, ylab = "Skill Measure", xlab = "Time Lookahead")
-                  abline(h = 0)
-                  axis(1, at = 1:nTimesLookValidationInference,
-                    labels = 1:nTimesLookValidationInference,
-                    cex.axis = cexAxis)
-                }
-                dev.off()
-            }
-        }
-        if (SimMode & FALSE) {
-            print2("Counterfactual policies...")
-            y_summary_PolicySkill <- apply(res_mat[, paste("PolicySkill",
-                1:nTimesLookValidationInference, sep = "")],
-                2, mean2)
-            y_summary_PolicyBaseline <- apply(res_mat[, paste("PolicySkillBaseline",
-                1:nTimesLookValidationInference, sep = "")],
-                2, mean2)
-            plot(y_summary)
-            plot(y_summary_PolicySkill)
-            plot(y_summary_PolicyBaseline[-1])
-            y_summary_PolicyBaseline[1] <- NA
-            pdf(sprintf("%s/SimSkillPolicyBaseline_%s.pdf", SaveFolder,
-                FiguresTag))
-            {
-                par(mar = c(4.5, 5, 1, 1))
-                plot(y_summary_PolicyBaseline, type = "b", main = "",
-                  xaxt = "n", cex.axis = cexAxis, cex.lab = cexLab,
-                  bty = "n", pch = 19, cex = 1.6, cex.lab = 2,
-                  ylab = "Skill Measure", xlab = "Time Lookahead")
-                axis(1, at = 1:nTimesLookValidationInference,
-                  labels = 1:nTimesLookValidationInference, cex.axis = cexAxis)
-            }
-            dev.off()
-            plot(res_mat$policy_effectiveness, res_mat$RSSBaselineSummary,
-                log = "")
-            plot(res_mat$policy_effectiveness, res_mat$SkillSummary)
-            plot(res_mat$policy_decay, res_mat$SkillSummary)
-            plot(res_mat$policy_responsiveness, res_mat$SkillSummary)
-            PlotType <- "Skill"
-            DecayCoef <- DecayR2 <- EffectivenessCoef <- EffectivenessR2 <- rep(NA,
-                nTimesLookValidationInference - 1)
-            EndogeneousCoef <- EndogeneousR2 <- ResponsivenessCoef <- ResponsivenessR2 <- EffectivenessCoef
-            for (t_ in 2:nTimesLookValidationInference) {
-                if (PlotType == "PolicySkill") {
-                  tmp <- eval(parse(text = sprintf("summary(  lm(res_mat$PolicySkillBaseline%s ~ res_mat$policy_effectiveness) )",
-                    t_)))
-                }
-                if (PlotType == "Skill") {
-                  tmp <- eval(parse(text = sprintf("summary(  lm(res_mat$SkillTime%s ~ res_mat$policy_effectiveness) )",
-                    t_)))
-                }
-                EffectivenessCoef[t_ - 1L] <- tmp$coefficients[2,
-                  1]
-                EffectivenessR2[t_ - 1L] <- tmp$r.squared
-                if (PlotType == "PolicySkill") {
-                  tmp <- eval(parse(text = sprintf("summary(  lm(res_mat$PolicySkillBaseline%s ~ res_mat$policy_responsiveness) )",
-                    t_)))
-                }
-                if (PlotType == "Skill") {
-                  tmp <- eval(parse(text = sprintf("summary(  lm(res_mat$SkillTime%s ~ res_mat$policy_responsiveness) )",
-                    t_)))
-                }
-                ResponsivenessCoef[t_ - 1L] <- tmp$coefficients[2,
-                  1]
-                ResponsivenessR2[t_ - 1L] <- tmp$r.squared
-                if (PlotType == "PolicySkill") {
-                  tmp <- eval(parse(text = sprintf("summary(  lm(res_mat$PolicySkillBaseline%s ~ res_mat$policy_decay) )",
-                    t_)))
-                }
-                if (PlotType == "Skill") {
-                  tmp <- eval(parse(text = sprintf("summary(  lm(res_mat$SkillTime%s ~ res_mat$policy_decay) )",
-                    t_)))
-                }
-                DecayCoef[t_ - 1L] <- tmp$coefficients[2, 1]
-                DecayR2[t_ - 1L] <- tmp$r.squared
-                tmp <- eval(parse(text = sprintf("summary(  lm(res_mat$SkillTime%s ~ res_mat$c_endogeneous) )",
-                  t_)))
-                EndogeneousCoef[t_ - 1L] <- tmp$coefficients[2,
-                  1]
-                EndogeneousR2[t_ - 1L] <- tmp$r.squared
-            }
-            plot(x_ <- 2:c(length(EffectivenessR2) + 1), EffectivenessR2,
-                pch = "E", type = "b", ylim = c(0, 1), xlab = "Time Lookahead",
-                ylab = "R2 in Predicting Skill from Natural Outcomes")
-            points(x_, ResponsivenessR2, pch = "R", type = "b",
-                lty = 2)
-            points(x_, DecayR2, pch = "D", type = "b", lty = 3)
-            points(x_, EndogeneousR2, pch = "C", type = "b",
-                lty = 4)
-            plot(x_, EffectivenessCoef, pch = "E", type = "b",
-                ylim = c(-0.25, 1.6), xlab = "Time Lookahead",
-                ylab = "Coefficient in Predicting Skill from Natural Outcomes")
-            points(x_, ResponsivenessCoef, pch = "R", type = "b",
-                lty = 2)
-            points(x_, DecayCoef, pch = "D", type = "b", lty = 2)
-            abline(h = 0, lty = 2, col = "gray")
-            library(glmnet)
-            colnames(res_mat)
-            pred_pool <- c("xi", "sigma", "gamma", "invbetat_sd",
-                "betat_init", "policy_responsiveness", "policy_decay",
-                "policy_effectiveness", "measurement_noise",
-                "c_endogeneous")
-            summary(lm(res_mat$SkillTime5 ~ res_mat$policy_responsiveness))
-            summary(lm(res_mat$SkillTime5 ~ res_mat$policy_decay))
-            summary(lm(res_mat$SkillTime5 ~ res_mat$policy_effectiveness))
-            coef_list <- replicate(n = nTimesLookValidationInference,
-                list())
-            res_mat_glmnet <- res_mat
-            cv_min <- rep(NA, times = nTimesLookValidationInference)
-            for (time_ in 1:nTimesLookValidationInference) {
-                my_glmnet <- cv.glmnet(x = as.matrix(res_mat_glmnet[,
-                  pred_pool]), y = res_mat_glmnet[, paste("SkillTime",
-                  time_, sep = "")], nfolds = 3L)
-                cv_min[time_] <- 1 - min(my_glmnet$cvm)/var(res_mat_glmnet[,
-                  paste("SkillTime", time_, sep = "")])
-                coef_list[[time_]] <- coef(my_glmnet, s = "lambda.min")[-1,
-                  ]
-            }
-            coef_list <- as.data.frame(do.call(rbind, coef_list))
-            plot(res_mat$c_endogeneous, res_mat$SkillTime12)
-            SkillNames_vec <- paste("SkillTime", 1:nTimesLookValidationInference,
-                sep = "")
-            if (T == F) {
-                pdf(sprintf("%s/EndogeneityAnalysis_%s.pdf",
-                  SaveFolder, FiguresTag))
-                {
-                  par(mar = c(5, 8, 1, 1))
-                  plot(mean_vec, 1:length(mean_vec), xlim = summary(c(mean_vec -
-                    (qstar <- 1.96) * se_vec, mean_vec + qstar *
-                    se_vec))[c(1, 6)] * c(1, 1.2), cex = 2, pch = 19,
-                    yaxt = "n", ylab = "", xlab = "Skill at 12 Times",
-                    cex.lab = cexLab)
-                  axis(2, at = length(mean_vec), labels = round(f2n(names(mean_vec)),
-                    2), cex.axis = 0.9 * cexAxis, las = 1)
-                  axis(2, at = c(2), labels = c("Endogeneity Level"),
-                    cex.axis = 1.3 * cexAxis, line = 5, tick = F,
-                    cex = cexLab)
-                  for (jr in 1:length(mean_vec)) {
-                    points(c(mean_vec[jr] - qstar * se_vec[jr],
-                      mean_vec[jr] + qstar * se_vec[jr]), c(jr,
-                      jr), type = "l", lwd = 3)
-                  }
-                }
-                dev.off()
-                pdf(sprintf("%s/PredictR2Skill_%s.pdf", SaveFolder,
-                  FiguresTag))
-                {
-                  par(mar = c(5, 6, 1, 1))
-                  plot(cv_min, main = "", bty = "n", xaxt = "n",
-                    xlab = "Time Lookahead", ylab = expression("O.O.S." ~
-                      R^2 ~ "in Predicting Skill"), cex.axis = cexAxis,
-                    cex.main = cexMain, cex.lab = cexLab, cex = 1.5)
-                  points(lowess(x = 1:nTimesLookValidationInference,
-                    y = cv_min), type = "l", lwd = 2)
-                  axis(1, at = 1:nTimesLookValidationInference,
-                    labels = 1:nTimesLookValidationInference,
-                    cex.axis = cexAxis)
-                }
-                dev.off()
-                colnames(coef_list)
-                nameDict <- c(xi = expression("Predictor:" ~
-                  xi), sigma = expression("Predictor:" ~ sigma),
-                  gamma = expression("Predictor:" ~ gamma), invbetat_sdfrac = expression("Predictor: SD(" ~
-                    beta[t] ~ ")"), betat_mean = expression("Predictor: Mean(" ~
-                    beta[t] ~ ")"), measurement_noise = "Predictor: Noise Level")
-                for (ri in 1:ncol(coef_list)) {
-                  pdf(sprintf("%s/OLSSumf_%s,.pdf", SaveFolder,
-                    colnames(coef_list)[ri], FiguresTag))
-                  par(mar = c(5, 5, 3, 1))
-                  plot(coef_list[, ri], main = nameDict[colnames(coef_list)[ri]],
-                    bty = "n", xaxt = "n", xlab = "Time Lookahead",
-                    ylab = "OLS Coefficient, Skill Outcome",
-                    cex.axis = cexAxis, cex.main = cexMain, cex.lab = cexLab,
-                    cex = 1.5)
-                  abline(h = 0, col = "gray", lwd = 2, lty = 3)
-                  axis(1, at = 1:nTimesLookValidationInference,
-                    labels = 1:nTimesLookValidationInference,
-                    cex.axis = cexAxis)
-                  points(lowess(x = 1:nTimesLookValidationInference,
-                    y = coef_list[, ri]), type = "l", lwd = 2)
-                  dev.off()
-                }
-            }
-        }
-    }
-    print("Done with SuperLModel_GenFigs.R")
+        else "Real", paste0("Results_", AnalysisName))
+    result_csv_files <- list.files(resultsFolder, pattern = if (SimMode)
+        "^res.*[.]csv$"
+    else "^predicted_df_out_.*[.]csv$", full.names = TRUE, recursive = TRUE)
+    if (!length(result_csv_files))
+        stop("No mode-specific final-result CSV files were found in ",
+            resultsFolder, ".")
+    report <- (utils::getFromNamespace("ndm_summarize_results",
+        "ndm"))(lapply(result_csv_files, data.table::fread),
+        training_horizon = get0("report_training_horizon", inherits = TRUE,
+            ifnotfound = NULL), experiment_id = paste(if (SimMode)
+            "sim"
+        else "real", AnalysisName, sep = ":"), output_dir = get0("SaveFolder",
+            inherits = TRUE, ifnotfound = "./Figures/"))
+    res_mat <- report$results
+    paired_df <- report$paired
+    paired_df_EndOfTraining <- report$final_pairs
+    print(report$cohorts)
 })
 
 .ndm_stage_expr_ResultsAnalyze_SuperLModel_GenFigs_RealPreprocess <- expression({
-    nMax_PreviousSequenceTruths <- length(grep(names(res_mat),
-        pattern = "PreviousSequenceTruth_l", value = T))
-    nMax_FutureTruth <- length(grep(names(res_mat), pattern = "^Truth_l",
-        value = T))
-    res_mat$master_conditioning_id <- paste0(res_mat$model_id,
-        "_", res_mat$i_in_sgd)
-    table(table(res_mat$master_conditioning_id))
-    if (FALSE) {
-        options(future.globals.maxSize = 26000 * 1024^2)
-        DT_skill <- lapply(1:nrow(res_mat), function(zer) {
-            if (zer%%1000 == 0) {
-                write.csv(c(zer, nrow(res_mat)), file = "~/Downloads/i_.csv")
-            }
-            res_mat_red <- res_mat[zer, ]
-            pred_l_baselineVal <- na.omit(unlist(res_mat_red[,
-                paste0("PreviousSequenceTruth_l", 1:nMax_PreviousSequenceTruths)]))
-            pred_l_baselineVal <- pred_l_baselineVal[length(pred_l_baselineVal)]
-            if (length(pred_l_baselineVal) == 0) {
-                pred_l_baselineVal <- NA
-            }
-            l_true <- unlist(res_mat_red[, paste0("Truth_l",
-                1:nMax_FutureTruth)])
-            pred_l_mean <- unlist(res_mat_red[, paste0("Pred_l",
-                1:nMax_FutureTruth)])
-            RSS_baseline <- (pred_l_baselineVal - l_true)^2
-            RSS_pred <- (pred_l_mean - l_true)^2
-            SliceSkill <- 1 - (0.01 + RSS_pred^0.5)/(0.01 + RSS_baseline^0.5)
-            names(SliceSkill) <- paste("SliceSkillTime", 1:nMax_FutureTruth,
-                sep = "")
-            names(RSS_pred) <- paste("RSSPredTime", 1:nMax_FutureTruth,
-                sep = "")
-            names(RSS_baseline) <- paste("RSSBaselineTime", 1:nMax_FutureTruth,
-                sep = "")
-            return(c(RSS_baseline, RSS_pred, SliceSkill))
-        })
-        DT_skill <- as.data.frame(do.call(rbind, DT_skill))
-    }
-    if (TRUE) {
-        mem.maxVSize(96000)
-        DT <- as.data.table(res_mat)
-        prev_cols <- grep("^PreviousSequenceTruth_l", names(DT),
-            value = TRUE)
-        truth_cols <- grep("^Truth_l", names(DT), value = TRUE)
-        pred_cols <- grep("^Pred_l", names(DT), value = TRUE)
-        prev_mat <- (as.matrix(DT[, ..prev_cols]))
-        truth_mat <- (as.matrix(DT[, ..truth_cols]))
-        pred_mat <- (as.matrix(DT[, ..pred_cols]))
-        H <- ncol(truth_mat)
-        last_idx <- max.col(!is.na(prev_mat), ties.method = "last")
-        baseline_vec <- prev_mat[cbind(seq_len(nrow(prev_mat)),
-            last_idx)]
-        baseline_mat <- matrix(baseline_vec, nrow = nrow(prev_mat),
-            ncol = H)
-        rss_base <- (baseline_mat - truth_mat)^2
-        rss_pred <- (pred_mat - truth_mat)^2
-        skill_mat <- 1 - (0.01 + sqrt(rss_pred))/(0.01 + sqrt(rss_base))
-        DT_skill <- cbind(as.data.table(rss_base, keep.rownames = FALSE),
-            as.data.table(rss_pred, keep.rownames = FALSE), as.data.table(skill_mat,
-                keep.rownames = FALSE))
-        setnames(DT_skill, c(paste0("RSSBaselineTime", 1:H),
-            paste0("RSSPredTime", 1:H), paste0("SliceSkillTime",
-                1:H)))
-    }
-    if (dim(res_mat)[1] != dim(DT_skill)[1]) {
-        stop("dim(res_mat) != dim(res_mat) in RealPreprocess.R")
-    }
-    if (FALSE) {
-        res_mat_agg <- future.apply::future_tapply(X = 1:nrow(res_mat),
-            INDEX = res_mat$master_conditioning_id, FUN = function(zer) {
-                if (any(zer%%1000 == 0)) {
-                  write.csv(c(max(zer), nrow(res_mat)), file = "~/Downloads/i_.csv")
-                }
-                res_mat_zer <- res_mat[zer, ]
-                DT_skill_zer <- DT_skill[zer, ]
-                skill_metrics <- vapply(seq_len(nMax_FutureTruth),
-                  function(horizon) {
-                    ndm_paired_squared_error_skill(squared_prediction_error = f2n(DT_skill_zer[[paste0("RSSPredTime",
-                      horizon)]]), squared_baseline_error = f2n(DT_skill_zer[[paste0("RSSBaselineTime",
-                      horizon)]]))
-                  }, numeric(3L))
-                skill_vec <- skill_metrics["skill", ]
-                RSS_pred <- skill_metrics["rss_pred", ]
-                RSS_baseline <- skill_metrics["rss_baseline",
-                  ]
-                names(skill_vec) <- paste("SkillTime", 1:length(skill_vec),
-                  sep = "")
-                names(RSS_pred) <- paste("RSSPredTime", 1:length(skill_vec),
-                  sep = "")
-                names(RSS_baseline) <- paste("RSSBaselineTime",
-                  1:length(skill_vec), sep = "")
-                meta_data <- res_mat_zer[1, which(apply(res_mat_zer,
-                  2, function(z) {
-                    length(unique(z))
-                  }) == 1)]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^PreviousSequenceTruth_l")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^SliceSkillTime")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^PredBase_l")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^Pred_l")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^RSSPredTime")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^RSSBaselineTime")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^Truth_l")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^location_id")]
-                meta_data <- meta_data[, !grepl(colnames(meta_data),
-                  pattern = "^time_anchor_id")]
-                ret_package <- t(unlist(c(unlist(meta_data),
-                  RSS_baseline, RSS_pred, skill_vec)))
-                return(list(list(ret_package)))
-            })
-        print2("Done generating res_mat_agg!")
-        res_mat_dims <- unlist(lapply(res_mat_agg, function(l_) {
-            length(unlist(l_))
-        }))
-        DominantDim <- names(table(res_mat_dims)[which.max(table(res_mat_dims))])
-        if (length(unique(res_mat_dims)) != 1) {
-            warning("In RealPreprocess.R: More than 1 dim here!")
-        }
-        res_mat_agg <- res_mat_agg[res_mat_dims == DominantDim]
-        res_mat_agg <- as.data.frame(do.call(rbind, unlist(res_mat_agg,
-            recursive = F)))
-    }
-    if (TRUE) {
-        DT[, `:=`(master_conditioning_id, paste0(model_id, "_",
-            i_in_sgd))]
-        DT_skill[, `:=`(master_conditioning_id, DT$master_conditioning_id)]
-        rss_base_cols <- grep("^RSSBaselineTime", names(DT_skill),
-            value = TRUE)
-        rss_pred_cols <- grep("^RSSPredTime", names(DT_skill),
-            value = TRUE)
-        meta_cols <- setdiff(names(DT), c(grep("^PreviousSequenceTruth_l",
-            names(DT), value = TRUE), grep("^SliceSkillTime",
-            names(DT), value = TRUE), grep("^Pred(Base|_l)",
-            names(DT), value = TRUE), grep("^RSS(Pred|Baseline)Time",
-            names(DT), value = TRUE), grep("^Truth_l", names(DT),
-            value = TRUE), c("location_id", "time_anchor_id")))
-        RSS_agg <- DT_skill[, {
-            paired_metrics <- vapply(seq_along(rss_base_cols),
-                function(horizon) {
-                  ndm_paired_squared_error_skill(squared_prediction_error = f2n(.SD[[rss_pred_cols[[horizon]]]]),
-                    squared_baseline_error = f2n(.SD[[rss_base_cols[[horizon]]]]))
-                }, numeric(3L))
-            aggregate_values <- c(paired_metrics["rss_baseline",
-                ], paired_metrics["rss_pred", ])
-            stats::setNames(as.list(aggregate_values), c(rss_base_cols,
-                rss_pred_cols))
-        }, by = master_conditioning_id, .SDcols = c(rss_base_cols,
-            rss_pred_cols)]
-        H <- length(grep("^Truth_l", names(DT)))
-        RSS_base_mat <- as.matrix(RSS_agg[, ..rss_base_cols])
-        RSS_pred_mat <- as.matrix(RSS_agg[, ..rss_pred_cols])
-        skill_mat <- 1 - (0.001 + sqrt(RSS_pred_mat))/(0.001 +
-            sqrt(RSS_base_mat))
-        set(RSS_agg, j = paste0("SkillTime", 1:H), value = as.data.table(skill_mat))
-        Meta_agg <- DT[, .SD[1], by = master_conditioning_id,
-            .SDcols = meta_cols]
-        Meta_agg$master_conditioning_id_META <- Meta_agg$master_conditioning_id
-        Meta_agg[, `:=`(master_conditioning_id, NULL)]
-        res_mat_agg <- merge(x = Meta_agg, by.x = "master_conditioning_id_META",
-            y = RSS_agg, by.y = "master_conditioning_id")
-        print2("Done generating res_mat_agg!")
-    }
-    res_mat_agg <- as.data.frame(res_mat_agg)
-    res_mat_agg$AggSkill_internal <- rowMeans(cbind(f2n(res_mat_agg$SkillTime8),
-        f2n(res_mat_agg$SkillTime9), f2n(res_mat_agg$SkillTime10),
-        f2n(res_mat_agg$SkillTime11), f2n(res_mat_agg$SkillTime12)),
-        na.rm = T)
-    res_mat_agg_maxIters <- res_mat_agg[res_mat_agg$i_in_sgd ==
-        (f2n(res_mat_agg$nSGD)), ]
-    if (nrow(res_mat_agg_maxIters) > 0 & FALSE) {
-        tapply(f2n(res_mat_agg_maxIters$AggSkill_internal), res_mat_agg_maxIters$model_tex_loc,
-            summary)
-        tapply(f2n(res_mat_agg_maxIters$AggSkill_internal), res_mat_agg_maxIters$paddingMethod,
-            summary)
-        (tmp_ <- tapply(f2n(res_mat_agg_maxIters$AggSkill_internal),
-            res_mat_agg_maxIters$i_in_sgd, summary2))[order(f2n(names(tmp_)))]
-        (tmp_ <- tapply(f2n(res_mat_agg_maxIters$AggSkill_internal),
-            res_mat_agg_maxIters$atEpoch, summary2))[order(f2n(names(tmp_)))]
-        (tmp_ <- tapply(f2n(res_mat_agg_maxIters$AggSkill_internal),
-            res_mat_agg_maxIters$dataInputs, summary2))[order(unlist(lapply(tmp_,
-            function(l_) {
-                l_[4]
-            })), na.last = F)]
-        (tmp_ <- tapply(f2n(res_mat_agg_maxIters$AggSkill_internal),
-            paste(res_mat_agg_maxIters$dataInputs, res_mat_agg_maxIters$i_in_sgd,
-                res_mat_agg_maxIters$evaluationTime, sep = "_"),
-            summary2))[order(unlist(lapply(tmp_, function(l_) {
-            l_[4]
-        })))]
-        (tmp_ <- tapply(f2n(res_mat_agg_maxIters$AggSkill_internal),
-            res_mat_agg_maxIters$ModelDepth, summary2))[order(f2n(names(tmp_)),
-            na.last = F)]
-        tapply(f2n(res_mat_agg_maxIters$AggSkill_internal), res_mat_agg_maxIters$evaluationTime,
-            summary2)
-        (tmp_ <- tapply(f2n(res_mat_agg_maxIters$AggSkill_internal),
-            res_mat_agg_maxIters$ContextLength, summary2))[order(f2n(names(tmp_)))]
-        res_mat_MaxIterOnly <- res_mat_orig[res_mat_orig$i_in_sgd ==
-            (res_mat_orig$nSGD), ]
-        par(mfrow = c(2, 2))
-        for (irr in sample(1:nrow(res_mat_MaxIterOnly), 2 * 2)) {
-            plot(unlist(res_mat_MaxIterOnly[irr, paste0("Truth_l",
-                1:nMax_FutureTruth)]), ylim = c(0, 4), main = paste0("MD",
-                res_mat_MaxIterOnly$ModelDepth[irr], "_", "CL",
-                res_mat_MaxIterOnly$ContextLength[irr], "_",
-                res_mat_MaxIterOnly$i_in_sgd[irr]))
-            points(unlist(res_mat_MaxIterOnly[irr, paste0("Pred_l",
-                1:nMax_FutureTruth)]), pch = "^")
-        }
-        par(mfrow = c(1, 1))
-        hist(res_mat_agg_maxIters$AggSkill_internal[res_mat_agg_maxIters$AggSkill_internal >
-            0])
-        tapply(res_mat_agg[res_mat_agg$i_in_sgd == (f2n(res_mat_agg$nSGD)),
-            ]$SkillTime11, res_mat_agg[res_mat_agg$i_in_sgd ==
-            (f2n(res_mat_agg$nSGD)), ]$floatType, summary)
-        tapply(f2n(res_mat_agg[res_mat_agg$i_in_sgd == (f2n(res_mat_agg$nSGD)),
-            ]$te_grads), res_mat_agg[res_mat_agg$i_in_sgd ==
-            (f2n(res_mat_agg$nSGD)), ]$floatType, summary)
-    }
-    res_mat_agg[, paste0("SkillTime", 1:nMax_FutureTruth)] <- apply(res_mat_agg[,
-        paste0("SkillTime", 1:nMax_FutureTruth)], 2, f2n)
-    res_mat_agg[, paste0("RSSBaselineTime", 1:nMax_FutureTruth)] <- apply(res_mat_agg[,
-        paste0("RSSBaselineTime", 1:nMax_FutureTruth)], 2, f2n)
-    res_mat_agg[, paste0("RSSPredTime", 1:nMax_FutureTruth)] <- apply(res_mat_agg[,
-        paste0("RSSPredTime", 1:nMax_FutureTruth)], 2, f2n)
-    tapply(res_mat_agg[res_mat_agg$i_in_sgd == max(res_mat_agg$i_in_sgd),
-        ]$SkillTime11, res_mat_agg[res_mat_agg$i_in_sgd == max(res_mat_agg$i_in_sgd),
-        ]$evaluationTime, summary)
-    hist(res_mat_agg$SkillTime11, xlim = c(-10, 1))
-    tapply(res_mat_agg[res_mat_agg$i_in_sgd == max(res_mat_agg$i_in_sgd),
-        ]$SkillTime11, res_mat_agg[res_mat_agg$i_in_sgd == max(res_mat_agg$i_in_sgd),
-        ]$dataInputs, summary)
-    tapply(res_mat_agg[res_mat_agg$i_in_sgd == max(res_mat_agg$i_in_sgd),
-        ]$SkillTime11, grepl(res_mat_agg[res_mat_agg$i_in_sgd ==
-        max(res_mat_agg$i_in_sgd), ]$dataInputs, pattern = "sqrt"),
-        summary)
-    print2("Done with RealPreprocessing.R")
+    validated_results <- (utils::getFromNamespace(".ndm_report_validate",
+        "ndm"))(res_mat, training_horizon = get0("report_training_horizon",
+        inherits = TRUE, ifnotfound = NULL))
+    res_mat_agg <- (utils::getFromNamespace(".ndm_report_aggregate_real",
+        "ndm"))(validated_results)
+    res_mat_agg <- (utils::getFromNamespace(".ndm_report_summaries",
+        "ndm"))(res_mat_agg)
+    res_mat_agg_maxIters <- res_mat_agg[res_mat_agg$is_final,
+        , drop = FALSE]
 })
 
 .ndm_stage_expr_ResultsAnalyze_SuperLModel_GenFigs_GenInputStats <- expression({
@@ -11851,6 +10021,10 @@
     entry_values$EffectiveModelType <- model_type
     entry_values$RunSeed <- run_seed
     entry_values$RunID <- run_id
+    entry_values$ExperimentID <- row_values$ExperimentID %||%
+        paste("real", analysis_name, analysis_date, sep = ":")
+    entry_values$ReplicateID <- as.character(row_values$ReplicateID %||%
+        "1")
     globals <- list(AnalysisName = analysis_name, AnalysisDate = analysis_date,
         BaseID = analysis2_as_int(row_values$BaseID), RealEntry = analysis2_scalar_df(entry_values),
         RUN_ID = run_id, modelingStrategyNameKey = paste(c(run_id,
@@ -11954,6 +10128,10 @@
     entry_values$EffectiveModelType <- model_type
     entry_values$RunSeed <- run_seed
     entry_values$RunID <- run_id
+    entry_values$ExperimentID <- row_values$ExperimentID %||%
+        paste("sim", analysis_name, analysis_date, sep = ":")
+    entry_values$ReplicateID <- as.character(row_values$ReplicateID %||%
+        "1")
     c(list(AnalysisName = analysis_name, AnalysisDate = analysis_date,
         BaseID = analysis2_as_int(row_values$BaseID), SimEntry = entry_values,
         RUN_ID = run_id, ContextLength = analysis2_as_int(row_values$ContextLength),

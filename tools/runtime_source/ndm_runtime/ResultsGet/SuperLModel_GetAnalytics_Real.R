@@ -584,6 +584,7 @@ if( !SimMode ){
                       paste(paste("'",names(unlist(RealEntry)), "'='", unlist(RealEntry),"'", sep=""),collapse=",")
                       ) ))
     sl_dat <- as.data.frame( sl_dat )
+    sl_dat <- ndm_result_metadata(sl_dat, environment(), nTimesLookValidationInference)
     sl_dat$time_anchor_id <- unlist( sl_dat$time_anchor_id )
     #plot(abs(f2n(sl_dat$PredBase_l6) - f2n(sl_dat$Truth_l6)), abs(f2n(sl_dat$Pred_l6) - f2n(sl_dat$Truth_l6))); abline(a=0,b=1)
     #plot(abs(f2n(sl_dat$PredBase_l12) - f2n(sl_dat$Truth_l12)), abs(f2n(sl_dat$Pred_l12) - f2n(sl_dat$Truth_l12))); abline(a=0,b=1)

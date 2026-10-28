@@ -1,12 +1,24 @@
 test_that("BF16 decoder and NeuralODE training keep heads and optimizer moments at FP32", {
   ndm_skip_if_no_sim_backend()
   for (model_type in c("DecoderOnly", "NeuralODE")) {
+    frozen_before <- NULL
     details <- ndm_test_fit_sim_case(
       model_type = model_type, endogeneity = 0, n_sgd = 2L,
       config_overrides = list(transformer_compute_dtype = "bfloat16", neuralode_variational = FALSE),
-      return_details = TRUE
+      return_details = TRUE,
+      before_train = function(runtime_env, model) {
+        frozen <- runtime_env$eq$partition(runtime_env$ModelList, runtime_env$TrainabilityMask)[[2L]]
+        frozen_before <<- lapply(runtime_env$jax$tree_util$tree_leaves(runtime_env$eq$filter(frozen, runtime_env$eq$is_array)),
+          function(x) as.array(runtime_env$np$array(x)))
+      }
     )
     env <- details$runtime_env
+    frozen <- env$eq$partition(env$ModelList, env$TrainabilityMask)[[2L]]
+    frozen_after <- lapply(env$jax$tree_util$tree_leaves(env$eq$filter(frozen, env$eq$is_array)),
+      function(x) as.array(env$np$array(x)))
+    expect_identical(frozen_after, frozen_before)
+    expect_lt(env$nParamsTrainable, env$nParamsTotal)
+    expect_equal(env$nParamsTrainable + env$nParamsNonTrainable, env$nParamsTotal)
     expect_identical(env$TransformerComputeDtypeResolved, "bfloat16")
     expect_true(env$DonateTrainingState)
     expect_true(env$TrainingStateUsable)

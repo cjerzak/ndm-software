@@ -249,7 +249,7 @@ test_that("ndm_resume_training auto-loads bundle refs and continues with run_def
   artifact_path <- tempfile("ndm-resume-artifact-")
   dir.create(artifact_path, recursive = TRUE, showWarnings = FALSE)
   metadata <- list(
-    version = 1L,
+    version = ndm:::.ndm_artifact_version(),
     saved_class = "ndm_trained_model",
     config = ndm_create_config(force_to_gpu = FALSE),
     model_type = "DecoderOnly",

@@ -68,6 +68,8 @@ ndm_prepare_runtime <- function(config = ndm_create_config(),
       DonateTrainingState = config$donate_training_state %||% TRUE,
       NeuralODETrainIntegrator = config$neuralode_train_integrator %||% "auto",
       NeuralODETrainSubsteps = config$neuralode_train_substeps %||% NULL,
+      NeuralODETrainMaxSubsteps = config$neuralode_train_max_substeps %||% 128L,
+      NeuralODETrainFallback = config$neuralode_train_fallback %||% "diffrax",
       InferenceMCDraws = config$inference_mc_draws %||% 5L,
       ObservationScaleFloor = config$observation_scale_floor %||% 1e-5,
       InitialObservationScale = config$initial_observation_scale %||% 1.0,
@@ -484,6 +486,7 @@ ndm_build_model <- function(runtime_env,
       backbone = backbone,
       config = .ndm_runtime_get0(runtime_env, "ndm_config", ifnotfound = NULL),
       model_spec = model_spec,
+      parameter_counts = runtime_env$ParameterCounts,
       data_generator = .ndm_runtime_get0(runtime_env, "ndm_data_generator", ifnotfound = NULL),
       model = if (exists("ModelList", envir = runtime_env, inherits = FALSE)) {
         get("ModelList", envir = runtime_env, inherits = FALSE)
@@ -590,6 +593,10 @@ ndm_predict <- function(x,
     runtime_env$GetPredSaveAtInfo_default
   )
 
+  if (!isTRUE(inference)) getpred_saveat_info <- .ndm_select_training_solver(
+    runtime_env, runtime_env$ModelList, prepared_batch$packaged, runtime_env$state,
+    runtime_env$PriorList, runtime_env$PolicyList, getpred_saveat_info, seed_matrix
+  )
   pred_fun <- get(pred_fun_name, envir = runtime_env, inherits = FALSE)
   result <- pred_fun(
     .ndm_runtime_device_helper(runtime_env, "ndm_runtime_replicate_tree", runtime_env$ModelList),
@@ -658,6 +665,10 @@ ndm_loss <- function(x,
     runtime_env,
     runtime_env$GetPredSaveAtInfo_default
   )
+  getpred_saveat_info <- .ndm_select_training_solver(
+    runtime_env, runtime_env$ModelList, prepared_batch$packaged, runtime_env$state,
+    runtime_env$PriorList, runtime_env$PolicyList, getpred_saveat_info, seed_matrix
+  )
   loss_fun <- if (exists("loss_step_compiled", envir = runtime_env, inherits = FALSE)) {
     get("loss_step_compiled", envir = runtime_env, inherits = FALSE)
   } else {
@@ -678,7 +689,7 @@ ndm_loss <- function(x,
   )
 
   if (isTRUE(update_state)) {
-    assign("state", result[[2]], envir = runtime_env)
+    assign("state", result[[2]]$model_state %||% result[[2]], envir = runtime_env)
   }
 
   result[[1]]
@@ -1404,6 +1415,7 @@ ndm_train <- function(x,
       env = runtime_env,
       config = .ndm_runtime_get0(runtime_env, "ndm_config", ifnotfound = NULL),
       model_spec = .ndm_runtime_get0(runtime_env, "ndm_model_spec", ifnotfound = NULL),
+      parameter_counts = runtime_env$ParameterCounts,
       model_type = .ndm_runtime_get0(runtime_env, "ndm_model_type", ifnotfound = NULL),
       backbone = .ndm_runtime_get0(runtime_env, "ndm_backbone", ifnotfound = NULL),
       data_generator = .ndm_runtime_get0(runtime_env, "ndm_data_generator", ifnotfound = NULL),

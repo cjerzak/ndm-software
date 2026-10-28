@@ -90,14 +90,25 @@ ndm_load_model <- function(path,
   )
 
   saved_globals <- .ndm_collect_artifact_globals(files$runtime)
-  # Old artifacts predate mixed neural precision. Preserve their predictions;
-  # newer artifacts pin the resolved dtype even when moved between devices.
+  # Pin the saved compute dtype even when the artifact moves between devices.
   saved_globals$TransformerComputeDtype <- saved_globals$TransformerComputeDtypeResolved %||%
     saved_globals$TransformerComputeDtype %||% "native"
   if (identical(saved_globals$TransformerComputeDtype, "float64")) {
     saved_globals$TransformerComputeDtype <- "native"
   }
   ndm_set_runtime_globals(runtime_env, saved_globals)
+  numerics <- metadata$ode_numerics
+  if (!is.null(numerics) || !is.null(runtime_env$VI_TotalTimesInLikelihood)) {
+    save_times <- numerics$save_times %||% seq.int(0, runtime_env$VI_TotalTimesInLikelihood - 1L)
+    runtime_env$VI_SaveAt_ODE_optim <- runtime_env$diffrax$SaveAt(ts = runtime_env$jnp$array(save_times))
+  }
+  if (!is.null(numerics)) {
+    runtime_env$VI_diff_eq_solver_optim <- reticulate::py_get_attr(runtime_env$diffrax, numerics$solver)()
+    runtime_env$stepsize_controller_optim <- if (identical(numerics$controller, "ConstantStepSize")) {
+      runtime_env$diffrax$ConstantStepSize()
+    } else runtime_env$diffrax$PIDController(rtol = numerics$rtol, atol = numerics$atol)
+    runtime_env$dt0_init_optim <- numerics$dt0
+  }
   ndm_build_model(
     runtime_env = runtime_env,
     model_type = metadata$model_type,
@@ -168,7 +179,7 @@ ndm_resume_training <- function(path,
 }
 
 .ndm_artifact_version <- function() {
-  1L
+  2L
 }
 
 .ndm_artifact_files <- function(path) {
@@ -314,6 +325,12 @@ ndm_resume_training <- function(path,
 
   list(
     version = .ndm_artifact_version(),
+    model_semantics_version = 2L,
+    parameter_counts = runtime_env$ParameterCounts,
+    trainability_version = 1L,
+    solver_accuracy = runtime_env$LastSolverAccuracy,
+    ode_numerics = .ndm_artifact_ode_numerics(runtime_env),
+    normalization = runtime_env$RealNormalization,
     saved_class = if (inherits(x, "ndm_trained_model")) "ndm_trained_model" else "ndm_model",
     config = .ndm_runtime_get0(runtime_env, "ndm_config", ifnotfound = x$config %||% NULL),
     model_spec = .ndm_runtime_get0(runtime_env, "ndm_model_spec", ifnotfound = x$model_spec %||% NULL),
@@ -327,6 +344,18 @@ ndm_resume_training <- function(path,
     has_aux_state = isTRUE(has_aux_state),
     has_training_state = isTRUE(has_training_state)
   )
+}
+
+.ndm_artifact_ode_numerics <- function(env) {
+  if (is.null(env$GetPredSaveAtInfo_default) || length(env$GetPredSaveAtInfo_default) < 2L) return(NULL)
+  scalar <- function(x) as.numeric(env$np$asarray(x))
+  class_name <- function(x) as.character(reticulate::py_get_attr(reticulate::py_get_attr(x, "__class__"), "__name__"))
+  controller <- class_name(env$stepsize_controller_optim)
+  list(save_times = scalar(env$GetPredSaveAtInfo_default[[2L]]$subs$ts),
+       solver = class_name(env$VI_diff_eq_solver_optim), controller = controller,
+       rtol = if (controller == "PIDController") scalar(env$stepsize_controller_optim$rtol) else NULL,
+       atol = if (controller == "PIDController") scalar(env$stepsize_controller_optim$atol) else NULL,
+       dt0 = scalar(env$dt0_init_optim))
 }
 
 .ndm_collect_artifact_globals <- function(path) {
@@ -414,7 +443,7 @@ ndm_resume_training <- function(path,
   if (!identical(metadata$version, .ndm_artifact_version())) {
     stop(
       "Unsupported artifact version: ",
-      metadata$version,
+      metadata$version, ". Version 2 changes initial-state priors and optimizer partitions; retrain with the corrected model semantics. The original artifact was not changed.",
       call. = FALSE
     )
   }
@@ -571,6 +600,7 @@ ndm_resume_training <- function(path,
     env = runtime_env,
     config = metadata$config,
     model_spec = metadata$model_spec,
+    parameter_counts = metadata$parameter_counts,
     model_type = metadata$model_type,
     backbone = metadata$backbone,
     data_generator = metadata$data_generator,

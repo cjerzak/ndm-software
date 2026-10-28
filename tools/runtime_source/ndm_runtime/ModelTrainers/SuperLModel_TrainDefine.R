@@ -140,7 +140,7 @@ ndm_training_observation_mask_valid <- function(mask) {
   }
 
   # optimizer setup
-  opt_state <- optax_optimizer$init(  eq$partition(ModelList, eq$is_array)[[1]]  )
+  opt_state <- optax_optimizer$init(  eq$partition(ModelList, TrainabilityMask)[[1]]  )
   if (exists("ndm_runtime_replicate_tree", inherits = TRUE)) {
     opt_state <- ndm_runtime_replicate_tree(opt_state)
   }
@@ -217,8 +217,10 @@ ndm_training_observation_mask_valid <- function(mask) {
                                                     GetPredSaveAtInfo,
                                                     seed,
                                                     opt_state) {
-    loss_and_grads <- eq$filter_value_and_grad(getLoss_train, has_aux = T)(
-      ModelList,
+    model_arrays <- eq$partition(ModelList, TrainabilityMask)
+    trainable_loss <- function(trainable, ...) getLoss_train(eq$combine(trainable, model_arrays[[2L]]), ...)
+    loss_and_grads <- eq$filter_value_and_grad(trainable_loss, has_aux = T)(
+      model_arrays[[1L]],
       batch_pkg,
       y_true,
       y_mask,
@@ -232,7 +234,7 @@ ndm_training_observation_mask_valid <- function(mask) {
     loss_and_state <- loss_and_grads[[1]]
     loss_aux <- loss_and_state[[2]]
     grads <- loss_and_grads[[2]]
-    model_arrays <- eq$partition(ModelList, eq$is_array)
+    model_arrays <- eq$partition(ModelList, TrainabilityMask)
     model_array_tree <- model_arrays[[1]]
     grad_arrays <- eq$partition(grads, eq$is_inexact_array)[[1]]
     updates_and_state <- optax_optimizer$update(
@@ -355,5 +357,5 @@ dir.create(SavedModelDir, recursive = TRUE, showWarnings = FALSE)
 
 # calculate total parameter number
 print2(sprintf("Total trainable parameter count: %s",
-               nParams <- sum(unlist(lapply(jax$tree$leaves( eq$partition(ModelList, eq$is_array)[[1]] ), function(zer){zer$size})))))
+               nParams <- sum(unlist(lapply(jax$tree$leaves( eq$partition(ModelList, TrainabilityMask)[[1]] ), function(zer){zer$size})))))
 print("Done with SuperLModel_TrainDefine.R")

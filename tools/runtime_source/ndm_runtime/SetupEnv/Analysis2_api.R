@@ -3132,6 +3132,8 @@ analysis2_real_runtime_globals <- function(row_values,
   entry_values$EffectiveModelType <- model_type
   entry_values$RunSeed <- run_seed
   entry_values$RunID <- run_id
+  entry_values$ExperimentID <- row_values$ExperimentID %||% paste("real", analysis_name, analysis_date, sep = ":")
+  entry_values$ReplicateID <- as.character(row_values$ReplicateID %||% "1")
 
   globals <- list(
     AnalysisName = analysis_name,
@@ -3325,6 +3327,8 @@ analysis2_sim_runtime_globals <- function(row_values,
   entry_values$EffectiveModelType <- model_type
   entry_values$RunSeed <- run_seed
   entry_values$RunID <- run_id
+  entry_values$ExperimentID <- row_values$ExperimentID %||% paste("sim", analysis_name, analysis_date, sep = ":")
+  entry_values$ReplicateID <- as.character(row_values$ReplicateID %||% "1")
 
   c(
     list(

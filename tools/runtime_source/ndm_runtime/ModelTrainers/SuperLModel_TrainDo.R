@@ -597,6 +597,10 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
     } else {
       GetPredSaveAtInfo_default
     }
+    GetPredSaveAtInfo_runtime <- ndm_select_training_solver(
+      environment(), ModelList, batch_pkg, state, PriorList, PolicyList,
+      GetPredSaveAtInfo_runtime, keys_mat
+    )
     TrainingStateUsable <- !isTRUE(DonateTrainingState)
     train_step_result <- train_step_compiled(
       ModelList,
@@ -714,9 +718,12 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
         )
       ))
     }
-    solver_telemetry_i <- solver_iteration_telemetry(
-      solver_diagnostics_host
-    )
+    solver_telemetry_i <- solver_iteration_telemetry(solver_diagnostics_host)
+    if (exists("LastSolverAccuracy", inherits = FALSE)) {
+      accuracy_file <- file.path(HolderFolder, sprintf("solver_accuracy_outer%s.csv", get0("OUTER_ITERATION", ifnotfound = 1L)))
+      data.table::fwrite(data.frame(iteration = i, LastSolverAccuracy, stringsAsFactors = FALSE),
+                        accuracy_file, append = file.exists(accuracy_file))
+    }
 
     UpdateParametersCond <- is.finite(Loss_i) & is.finite(GradNorm_i) & update_accepted_i
     if(! UpdateParametersCond ){
@@ -959,8 +966,9 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
 
         save_i <- i
         if(save_eqx_enabled){
-          eq$tree_serialise_leaves(checkpoint_file("ModelList", save_i),
-                                   checkpoint_model_payload())
+          eq$tree_serialise_leaves(checkpoint_file("ModelList", save_i), checkpoint_model_payload())
+          saveRDS(list(model_semantics_version = 2L, trainability_version = 1L),
+                  paste0(checkpoint_file("ModelList", save_i), ".metadata.rds"))
           if("ModelList_notshared_set" %in% ls()){
             eq$tree_serialise_leaves(checkpoint_file("ModelList_notshared_set", save_i),
                                      list(ModelList_notshared_set,
@@ -970,6 +978,11 @@ for(i in ndm_training_iteration_sequence(i_, nSGD_model)){
 
         if(save_eqx_enabled && !is.null(recover_checkpoint_at)){
           RecoverAt <- recover_checkpoint_at
+          checkpoint_metadata_file <- paste0(checkpoint_file("ModelList", RecoverAt), ".metadata.rds")
+          if (!file.exists(checkpoint_metadata_file) ||
+              !identical(readRDS(checkpoint_metadata_file)$model_semantics_version, 2L)) {
+            stop("Incompatible legacy checkpoint: retrain with corrected model semantics. Original files were not changed.")
+          }
           ModelList_recovered <- eq$tree_deserialise_leaves(
             checkpoint_file("ModelList", RecoverAt),
             checkpoint_model_payload())

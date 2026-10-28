@@ -168,7 +168,7 @@
   NeuralODE_OutputScaler_SliceContext <- InvSoftPlus( 1 * 1/sqrt(  nTimesTotal ) )$tolist()
   NeuralODE_OutputScaler_PandemicContext <- InvSoftPlus( 1 * 1/sqrt( NTimeGlobalNeuralSteps ) )$tolist()
 
-  PriorText <- unlist(read.table(model_tex_loc, header = F,  sep="\t"))
+  PriorText <- readLines(model_tex_loc, warn = FALSE)
   names(PriorText) <- NULL
   PriorText <- unlist(strsplit(PriorText,split="\\n"))
   PriorText <- PriorText[PriorText!=""]
@@ -243,6 +243,7 @@
     return( ret_ )
   })
 
+  if (!length(PriorDefinitions)) PriorDefinitions_jax <- matrix(character(), 5L, 0L)
   PriorDefinitions_jax <- rbind(PriorDefinitions_jax,
                                 gsub(PriorDefinitions_jax[2,],pattern = "_\\{l0\\}",replace="_l"))
   PriorDefinitions_jax[nrow(PriorDefinitions_jax),] <- gsub(PriorDefinitions_jax[nrow(PriorDefinitions_jax),],pattern="\\}",replace = "")
@@ -250,7 +251,7 @@
   PriorDefinitions_jax[nrow(PriorDefinitions_jax),] <- gsub(PriorDefinitions_jax[nrow(PriorDefinitions_jax),],pattern=" ",replace = "")
 
   # re-order rows not entries
-  PriorDefinitions_jax <- PriorDefinitions_jax[c(1:4,6,5),]
+  PriorDefinitions_jax <- PriorDefinitions_jax[c(1:4,6,5),,drop = FALSE]
   PriorDefinitions_jax[2,] <- gsub(PriorDefinitions_jax[2,],pattern=" ",replace = "")
   PriorDefinitions_jax[5,] <- gsub(PriorDefinitions_jax[5,],pattern=" ",replace = "")
 
@@ -268,6 +269,17 @@
   uq_allneural_vec <- c(uq_encneural_vec,uq_globalneural_vec)
   uq_y_vec <- unique( nonuq_y_vec <- uq_y_vec  )
   default_bio_state_terms <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
+  initial_execution_spec <- ndm_parse_tex_execution_spec(paste(readLines(model_tex_loc, warn = FALSE), collapse = "\n"))
+  InitStateTerms <- initial_execution_spec$init_state_terms
+  InitialStatePrior <- ndm_validate_initial_state_prior(initial_execution_spec$initial_state_prior, InitStateTerms)
+  InitialStateValues <- initial_execution_spec$initial_state_values
+  if (!all(InitStateTerms %in% default_bio_state_terms) ||
+      !setequal(names(InitialStateValues), setdiff(default_bio_state_terms, InitStateTerms))) {
+    stop("Declare initial_state_values for exactly the ordinary states outside init_state_terms.")
+  }
+  # Compartment values are a deterministic simplex transform, never independent
+  # variational coordinates. Legacy declarations cannot add unused KL terms.
+  PriorDefinitions_jax <- PriorDefinitions_jax[, !PriorDefinitions_jax[5,] %in% default_bio_state_terms, drop = FALSE]
 
   # define unique terms as named parameter inputs to vector field
   # (initial conditions are *not* defined here)
@@ -288,7 +300,7 @@
   uq_args_vec <- uq_args_vec[! uq_args_vec %in% ConstantsNames]
   uq_args_vec <- uq_args_vec[! (gsub(uq_args_vec,pattern="_lt",replace="_l") %in% uq_y_vec)]
   uq_args_vec <- uq_args_vec[! (grepl(uq_args_vec,pattern="Neural"))]
-  uq_args_vec <- uq_args_vec[is.na(f2n(uq_args_vec))]
+  uq_args_vec <- uq_args_vec[is.na(suppressWarnings(f2n(uq_args_vec)))]
 
   # define time series
   temporalModelType <- "neuralODE";
@@ -410,53 +422,6 @@
 
   # process
   z <- transform_vec <- unlist(lapply(strsplit(TexTransformationRules,split = "="),function(zer){zer[2]}))
-  split_top_level <- function(text, operators){
-    chars <- strsplit(text, split = "")[[1]]
-    tokens <- c()
-    ops_found <- c()
-    depth <- 0L
-    start_idx <- 1L
-    prev_nonspace <- ""
-    for(i in seq_along(chars)){
-      ch <- chars[[i]]
-      if(ch == "("){ depth <- depth + 1L }
-      if(ch == ")"){ depth <- depth - 1L }
-      is_operator <- (depth == 0L) && (ch %in% operators)
-      is_unary_minus <- identical(ch, "-") &&
-        (i == 1L || prev_nonspace %in% c("", "(", "+", "-", "*", "/", "^", ","))
-      if(is_operator && !is_unary_minus){
-        tokens <- c(tokens, substr(text, start_idx, i - 1L))
-        ops_found <- c(ops_found, ch)
-        start_idx <- i + 1L
-      }
-      if(!grepl("^\\s$", ch)){ prev_nonspace <- ch }
-    }
-    tokens <- c(tokens, substr(text, start_idx, nchar(text)))
-    list(tokens = trimws(tokens), operators = ops_found)
-  }
-  strip_outer_parens <- function(text){
-    text <- trimws(text)
-    if(!nzchar(text)){ return(text) }
-    repeat{
-      if(substr(text, 1L, 1L) != "(" || substr(text, nchar(text), nchar(text)) != ")"){
-        break
-      }
-      chars <- strsplit(text, split = "")[[1]]
-      depth <- 0L
-      encloses_all <- TRUE
-      for(i in seq_along(chars)){
-        if(chars[[i]] == "("){ depth <- depth + 1L }
-        if(chars[[i]] == ")"){ depth <- depth - 1L }
-        if(depth == 0L && i < length(chars)){
-          encloses_all <- FALSE
-          break
-        }
-      }
-      if(!encloses_all){ break }
-      text <- trimws(substr(text, 2L, nchar(text) - 1L))
-    }
-    text
-  }
   replace_symbol_tokens <- function(text, symbols, prefix){
     if(length(symbols) == 0L){ return(text) }
     symbols <- unique(symbols[order(nchar(symbols), decreasing = TRUE)])
@@ -470,100 +435,13 @@
     }
     text
   }
-  compile_math_expr <- NULL
-  compile_math_expr <- function(text){
-    text <- strip_outer_parens(trimws(text))
-    if(!nzchar(text)){ return("0") }
-
-    add_split <- split_top_level(text, c("+", "-"))
-    if(length(add_split$operators) > 0L){
-      ret_ <- compile_math_expr(add_split$tokens[[1L]])
-      for(i in seq_along(add_split$operators)){
-        rhs_ <- compile_math_expr(add_split$tokens[[i + 1L]])
-        ret_ <- if(add_split$operators[[i]] == "+"){
-          sprintf("jnp$add(%s, %s)", ret_, rhs_)
-        } else {
-          sprintf("jnp$subtract(%s, %s)", ret_, rhs_)
-        }
-      }
-      return(ret_)
-    }
-
-    mul_split <- split_top_level(text, c("*", "/"))
-    if(length(mul_split$operators) > 0L){
-      ret_ <- compile_math_expr(mul_split$tokens[[1L]])
-      for(i in seq_along(mul_split$operators)){
-        rhs_ <- compile_math_expr(mul_split$tokens[[i + 1L]])
-        ret_ <- if(mul_split$operators[[i]] == "*"){
-          sprintf("jnp$multiply(%s, %s)", ret_, rhs_)
-        } else {
-          sprintf("jnp$divide(%s, %s)", ret_, rhs_)
-        }
-      }
-      return(ret_)
-    }
-
-    pow_split <- split_top_level(text, "^")
-    if(length(pow_split$operators) > 0L){
-      ret_ <- compile_math_expr(pow_split$tokens[[length(pow_split$tokens)]])
-      if(length(pow_split$tokens) > 1L){
-        for(i in rev(seq_len(length(pow_split$tokens) - 1L))){
-          ret_ <- sprintf("jnp$power(%s, %s)", compile_math_expr(pow_split$tokens[[i]]), ret_)
-        }
-      }
-      return(ret_)
-    }
-
-    if(startsWith(text, "-")){
-      rhs_ <- trimws(substr(text, 2L, nchar(text)))
-      if(grepl("^[0-9.]+([eE][-+]?[0-9]+)?$", rhs_, perl = TRUE)){
-        return(paste0("-", rhs_))
-      }
-      return(sprintf("jnp$negative(%s)", compile_math_expr(rhs_)))
-    }
-
-    if(grepl("^[[:alpha:]_][[:alnum:]_$]*\\s*\\(", text, perl = TRUE) &&
-       substr(text, nchar(text), nchar(text)) == ")"){
-      open_idx <- regexpr("\\(", text, perl = TRUE)[[1]]
-      fn_name <- trimws(substr(text, 1L, open_idx - 1L))
-      fn_args <- substr(text, open_idx + 1L, nchar(text) - 1L)
-      args_split <- split_top_level(fn_args, ",")
-      compiled_args <- vapply(args_split$tokens, compile_math_expr, character(1L))
-      if(fn_name == "exp"){ return(sprintf("jnp$exp(%s)", compiled_args[[1L]])) }
-      if(fn_name == "sqrt"){ return(sprintf("jnp$sqrt(%s)", compiled_args[[1L]])) }
-      if(fn_name == "log"){ return(sprintf("jnp$log(%s)", compiled_args[[1L]])) }
-      if(fn_name == "SoftPlus"){ return(sprintf("SoftPlus(%s)", compiled_args[[1L]])) }
-      if(fn_name == "Sigmoid"){ return(sprintf("Sigmoid(%s)", compiled_args[[1L]])) }
-      if(fn_name == "max"){
-        ret_ <- compiled_args[[1L]]
-        if(length(compiled_args) > 1L){
-          for(i in 2:length(compiled_args)){
-            ret_ <- sprintf("jnp$maximum(%s, %s)", ret_, compiled_args[[i]])
-          }
-        }
-        return(ret_)
-      }
-      if(fn_name == "min"){
-        ret_ <- compiled_args[[1L]]
-        if(length(compiled_args) > 1L){
-          for(i in 2:length(compiled_args)){
-            ret_ <- sprintf("jnp$minimum(%s, %s)", ret_, compiled_args[[i]])
-          }
-        }
-        return(ret_)
-      }
-      return(sprintf("%s(%s)", fn_name, paste(compiled_args, collapse = ", ")))
-    }
-
-    text
-  }
+  compile_math_expr <- function(text) ndm_compile_math_expr(text, symbols = c(
+    "t", paste0("YGOY", uq_y_vec), paste0("ARGSGO", uq_args_vec), paste0("CONSTSGO", ConstantsNames)
+  ))
   normalize_rhs_expr <- function(text){
-    text <- gsub(text, pattern = "cdot", replace = "*")
-    text <- gsub(text, pattern = "frac\\{([^\\}]+)\\}\\{([^\\}]+)\\}", replace = "( \\1 ) / ( \\2 )")
-    text <- gsub(text, pattern = "\\\\", replace = "")
-    text <- gsub(text, pattern = "Neural([[:alnum:]]+)", replace = "Neural\\1___")
-    text <- gsub(text, pattern = "\\{", replace = "")
-    text <- gsub(text, pattern = "\\}", replace = "")
+    neural <- grepl("Neural[[:alnum:]]+", text)
+    text <- ndm_normalize_math_text(text, neural = neural)
+    text <- gsub("Neural([[:alnum:]]+)", "Neural\\1___", text)
     text <- replace_symbol_tokens(text, uq_y_vec, "YGOY")
     text <- replace_symbol_tokens(text, uq_args_vec, "ARGSGO")
     text <- replace_symbol_tokens(text, ConstantsNames, "CONSTSGO")
@@ -758,6 +636,23 @@
                     "'=", righthandside_vec[lefthandside_vec=="Neural2"], sep = ""),collapse = ",") )))
   }
 
+  # Neural compute may use a lower precision, but every derivative must
+  # return to its own integration-state dtype before entering an ODE scan.
+  raw_local_vector_field <- f_VI_ODE_TERM
+  f_VI_ODE_TERM <- function(t, y, args) {
+    jax$tree_util$tree_map(function(d, initial) d$astype(initial$dtype),
+                         raw_local_vector_field(t, y, args), y)
+  }
+  VI_ODE_term <- diffrax$ODETerm(f_VI_ODE_TERM)
+  if (!is.null(VI_ODE_term_globalOnly)) {
+    raw_global_vector_field <- f_VI_ODE_TERM_globalOnly
+    f_VI_ODE_TERM_globalOnly <- function(t, y, args) {
+      jax$tree_util$tree_map(function(d, initial) d$astype(initial$dtype),
+                           raw_global_vector_field(t, y, args), y)
+    }
+    VI_ODE_term_globalOnly <- diffrax$ODETerm(f_VI_ODE_TERM_globalOnly)
+  }
+
   # observed outcome transforms
   observed_name <- transform_vec_final
   observed_name <- observed_name[grepl(TexTransformationRules, pattern = "Observe")]
@@ -831,7 +726,7 @@
   PriorDefinitions_jax_orig <- PriorDefinitions_jax
   type_counter <- 0; for(type_ in c("Neural","Prior")){
   type_counter <- type_counter + 1
-  PriorDefinitions_jax <- sapply(1:ncol(PriorDefinitions_jax_orig),function(zr){
+  PriorDefinitions_jax <- lapply(seq_len(ncol(PriorDefinitions_jax_orig)),function(zr){
     TDep_ <- PriorDefinitions_jax_orig[5,zr] %in% TDeps
     if(TDep_){ ret_ <- replicate(ifelse(type_ == "Prior",yes = TDependencyResolution, no = nDimODEOutput_ts),
                                  PriorDefinitions_jax_orig[,zr]) }
@@ -839,7 +734,7 @@
      return( ret_ )
   })
   if("list" %in% class(PriorDefinitions_jax)){
-    PriorDefinitions_jax <- do.call(cbind,PriorDefinitions_jax)
+    PriorDefinitions_jax <- if (length(PriorDefinitions_jax)) do.call(cbind,PriorDefinitions_jax) else matrix(character(), 6L, 0L)
   }
   PriorDefinitions_jax <- rbind(PriorDefinitions_jax,
 
@@ -861,7 +756,7 @@
 
   # add ODE term if needed (for variance)
   if(length( uq_encneural_vec ) == 0){
-    ADDON_ <- PriorDefinitions_jax[,1:2]
+    ADDON_ <- PriorDefinitions_jax[, seq_len(min(2L, ncol(PriorDefinitions_jax))), drop = FALSE]
     ADDON <- c(); for(rer in 1:(LocalNeuralEmbedDim)){
       addon_mean <- c("Transformation" = "Identity",
                       "DefOrig" = "Neural1", 
@@ -878,40 +773,17 @@
     PriorDefinitions_jax <- cbind(ADDON, PriorDefinitions_jax)
   }
 
-  InitStateTerms <- uq_y_vec[!uq_y_vec %in% uq_allneural_vec]
-  InitStateLogitParamNames <- paste0("InitStateLogit_", InitStateTerms)
-  InitStateScaleParamName <- "InitStateLogitScale"
-  PowerTypeInvTransform <- "Identity"
-  PowerWtInvTransform <- function(x){x}
-  PowerWeightAdds <- cbind(
-    sapply(InitStateLogitParamNames, function(param_name){
-      c(
-        PowerTypeInvTransform,
-        sprintf("%s_0", param_name),
-        as.character(PowerWtInvTransform(0)),
-        "1",
-        param_name,
-        "FALSE",
-        "FALSE",
-        "TRUE",
-        "FALSE",
-        "FALSE"
-      )
-    }),
-    c(
-      PowerTypeInvTransform,
-      sprintf("%s_0", InitStateScaleParamName),
-      as.character(PowerWtInvTransform(0)),
-      "1",
-      InitStateScaleParamName,
-      "FALSE",
-      "FALSE",
-      "TRUE",
-      "FALSE",
-      "FALSE"
-    )
-  )
-  PriorDefinitions_jax <- cbind(PriorDefinitions_jax, PowerWeightAdds)
+  InitStateLogitParamNames <- if (length(InitialStatePrior$logratio_mean)) paste0("InitStateLogRatio_", names(InitialStatePrior$logratio_mean)) else character()
+  if (length(InitStateLogitParamNames)) {
+    initial_rows <- vapply(seq_along(InitStateLogitParamNames), function(i) {
+      name <- InitStateLogitParamNames[[i]]
+      c("Identity", name, as.character(InitialStatePrior$logratio_mean[[i]]),
+        as.character(sqrt(InitialStatePrior$logratio_cov[i, i])), name,
+        "FALSE", "FALSE", "TRUE", "FALSE", "FALSE")
+    }, character(10L))
+    rownames(initial_rows) <- rownames(PriorDefinitions_jax)
+    PriorDefinitions_jax <- cbind(PriorDefinitions_jax, initial_rows)
+  }
 
   # setup entries
   PriorDefinitions_jax_CONTEXT <- PriorDefinitions_jax[,is.na(PriorDefinitions_jax[3,])]
@@ -1064,20 +936,23 @@
                                                                        jnp$array(VariationalInitNonEncLocalSD * prior_sd_multiplier) )
   }
   if(any(local_base_prior_mask_matched)){
-    localParamPrior_base <- oryx$MultivariateNormalDiag(
-      jnp$array(f2n(local_prior_definitions_matched[
-        "PriorMean", local_base_prior_mask_matched
-      ])),
-      jnp$array(f2n(local_prior_definitions_matched[
-        "PriorSD", local_base_prior_mask_matched
-      ]) * prior_sd_multiplier)
+    base_definitions <- local_prior_definitions_matched[, local_base_prior_mask_matched, drop = FALSE]
+    base_covariance <- diag(f2n(base_definitions["PriorSD",])^2, ncol(base_definitions))
+    initial_indices <- match(InitStateLogitParamNames, base_definitions["DefClean",])
+    if (anyNA(initial_indices)) stop("Missing initial-state log-ratio coordinates in local prior.")
+    if (length(initial_indices)) base_covariance[initial_indices, initial_indices] <- InitialStatePrior$logratio_cov
+    base_covariance <- base_covariance * prior_sd_multiplier^2
+    localParamPrior_base <- oryx$MultivariateNormalTriL(
+      jnp$array(f2n(base_definitions["PriorMean",])),
+      jnp$array(t(chol(base_covariance))), stabilize = FALSE
     )
   }
+
   if(length(VariationalInitGlobalMean[!names(VariationalInitGlobalMean) %in% TDeps]) > 0){
-    globalParamPrior_base <- oryx$MultivariateNormalDiag( jnp$array(VariationalInitGlobalMean[!names(VariationalInitGlobalMean) %in% TDeps]),
-                                                                 jnp$array(ifelse(length(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps])==1,
-                                                                                  yes = list(as.matrix(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps] * prior_sd_multiplier)),
-                                                                                  no = list(VariationalInitGlobalSD[!names(VariationalInitGlobalMean) %in% TDeps] * prior_sd_multiplier))[[1]] ))
+    global_base_mask <- !names(VariationalInitGlobalMean) %in% TDeps
+    globalParamPrior_base <- oryx$MultivariateNormalDiag(
+      jnp$atleast_1d(jnp$array(VariationalInitGlobalMean[global_base_mask])),
+      jnp$atleast_1d(jnp$array(VariationalInitGlobalSD[global_base_mask] * prior_sd_multiplier)))
   }
   #- define four priors (neural + non-neural for local + global )
   if(any(local_neural_prior_mask_matched)){

@@ -528,6 +528,7 @@ if(SimMode == T){
                  "te_grads" = te_grads, 
                  unlist(SimEntry),
                  colMeans(do.call(rbind,res_list))))
+  res_vec <- ndm_result_metadata(as.data.frame(res_vec), environment(), nTimesLookValidationInference)
   print(sprintf("WRITING af of %s", af))
   data.table::fwrite(file = file.path(HolderFolder, sprintf("res%s_i%s.csv", af, i)), res_vec)
   save.image(file = file.path(HolderFolder, sprintf("res%s_i%s.Rdata", af, i)))

@@ -23,6 +23,8 @@ ndm_create_config(
   neuralode_optim_atol = 1e-07,
   neuralode_train_integrator = c("auto", "fixed_rk4", "diffrax"),
   neuralode_train_substeps = NULL,
+  neuralode_train_max_substeps = 128L,
+  neuralode_train_fallback = c("diffrax", "error"),
   enable_kv_cache = TRUE,
   enable_kv_cache_training = TRUE,
   inference_mc_draws = 5L,
@@ -67,41 +69,42 @@ invalid when `compute_backend = "cpu"` and rejected at initialization if
 \item{neuralode_global_latent_dim}{Optional global NeuralODE latent width.
 When `NULL`, runtime code resolves this to `ModelDims`.}
 
-\item{neuralode_init_state_logit_offset}{Optional init-state logit offset
-vector for the NeuralODE state simplex initializer.}
+\item{neuralode_init_state_logit_offset}{Obsolete. Non-NULL values are rejected;
+supply `initial_state_prior` through the model specification instead.}
 
-\item{neuralode_init_state_logit_scale_max}{Scalar cap applied to the
-NeuralODE init-state logit scale.}
+\item{neuralode_init_state_logit_scale_max}{Obsolete. Values other than `Inf`
+are rejected; specify log-ratio covariance in `initial_state_prior`.}
 
-\item{neuralode_optim_solver}{NeuralODE optimization solver name. Use
-`"tsit5"` or `"dopri8"`.}
+\item{neuralode_optim_solver}{NeuralODE optimization solver: `"tsit5"` or `"dopri8"`.}
 
-\item{neuralode_optim_dt0}{Initial step size used by the NeuralODE
-optimization solve.}
+\item{neuralode_optim_dt0}{Initial integration step size.}
 
-\item{neuralode_optim_controller}{NeuralODE optimization stepsize controller.
-Use `"pid"` or `"constant"`.}
+\item{neuralode_optim_controller}{Inference controller: `"pid"` or `"constant"`.
+RK4 fallback always uses an adaptive PID controller.}
 
-\item{neuralode_optim_rtol}{Relative tolerance used when
-`neuralode_optim_controller = "pid"`.}
+\item{neuralode_optim_rtol}{Relative tolerance for adaptive integration and
+the RK4 coarse/fine discrepancy check.}
 
-\item{neuralode_optim_atol}{Absolute tolerance used when
-`neuralode_optim_controller = "pid"`.}
+\item{neuralode_optim_atol}{Absolute tolerance for adaptive integration and
+the RK4 coarse/fine discrepancy check.}
 
-\item{neuralode_train_integrator}{Integrator for the NeuralODE solves inside
-the training loss and gradient. `"fixed_rk4"` runs a fixed-step RK4 scan
-on the integer save grid, differentiated with plain reverse-mode AD, which
-costs a fraction of the adaptive solve's adjoint. `"diffrax"` uses the
-adaptive `neuralode_optim_*` solve for training as well. `"auto"` (the
-default) uses `"fixed_rk4"` for structures without global-neural terms
-and `"diffrax"` for structures with them, whose dynamics are stiff at
-initialisation. Prediction and analytics always use the adaptive solve.}
+\item{neuralode_train_integrator}{Training integrator. `"auto"` chooses
+checked `"fixed_rk4"` for local models and `"diffrax"` for models with
+dynamic global states. Checked RK4 probes the same batch at increasing
+resolutions before gradients or optimizer donation. Acceptance requires
+max(abs(fine-coarse)/(atol+rtol*max(abs(fine),abs(coarse)))) <= 1 over every
+saved local/global state and finite predictions. This discrepancy is a
+diagnostic, not a certified exact-solution or gradient error bound.}
 
-\item{neuralode_train_substeps}{Number of RK4 substeps per unit time for
-`neuralode_train_integrator = "fixed_rk4"`, or `NULL` (the default) to
-choose automatically: two for structures with global-neural terms, whose
-compartments move quickly, and one otherwise. Raise it if training
-dynamics become stiff.}
+\item{neuralode_train_substeps}{Initial RK4 substeps per unit interval, or
+`NULL` for one (two with dynamic global states). Must be below the maximum.}
+
+\item{neuralode_train_max_substeps}{Maximum RK4 substeps per unit interval;
+default 128. Refinement uses doubling, capped at this budget.}
+
+\item{neuralode_train_fallback}{`"diffrax"` (default) selects adaptive
+integration for the entire batch if refinement fails or the save grid is
+not unit spaced from zero. `"error"` stops before any training update.}
 
 \item{enable_kv_cache}{Logical scalar controlling DecoderOnly KV caching.
 The default enables the faster cached inference path.}

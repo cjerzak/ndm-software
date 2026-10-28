@@ -7,6 +7,30 @@ real_normalization_runtime_helper <- function() {
   helper_env$.ndm_real_normalize_column
 }
 
+test_that("legacy spatial partitions isolate normalization and preserve the RNG", {
+  env <- new.env(parent = baseenv())
+  ndm_test_architecture_function("SetupData/SuperLModel_DataGenerator_Real.R", ".ndm_real_training_partition", env)
+  normalize <- real_normalization_runtime_helper()
+  data <- expand.grid(time_id = 0:15, location_id = paste0("L", 1:10))
+  values <- exp(seq(-1, 3, length.out = nrow(data))) + sin(seq_len(nrow(data))) / 20
+  set.seed(519); before <- .Random.seed
+  for (type in c("OutOfTime", "OutOfPlace", "OutOfPlacetime")) {
+    partition <- env$.ndm_real_training_partition(data, type, 0:9, 10:15, 17L)
+    expect_identical(.Random.seed, before)
+    modified <- values; modified[-partition$train] <- modified[-partition$train] * 2000 - 100
+    a <- normalize(values, partition$train, data$time_id, "yeoJohnson", "all", return_fit = TRUE)
+    b <- normalize(modified, partition$train, data$time_id, "yeoJohnson", "all", return_fit = TRUE)
+    expect_equal(a$fit, b$fit, tolerance = 0)
+    expect_equal(a$values[partition$train], b$values[partition$train], tolerance = 0)
+    expect_length(intersect(partition$train, partition$test), 0L)
+    if (type == "OutOfPlace") expect_equal(sort(unique(data$time_id[partition$train])), 0:15)
+    if (type == "OutOfPlacetime") {
+      expect_true(all(data$time_id[partition$train] <= 9))
+      expect_false(any(data$location_id[partition$train] %in% data$location_id[partition$test]))
+    }
+  }
+})
+
 test_that("real Yeo-Johnson normalization never fits on future observations", {
   skip_if_not_installed("bestNormalize")
   normalize_column <- real_normalization_runtime_helper()

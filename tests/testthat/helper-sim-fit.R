@@ -852,10 +852,6 @@ ndm_test_sim_parity_neural_config_overrides <- function() {
   list(
     neuralode_optim_dt0 = 1e-2,
     neuralode_optim_controller = "pid",
-    # A modest susceptible-state offset is strong enough to encode the SEIRS
-    # ordering without pinning the initial simplex near an overconfident corner.
-    neuralode_init_state_logit_offset = c(1.0, 0, 0, 0),
-    neuralode_init_state_logit_scale_max = 1.0,
     neuralode_variational = TRUE,
     neuralode_kl_weight = 1e-3,
     neuralode_mean_loss_weight = 1.0
@@ -1228,6 +1224,11 @@ ndm_test_collect_week10_relative_accuracy_pair <- function(endogeneity = 0.0,
     c(
       list(
         model_type = "NeuralODE",
+        model_spec = ndm_model_spec(preset = "seirs_dynamic_beta", model_type = "NeuralODE",
+          initial_state_prior = list(type = "logistic_normal", reference_state = "s_l",
+            logratio_mean = c(e_l = -1, i_l = -1, r_l = -1),
+            logratio_cov = matrix(c(2,1,1,1,2,1,1,1,2), 3,
+              dimnames = list(c("e_l", "i_l", "r_l"), c("e_l", "i_l", "r_l"))))),
         config_overrides = ndm_test_merge_runtime_lists(
           shared_config_overrides,
           neuralode_config_overrides

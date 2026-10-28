@@ -200,6 +200,18 @@ ndm_model_spec_presets <- function() {
 #'   (endemic) for fitting. Both `balanced_incidence` and `seir` require
 #'   incidence observations.
 #'
+#' @param initial_state_prior Optional explicit population-composition prior:
+#'   `list(type = "logistic_normal", reference_state = "s_l",
+#'   logratio_mean = named_vector, logratio_cov = named_matrix)`. For K declared
+#'   initial states, the vector and positive-definite covariance have dimension
+#'   K - 1 and name all non-reference states. Initial counts are population size
+#'   times softmax of these log ratios and a zero reference logit. The default
+#'   center reproduces logits (10, -1, ...); covariance is I + 11'. TB incidence
+#'   variants instead center infectious prevalence at `initial_incidence_center`
+#'   (default 0.0008) divided by its exit rate. This is a transformed center,
+#'   not an arithmetic expectation of prevalence. Explicit priors conflict
+#'   with an explicitly supplied incidence center.
+#'
 #' @returns `ndm_model_spec()` returns an object of class `ndm_model_spec`.
 #'   Built-in presets include metadata such as the packaged source path and the
 #'   normalized TeX contents.
@@ -225,11 +237,12 @@ ndm_model_spec <- function(preset = NULL,
                            time_varying_terms = NULL,
                            endogenous_terms = NULL,
                            tex_path = NULL,
-                           family_args = NULL) {
+                           family_args = NULL,
+                           initial_state_prior = NULL) {
   model_type <- match.arg(model_type)
 
   if (!is.null(tex_path)) {
-    return(ndm_model_spec_from_tex(tex_path, model_type = model_type))
+    return(ndm_model_spec_from_tex(tex_path, model_type = model_type, initial_state_prior = initial_state_prior))
   }
 
   builtin_registry <- .ndm_builtin_spec_registry()
@@ -248,13 +261,13 @@ ndm_model_spec <- function(preset = NULL,
   }
 
   if (preset %in% names(structured_registry)) {
-    return(.ndm_structured_spec_from_preset(
+    return(.ndm_override_initial_state_prior(.ndm_structured_spec_from_preset(
       preset = preset,
       model_type = model_type,
       family_args = family_args,
       time_varying_terms = time_varying_terms,
       endogenous_terms = endogenous_terms
-    ))
+    ), initial_state_prior))
   }
 
   if (!preset %in% names(builtin_registry)) {
@@ -289,7 +302,7 @@ ndm_model_spec <- function(preset = NULL,
     )
   }
 
-  .ndm_make_classed_list(
+  .ndm_override_initial_state_prior(.ndm_make_classed_list(
     list(
       preset = preset,
       model_type = model_type,
@@ -315,7 +328,7 @@ ndm_model_spec <- function(preset = NULL,
       execution_spec = execution_spec
     ),
     "ndm_model_spec"
-  )
+  ), initial_state_prior)
 }
 
 #' @rdname ndm_model_spec_presets
@@ -342,7 +355,8 @@ ndm_model_spec <- function(preset = NULL,
 #'
 #' @export
 ndm_model_spec_from_tex <- function(path,
-                                    model_type = c("DecoderOnly", "NeuralODE")) {
+                                    model_type = c("DecoderOnly", "NeuralODE"),
+                                    initial_state_prior = NULL) {
   model_type <- match.arg(model_type)
   source_path <- .ndm_normalize_path(path, must_work = TRUE)
   builtin_registry <- .ndm_builtin_spec_registry()
@@ -360,7 +374,7 @@ ndm_model_spec_from_tex <- function(path,
     spec$source_path <- source_path
     spec$tex_text <- tex_text
     spec$execution_spec <- execution_spec
-    return(spec)
+    return(.ndm_override_initial_state_prior(spec, initial_state_prior))
   }
 
   preset <- execution_spec$preset %||% "custom"
@@ -371,7 +385,7 @@ ndm_model_spec_from_tex <- function(path,
     "Custom TeX model specification imported from disk."
   }
 
-  .ndm_make_classed_list(
+  .ndm_override_initial_state_prior(.ndm_make_classed_list(
     list(
       preset = preset,
       model_type = model_type,
@@ -397,7 +411,7 @@ ndm_model_spec_from_tex <- function(path,
       execution_spec = execution_spec
     ),
     "ndm_model_spec"
-  )
+  ), initial_state_prior)
 }
 
 #' @rdname ndm_model_spec_presets

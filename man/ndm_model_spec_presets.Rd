@@ -20,10 +20,15 @@ ndm_model_spec(
   time_varying_terms = NULL,
   endogenous_terms = NULL,
   tex_path = NULL,
-  family_args = NULL
+  family_args = NULL,
+  initial_state_prior = NULL
 )
 
-ndm_model_spec_from_tex(path, model_type = c("DecoderOnly", "NeuralODE"))
+ndm_model_spec_from_tex(
+  path,
+  model_type = c("DecoderOnly", "NeuralODE"),
+  initial_state_prior = NULL
+)
 
 ndm_model_spec_to_tex(spec, path = NULL)
 
@@ -71,6 +76,18 @@ explicit removed compartment `r_l` is added with active-disease removal
 `gamma` (I to R), and demographic renewal `mu` keeps incidence sustained
 (endemic) for fitting. Both `balanced_incidence` and `seir` require
 incidence observations.}
+
+\item{initial_state_prior}{Optional explicit population-composition prior:
+`list(type = "logistic_normal", reference_state = "s_l",
+logratio_mean = named_vector, logratio_cov = named_matrix)`. For K declared
+initial states, the vector and positive-definite covariance have dimension
+K - 1 and name all non-reference states. Initial counts are population size
+times softmax of these log ratios and a zero reference logit. The default
+center reproduces logits (10, -1, ...); covariance is I + 11'. TB incidence
+variants instead center infectious prevalence at `initial_incidence_center`
+(default 0.0008) divided by its exit rate. This is a transformed center,
+not an arithmetic expectation of prevalence. Explicit priors conflict
+with an explicitly supplied incidence center.}
 
 \item{path}{Path to a `.tex` model specification file on disk.}
 
