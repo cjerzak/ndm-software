@@ -137,6 +137,7 @@ ndm_stop_incomplete_inference_draws <- function(draw_results,
     length(draw_results) - length(failures),
     requested
   )
+  message <- paste(message, conditionMessage(first_error))
   condition <- structure(
     list(
       message = message,
@@ -263,6 +264,14 @@ ndm_validate_inference_solver_diagnostics <- function(prediction,
   stop(condition)
 }
 
+ndm_inference_matrix <- function(value, np) {
+  value <- np$asanyarray(value)
+  dims <- dim(value)
+  if (length(dims) < 2L) stop("Inference tensor lost its example/time axes.")
+  if (length(dims) == 3L) value <- value[,,1L, drop = FALSE]
+  matrix(as.numeric(value), nrow = dims[[1L]], ncol = dims[[2L]])
+}
+
 if( !SimMode ){
     print("Starting SuperLModel_GetAnalytics_Real.R")
     ndm_plot_log_series_safe <- utils::getFromNamespace(".ndm_plot_log_series_safe", "ndm")
@@ -309,6 +318,7 @@ if( !SimMode ){
       }
       vapply(batch_l, function(l_){ as.integer(np$array(l_$shape)[[1]]) }, integer(1))
     }
+    inference_seen <- 0L
     sl_dat <- c();ok_<-F; ok_counter_ <- 0; while(!ok_){ # !ok_ means do a batch
           ok_counter_ <- ok_counter_ + 1
           next_batch <- next_inference_tfrecord_batch(TFDatasetIterator_inference)
@@ -431,7 +441,7 @@ if( !SimMode ){
                 # obtain posterior predicted mean
                 add_pred_all_reduced <- ndm_mean_inference_draws(
                   add_pred_all,
-                  extract = function(l_){np$asanyarray(l_$y_mu)[,,1]}
+                  extract = function(l_){ndm_inference_matrix(l_$y_mu, np)}
                 )
                 add_pred_all_reduced[add_pred_all_reduced<0] <- 0
   
@@ -445,17 +455,17 @@ if( !SimMode ){
                 }
   
                 # subset truth (no need to change subsetting here for short outcomes [using YTrue])
-                add_true_prior <- (np$asanyarray(batch_l$YTrue)[,c(1:abs(maxTimesPast)),])
-                add_true_prior_mask <- (np$asanyarray(batch_l$YTrue_mask)[,c(1:abs(maxTimesPast)),])
-                
-                add_true_out <- (np$asanyarray(batch_l$YTrue)[,-c(1:abs(maxTimesPast)),])
-                # max(abs(add_true_out - np$asanyarray(batch_l$YTrue_out)[,,1])) # sanity 0 value 
-                add_true_out_mask <- (np$asanyarray(batch_l$YTrue_mask)[,-c(1:abs(maxTimesPast)),])
-                add_true_prior[add_true_prior_mask == 0] <- NA
-                add_true_out[add_true_out_mask == 0] <- NA
-                
-                if(length(dim(add_true_out)) > 2 & tail(dim(add_true_out),1)>1){ add_true_out <- add_true_out[,,1] }
-                if(length(dim(add_true_prior)) > 2 & tail(dim(add_true_prior),1)>1){ add_true_prior <- add_true_prior[,,1] }
+                truth_matrix <- ndm_inference_matrix(batch_l$YTrue, np)
+                truth_mask <- ndm_inference_matrix(batch_l$YTrue_mask, np)
+                if (any(!truth_mask %in% c(0, 1)) || any(!is.finite(truth_matrix[truth_mask == 1]))) stop("Invalid canonical truth/mask.")
+                prior_columns <- seq_len(abs(maxTimesPast))
+                add_true_prior <- truth_matrix[, prior_columns, drop = FALSE]
+                add_true_out <- truth_matrix[, -prior_columns, drop = FALSE]
+                add_true_prior_mask <- truth_mask[, prior_columns, drop = FALSE]
+                add_true_out_mask <- truth_mask[, -prior_columns, drop = FALSE]
+                add_true_prior[add_true_prior_mask == 0] <- NA_real_
+                add_true_out[add_true_out_mask == 0] <- NA_real_
+                if (any(!is.finite(add_pred_out))) stop("Nonfinite inference prediction.")
                 # View(add_true_out[,,1])
                 # View(add_true_out_mask[,,1])
   
@@ -501,10 +511,15 @@ if( !SimMode ){
               # jnp$std(jnp$array(batch_l$XPred),axis = 0L:1L)
               plot(add_true_out, add_pred_out, main=sprintf("%s [Cor: %.3f]",ok_counter_, LastOutCor <- cor(c(add_true_out),c(add_pred_out)))); abline(a=0,b=1)
               
-              # combine results 
-              sl_dat <- rbind(sl_dat, cbind("location_id" = np$array(batch_l$location_id_numeric),
+              # Preserve canonical ordinals: bootstrap location/anchor pairs can repeat.
+              example_ids <- inference_seen + seq_len(nrow(add_pred_out))
+              inference_seen <- inference_seen + nrow(add_pred_out)
+              colnames(add_true_out_mask) <- paste0("Observed_l", seq_len(ncol(add_true_out_mask)))
+              if (any(!is.finite(add_pred_out_baseline[add_true_out_mask == 1]))) stop("Missing persistence baseline for scored cells.")
+              # combine results
+              sl_dat <- rbind(sl_dat, cbind("canonical_example_id" = example_ids, "location_id" = np$array(batch_l$location_id_numeric),
                                          "time_anchor_id" = np$array(batch_l$time_id_numeric),#[!batch_l$is_null_indicator],
-                                         cbind(add_true_out,
+                                         cbind(add_true_out_mask, add_true_out,
                                                add_pred_out,
                                                add_pred_out_baseline,
                                                add_true_prior) ) )
@@ -627,20 +642,22 @@ if( !SimMode ){
     }
     dev.off(); par(mfrow = c(1,1))
     
-    # save results 
-    data.table::fwrite(
-      as.matrix(sl_dat),
-      file = as.character(file.path(
-        HolderFolder,
-        sprintf("predicted_df_out_%s_EvalTime%s_IsPretraining%s_TrainIter%sof%s_OuterIter%s.csv",
-                rlang::hash(modelingStrategyNameKey),
-                evaluationTime,
-                IsPretraining,
-                i,
-                nSGD_model,
-                OUTER_ITERATION)
-      ))
-    )
+    # A count mismatch or a missing scored value must fail before publication.
+    expected_count <- get0("ndm_inference_expected_count", ifnotfound = inference_seen)
+    if (inference_seen != expected_count || inference_seen < 1L) stop("Incomplete canonical real inference panel.")
+    sl_dat$inference_examples <- inference_seen
+    result_file <- file.path(HolderFolder,
+      sprintf("predicted_df_out_%s_EvalTime%s_IsPretraining%s_TrainIter%sof%s_OuterIter%s.csv",
+        rlang::hash(modelingStrategyNameKey), evaluationTime, IsPretraining, i, nSGD_model, OUTER_ITERATION))
+    support_columns <- c("canonical_example_id", "location_id", "time_anchor_id", grep("^Observed_l[0-9]+$", names(sl_dat), value = TRUE))
+    utils::getFromNamespace(".ndm_atomic_result_csv", "ndm")(
+      sl_dat, result_file, list(run_id = get0("RUN_ID", ifnotfound = NA_character_),
+        checkpoint_step = as.integer(i), n_sgd = as.integer(nSGD_model),
+        inference_examples = inference_seen, evaluation_horizon = as.integer(nTimesLookValidationInference),
+        manifest_sha256 = get0("ndm_inference_manifest_sha256", ifnotfound = NA_character_),
+        draws_requested = inference_mc_draws_requested, draws_effective = inference_mc_draws_effective,
+        support = sl_dat[, support_columns, drop = FALSE]))
+    ndm_last_evaluation_file <- result_file
     print("Done with SuperLModel_GetAnalytics_Real.R")
 }
 

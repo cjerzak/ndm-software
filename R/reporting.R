@@ -77,7 +77,7 @@
   if (!length(prev_cols)) stop("Real results require previous-sequence truth for the persistence baseline.", call. = FALSE)
   group_fields <- c("ExperimentID", "ReplicateID", "RunID", "ModelType", "pair_id", "i_in_sgd", "training_horizon", "evaluation_horizon")
   group <- .ndm_report_key(data, group_fields)
-  example_key <- .ndm_report_key(data, c(group_fields, "location_id", "time_anchor_id"))
+  example_key <- .ndm_report_key(data, c(group_fields, if ("canonical_example_id" %in% names(data)) "canonical_example_id" else c("location_id", "time_anchor_id")))
   if (anyDuplicated(example_key)) stop("Duplicate real-result example at the same run and checkpoint.", call. = FALSE)
   series_cols <- grep("^(Truth_l|Pred_l|PredBase_l|PreviousSequenceTruth_l|SliceSkillTime|RSSPredTime|RSSBaselineTime|SkillTime)[0-9]+$", names(data), value = TRUE)
   metadata <- setdiff(names(data), c(series_cols, "location_id", "time_anchor_id"))

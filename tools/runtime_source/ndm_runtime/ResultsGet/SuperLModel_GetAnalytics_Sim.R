@@ -1,138 +1,82 @@
-# Content of SuperLModel_GetAnalytics_Sim.R
-if(SimMode == T){
-  print("Starting SuperLModel_GetAnalytics_Sim.R")
+# Evaluate every canonical example at every checkpoint. Batch boundaries never
+# determine the panel, posterior draw keys, or aggregation of nonlinear metrics.
+if (isTRUE(SimMode)) {
   ndm_plot_log_series_safe <- utils::getFromNamespace(".ndm_plot_log_series_safe", "ndm")
-  analytics_truth_matrix <- function(x, name, nrow_expected, ncol_expected){
-    arr <- np$array(x)
-    dims <- dim(arr)
-    if(length(dims) == 3L && dims[[2]] == 1L){
-      arr <- arr[,1,]
-      dims <- dim(arr)
-    }
-    if(length(dims) == 2L && dims[[1]] == nrow_expected && dims[[2]] == ncol_expected){
-      return(arr)
-    }
-    stop(
-      sprintf(
-        "Expected `%s` to resolve to a [%s x %s] batch matrix; got [%s]",
-        name,
-        nrow_expected,
-        ncol_expected,
-        paste(dims, collapse = " x ")
-      )
-    )
+  sim_base_id <- get0("BaseID", ifnotfound = SimEntry$BaseID %||% 1L)
+  inference_draw_plan <- ndm_inference_draw_plan(
+    ModelType, get0("neuralode_variational", ifnotfound = identical(ModelType, "NeuralODE")),
+    get0("InferenceMCDraws", ifnotfound = 5L), get0("testWithoutSampling", ifnotfound = FALSE))
+  GetPredSaveAtInfo_inference <- list(nTimesLookValidationInference,
+    diffrax$SaveAt(ts = jnp$arange(start = 0L, stop = as.integer(nTimesLookValidationInference), dtype = jnp$int32)))
+  sim_matrix <- function(value, n, width, name, finite = TRUE) {
+    value <- np$asanyarray(value)
+    dims <- dim(value)
+    if (length(dims) == 3L && dims[[3L]] >= 1L && dims[[2L]] == width) value <- value[,,1L, drop = FALSE]
+    if (length(value) != n * width) stop("Unexpected shape for ", name)
+    value <- matrix(as.numeric(value), nrow = n, ncol = width)
+    if (finite && any(!is.finite(value))) stop("Nonfinite canonical inference values in ", name)
+    value
   }
-  analytics_truth_vector <- function(x, name, nrow_expected){
-    arr <- np$array(x)
-    dims <- dim(arr)
-    if(length(dims) == 3L && dims[[2]] == 1L && dims[[3]] == 1L){
-      arr <- arr[,1,1]
-    } else if(length(dims) == 2L && dims[[2]] == 1L){
-      arr <- arr[,1]
-    }
-    arr <- as.numeric(arr)
-    if(length(arr) == nrow_expected){
-      return(arr)
-    }
-    stop(
-      sprintf(
-        "Expected `%s` to resolve to a length-%s batch vector; got [%s]",
-        name,
-        nrow_expected,
-        paste(dims, collapse = " x ")
-      )
-    )
+  sim_predict_draws <- function(batch, ids, policy = PolicyList) {
+    results <- lapply(seq_len(inference_draw_plan$effective), function(draw_id) {
+      tryCatch({
+        keys <- ndm_inference_scoped_keys(jax, jnp, JaxKey, SEED_, sim_base_id, i, draw_id, ids, rep(0L, length(ids)))
+        pred <- GetPred_inference(ModelList, batch2package(batch), state, PriorList, policy,
+          GetPredSaveAtInfo_inference, ndm_runtime_data_to_device(keys))[[1L]]
+        ndm_validate_inference_solver_diagnostics(pred, draw_id, ids, rep(0L, length(ids)),
+          host_array = function(x) ndm_inference_host_array(x, np),
+          require_diagnostics = !isTRUE(get0("AllowLegacyMissingSolverDiagnostics", ifnotfound = FALSE)))
+        # Reject each invalid draw before reduction; failed draws cannot disappear.
+        sim_matrix(pred$y_mu, length(ids), nTimesLookValidationInference, "posterior prediction")
+        sim_matrix(pred$y_sigma, length(ids), nTimesLookValidationInference, "posterior scale")
+        list(ok = TRUE, value = pred)
+      }, error = function(error) list(ok = FALSE, error = error))
+    })
+    ndm_stop_incomplete_inference_draws(results, inference_draw_plan$effective, i)
+    lapply(results, `[[`, "value")
   }
-  res_list <- replicate({list()}, n = nMonteEval)
-  # Trajectories of every evaluation batch, kept for the trajectory videos
-  # (ndmviz): the past and future truth, the posterior-mean forecast, its
-  # scale and the persistence baseline, one row per simulated epidemic and
-  # time. Written once per checkpoint as trajectories_sim<af>_i<i>.csv; a
-  # failure here never affects the run.
-  ndm_viz_trajectory_rows <- list()
-  for(nj in 1:nMonteEval){
-  print2( sprintf("nj %s of %s in GetAnalytics_Sim.R", nj, nMonteEval  )) 
-  #GetPredSaveAtInfo_inference <- list(jnp$array(tmp_ <- nTimesTotal-nTimesLookahead+nTimesLookValidation),
-  #GetPredSaveAtInfo_inference <- list(jnp$array(tmp_ <- nTimesLookValidationInference),
-  GetPredSaveAtInfo_inference <- list(
-    tmp_ <- nTimesLookValidationInference,
-    diffrax$SaveAt(ts = jnp$arange(
-      start = 0L, stop = as.integer(tmp_), dtype = jnp$int32
-    ))
-  )
-  ok_<-F; ok_counter_ <- 0; while(!ok_){
-    ok_counter_ <- ok_counter_ + 1
-    batch_l <- try(reticulate::iter_next( TFDatasetIterator_inference ), T) 
-    if("try-error" %in% class(batch_l)){ batch_l <- reticulate::iter_next( TFDatasetIterator_inference <- reticulate::as_iterator( TFDataset_inference )  )  }
-    if(length(batch_l)[[1]] == 0){ batch_l <- reticulate::iter_next( TFDatasetIterator_inference <- reticulate::as_iterator( TFDataset_inference )  )  }
-    if( np$array(batch_l[[1]]$shape)[[1]] != nBatch | is.null(batch_l) ){  
-      TFDatasetIterator_inference <- reticulate::as_iterator( TFDataset_inference ) 
-    }
-    if( any(unlist(lapply(batch_l, function(l_){ np$array(l_$shape)[[1]] } ) ) != nBatch) ){  
-      badshape2_ctr <- 0; badshape2 <- T; while(badshape2){ 
-        print2("Resetting type: bad shape (2) in GetAnalytics_Sim.R")
-        badshape2_ctr <- badshape2_ctr + 1; if(badshape2_ctr > 100){stop("Too many bad shape (2)'s in GetAnalytics_Sim.R")}
-        batch_l <- reticulate::iter_next(TFDatasetIterator_inference <- reticulate::as_iterator(TFDataset_inference))
-        badshape2 <- any(unlist(lapply(batch_l, function(l_){ np$array(l_$shape)[[1]] } ) ) != nBatch)  
+  inference_iterator <- reticulate::as_iterator(TFDataset_inference)
+  next_batch <- utils::getFromNamespace(".ndm_tfrecord_iter_next", "ndm")
+  panel <- utils::getFromNamespace(".ndm_collect_inference_panel", "ndm")(
+    get0("ndm_inference_expected_count", ifnotfound = NA_integer_),
+    function() next_batch(inference_iterator),
+    function(batch) vapply(batch, function(x) as.integer(np$array(x$shape)[[1L]]), integer(1L)),
+    function(batch, ids) {
+      batch <- TFConst2JAXArray(batch)
+      n <- length(ids); h <- nTimesLookValidationInference
+      draws <- sim_predict_draws(batch, ids)
+      mean_field <- function(field, width = 1L, structural = FALSE) {
+        Reduce(`+`, lapply(draws, function(x) sim_matrix(
+          if (structural) x$ODEParamsSampList[[field]] else x[[field]], n, width, field))) / length(draws)
       }
-    }
-    batch_l <- TFConst2JAXArray( batch_l )
-    if(ok_counter_ > 100){ stop("Problem in SuperLModel_GetAnalytics_Sim.R") }
-    if(!"try-error" %in% class(batch_l)){ ok_ <- T }
-  }
-  pred_l <- replicate(10,list(GetPred_inference(ModelList,
-                                                batch2package(batch_l),
-                                                state,
-                                                PriorList,
-                                                PolicyList,
-                                                GetPredSaveAtInfo_inference,
-                                                ndm_runtime_data_to_device(jax$random$split(JaxKey(as.integer(3L+runif(1,1,10000))),nBatch)) )[[1]]))
-  pred_l_mean <- lapply(pred_l,function(zer){  np$asanyarray( zer$y_mu )  })
-  pred_l_mean_full <- pred_l_mean <- 1/length(pred_l_mean) * Reduce("+",pred_l_mean)
-  out_y_indices <- (1:ncol(pred_l_mean))[ !1:ncol(pred_l_mean) %in% 1:nTimesPast]
-  #pred_l_mean <- pred_l_mean[,out_y_indices <- (ncol(pred_l_mean) - nTimesLookahead+1):ncol(pred_l_mean),1]
-  #pred_l_mean <- pred_l_mean[,out_y_indices <- (1:ncol(pred_l_mean))[ !1:ncol(pred_l_mean) %in% 1:nTimesPast],1]
-  pred_l_mean <- pred_l_mean_full[,,1]
-  pred_l_sd <- lapply(pred_l,function(zer){ np$asanyarray( zer$y_sigma )[,,1] })
-  pred_l_sd <- 1/length(pred_l_sd) * Reduce("+",pred_l_sd)
-  #plot(pred_l_mean[sample(1:dim(pred_l_mean)[1],1),])
-
-  # analysis of means
-  #l_true <- np$asanyarray( batch_l$YTrue) [,out_y_indices,1]
-  l_true <- np$asanyarray( batch_l$YTrue_out )[,,1]
-  #l_true_full <- np$asanyarray( batch_l$YTrue) [,,1]
-  pred_l_baselineVal <- np$asanyarray( batch_l$YTrue ) [,(nTimesTotal - nTimesLookahead),1]
-  pred_l_baselineVal_mat <- matrix(1,nrow = nrow(pred_l_mean), 
-                                   ncol=ncol(pred_l_mean)) * 
-                                pred_l_baselineVal
-  LastOutCor <- cor(c(l_true),c(pred_l_mean))
-  # plot(c(l_true),c(pred_l_mean_full));abline(a=0,b=1)
-  ndm_viz_trajectory_rows[[nj]] <- try({
-    y_all <- np$asanyarray( batch_l$YTrue )[,,1]
-    n_past <- ncol(y_all) - ncol(l_true)
-    pred_cols <- if(ncol(pred_l_mean) == ncol(y_all)){ (n_past + 1L):ncol(y_all) } else { seq_len(ncol(l_true)) }
-    pred_h <- pred_l_mean[, pred_cols, drop = FALSE]
-    sd_h <- if(all(dim(pred_l_sd) == dim(pred_l_mean))){ pred_l_sd[, pred_cols, drop = FALSE] } else { pred_h * NA_real_ }
-    n_units <- nrow(y_all); n_times <- ncol(y_all)
-    data.table::data.table(
-      monte_eval = nj,
-      unit = rep(seq_len(n_units), times = n_times),
-      t = rep(seq_len(n_times), each = n_units),
-      is_future = rep(seq_len(n_times) > n_past, each = n_units),
-      y_true = as.vector(y_all),
-      y_model = as.vector(cbind(matrix(NA_real_, n_units, n_past), pred_h)),
-      y_sd = as.vector(cbind(matrix(NA_real_, n_units, n_past), sd_h)),
-      y_persist = as.vector(cbind(matrix(NA_real_, n_units, n_past), pred_l_baselineVal_mat)),
-      sim_index = af,
-      i_in_sgd = i,
-      nSGD = nSGD_model,
-      nParamsModel = nParamsModel,
-      ModelType = ModelType,
-      model_spec_name = if(is.null(SimEntry$model_spec_name)){ NA_character_ } else { as.character(SimEntry$model_spec_name) },
-      analysis_name = AnalysisName
-    )
-  }, silent = TRUE)
-  
+      out <- list(truth = sim_matrix(batch$YTrue_out, n, h, "YTrue_out"),
+        past_future = sim_matrix(batch$YTrue, n, nTimesTotal, "YTrue"),
+        prediction = mean_field("y_mu", h), scale = mean_field("y_sigma", h))
+      if (ModelType != "DecoderOnly") {
+        out$init_true <- sim_matrix(batch$init_true, n, 4L, "init_true")
+        out$gamma_true <- sim_matrix(batch$gamma_true, n, 1L, "gamma_true")
+        out$sigma_true <- sim_matrix(batch$sigma_true, n, 1L, "sigma_true")
+        out$init_hat <- do.call(cbind, lapply(c("s_l_samp", "e_l_samp", "i_l_samp", "r_l_samp"), mean_field, structural = TRUE))
+        out$gamma_hat <- mean_field("gamma_samp", structural = TRUE)
+        out$sigma_hat <- mean_field("sigma_samp", structural = TRUE)
+      }
+      out
+    })
+  l_true <- panel$truth; pred_l_mean <- panel$prediction; pred_l_sd <- panel$scale
+  pred_l_baselineVal <- panel$past_future[, nTimesPast]
+  pred_l_baselineVal_mat <- matrix(pred_l_baselineVal, nrow(l_true), ncol(l_true))
+  n_units <- nrow(l_true); n_times <- ncol(panel$past_future)
+  ndm_viz_trajectory_rows <- list(data.table::data.table(
+    monte_eval = 1L, unit = rep(seq_len(n_units), times = n_times),
+    t = rep(seq_len(n_times), each = n_units),
+    is_future = rep(seq_len(n_times) > nTimesPast, each = n_units),
+    y_true = as.vector(panel$past_future),
+    y_model = as.vector(cbind(matrix(NA_real_, n_units, nTimesPast), pred_l_mean)),
+    y_sd = as.vector(cbind(matrix(NA_real_, n_units, nTimesPast), pred_l_sd)),
+    y_persist = as.vector(cbind(matrix(NA_real_, n_units, nTimesPast), pred_l_baselineVal_mat)),
+    sim_index = af, i_in_sgd = i, nSGD = nSGD_model, nParamsModel = nParamsModel,
+    ModelType = ModelType, model_spec_name = as.character(SimEntry$model_spec_name %||% NA_character_),
+    analysis_name = AnalysisName))
   ##############################
   # R-squared analysis
   ##############################
@@ -194,79 +138,21 @@ if(SimMode == T){
   sd_outcome <- median( apply(l_true,1,sd) )
   }
 
-  ##############################
-  # analyze structural parameters
-  ##############################
-  init_s <- init_e <- init_i <- init_r <- init_hat <-
-    AbsDiff_init <- KLDiv_init <- sigma_hat <- gamma_hat <-
-    AbsDiff_gamma <- RelAbsDiff_gamma <- AbsDiff_sigma <- RelAbsDiff_sigma <- NA
-  beta_hat <- beta_MedianWithinR2_Fit <- beta_MedianWithinR2_Raw <- beta_true <- NA;
-  beta_GlobalR2_Raw <- beta_GlobalR2_Fit <- beta_FNorm_Rel <- beta_FNorm_Raw <- beta_AggNorm_Rel <- beta_AggNorm_Raw <- NA
-  if(ModelType != "DecoderOnly"){
-    init_true_mat <- analytics_truth_matrix(
-      batch_l$init_true,
-      name = "init_true",
-      nrow_expected = nrow(pred_l_mean),
-      ncol_expected = 4L
-    )
-    gamma_true_vec <- analytics_truth_vector(
-      batch_l$gamma_true,
-      name = "gamma_true",
-      nrow_expected = nrow(pred_l_mean)
-    )
-    sigma_true_vec <- analytics_truth_vector(
-      batch_l$sigma_true,
-      name = "sigma_true",
-      nrow_expected = nrow(pred_l_mean)
-    )
-
-    # initial values
-    init_s <- colMeans(do.call(rbind,lapply(pred_l,function(zer){np$asanyarray( zer$ODEParamsSampList$s_l_samp) })))
-    init_e <- colMeans(do.call(rbind,lapply(pred_l,function(zer){np$asanyarray( zer$ODEParamsSampList$e_l_samp) })))
-    init_i <- colMeans(do.call(rbind,lapply(pred_l,function(zer){np$asanyarray( zer$ODEParamsSampList$i_l_samp) })))
-    init_r <- colMeans(do.call(rbind,lapply(pred_l,function(zer){np$asanyarray( zer$ODEParamsSampList$r_l_samp) })))
-    init_hat <- cbind((init_s),(init_e),(init_i),(init_r))
-    AbsDiff_init <- median(rowSums( abs(init_hat - init_true_mat )))
-    KLDiv_init <- median( rowSums(  init_true_mat * (log(init_hat) - log(init_true_mat) ) ))
-
-    sigma_hat <- colMeans(do.call(rbind,lapply(pred_l,function(zer){np$asanyarray( zer$ODEParamsSampList$sigma_samp) })))
-    gamma_hat <- colMeans(do.call(rbind,lapply(pred_l,function(zer){np$asanyarray( zer$ODEParamsSampList$gamma_samp) })))
-
-    AbsDiff_gamma <- median(  abs( gamma_true_vec - gamma_hat) )
-    RelAbsDiff_gamma <- median(  abs( gamma_true_vec - gamma_hat)/gamma_true_vec)
-
-    AbsDiff_sigma <- median(  abs( sigma_true_vec - sigma_hat) )
-    RelAbsDiff_sigma <- median(  abs( sigma_true_vec - sigma_hat)/sigma_true_vec)
-
-    ### beta analysis
-    if(ModelType != "DecoderOnly"){ 
-      beta_hat <- lapply(pred_l, function(l_){ ExtractBetaDraw(l_$ODEParamsSampList)$BetaDraw })
-      beta_hat <- 1/length(beta_hat) * Reduce("+",beta_hat)
-    }
-    if(T == F){ 
-      beta_true <- t( apply(np$array(batch_l$inv_beta_true),1,function(zer){
-         #np$asanyarray( SoftPlus( zer[[1]]$evaluate(jnp$array(1.:max(out_y_indices),dtype=jnp$float64)) ) )
-          #zer 
-          zer[1:max(out_y_indices)]
-      }) )
-      beta_MedianWithinR2_Raw <- median( sapply(1:nrow(beta_true),function(zer){
-        WithinR2 <- RawR2(c(beta_hat[zer,]),beta_true[zer,])
-      }) )
-      beta_MedianWithinR2_Fit <- median( sapply(1:nrow(beta_true),function(zer){
-        WithinR2 <- lm(c(beta_true[zer,])~c(beta_hat[zer,]))
-        WithinR2 <- summary(WithinR2)$adj.r.squared }) )
-      
-      beta_GlobalR2_Raw <- RawR2(c(beta_hat),c(beta_true))
-      beta_GlobalR2_Fit <- summary(lm(c(beta_true)~c(beta_hat)))$adj.r.squared
-  
-      beta_FNorm_Raw <- mean(sqrt((c(beta_hat) - c(beta_true))^2))
-      beta_FNorm_Rel <- mean(sqrt((c(beta_hat) - c(beta_true))^2)) / mean(sqrt(beta_true^2))
-  
-      beta_AggNorm_Raw <- mean(sqrt((rowSums(beta_hat) - rowSums(beta_true))^2))
-      beta_AggNorm_Rel <- mean(sqrt((rowSums(beta_hat) - rowSums(beta_true))^2)) / mean(sqrt(rowSums(beta_true)^2))
-    }
+  # The structural summaries use all examples, preserving population units.
+  AbsDiff_init <- KLDiv_init <- AbsDiff_gamma <- RelAbsDiff_gamma <- AbsDiff_sigma <- RelAbsDiff_sigma <- NA_real_
+  KLDiv_init_status <- "not_applicable"; KLDiv_init_infinite_count <- 0L
+  beta_MedianWithinR2_Fit <- beta_MedianWithinR2_Raw <- beta_GlobalR2_Raw <- beta_GlobalR2_Fit <-
+    beta_FNorm_Rel <- beta_FNorm_Raw <- beta_AggNorm_Rel <- beta_AggNorm_Raw <- NA_real_
+  if (ModelType != "DecoderOnly") {
+    init_hat <- panel$init_hat; init_true_mat <- panel$init_true
+    AbsDiff_init <- median(rowSums(abs(init_hat - init_true_mat)))
+    kl <- utils::getFromNamespace(".ndm_population_weighted_kl", "ndm")(init_true_mat, init_hat)
+    KLDiv_init <- kl$value; KLDiv_init_status <- kl$status; KLDiv_init_infinite_count <- kl$infinite_count
+    AbsDiff_gamma <- median(abs(panel$gamma_true - panel$gamma_hat))
+    RelAbsDiff_gamma <- median(abs(panel$gamma_true - panel$gamma_hat) / panel$gamma_true)
+    AbsDiff_sigma <- median(abs(panel$sigma_true - panel$sigma_hat))
+    RelAbsDiff_sigma <- median(abs(panel$sigma_true - panel$sigma_hat) / panel$sigma_true)
   }
-
   ##############################
   # policy eval metrics
   ##############################
@@ -286,14 +172,14 @@ if(SimMode == T){
     "ComputeScenario" = F,
 
     # scenario (defines the smooth shift trajectory in the policy from the previous state)
-    "Scenario" = jnp$array(InterpolatorBasis_[1:NTimeSteps_SIM])
+    "Scenario" = as.numeric(InterpolatorBasis_[seq_len(NTimeSteps_SIM)])
   )
 
   PolicyList_GetBatch_unnatural <- list(
     "ComputeScenario" = T,
 
     # scenario (defines the smooth shift trajectory in the policy from the previous state)
-    "Scenario" = jnp$array(InterpolatorBasis_[1:NTimeSteps_SIM])
+    "Scenario" = as.numeric(InterpolatorBasis_[seq_len(NTimeSteps_SIM)])
     )
 
   model_policy_ts <- jnp$array(as.numeric(0:(nTimesTotal-1L)))
@@ -331,22 +217,25 @@ if(SimMode == T){
   # get factual and counterfactual data
   PolicyScenarioSkillRes <- PolicyScenarioSkillBaselineRes <- NULL; nCounterfactuals <- 0; policy_eval_failed <- FALSE; while( nCounterfactuals < 2 ){
     nCounterfactuals <- nCounterfactuals + 1
-    counterf_ <- ai(runif(1,1,10000))
+    counterf_ <- as.integer(nCounterfactuals)
+    policy_count <- 32L
+    policy_ids <- 1000000L + (counterf_ - 1L) * policy_count + seq_len(policy_count)
+    policy_seeds <- as.integer((as.double(SEED_) * 104729 + as.double(sim_base_id) * 130363 + policy_ids) %% 2147483646)
     ok_<-F; ok_counter_ <- 0; while(!ok_){
       ok_counter_ <- ok_counter_ + 1
-      set.seed(PolicyEvalSeed <- (12456L + counterf_)); batch_l_natural <- try(GetBatch(
-                                      nBatch = nBatch, 
+      batch_l_natural <- try(GetBatch(
+                                      nBatch = policy_count, example_seeds = policy_seeds,
                                       INPUT_REF_DAT = input_df_red_in,
                                       PolicyList = PolicyList_GetBatch_natural,
                                       nTimes = NTimeSteps_SIM,
                                       nTimesLook = nTimesLookValidation), T)
-      set.seed(PolicyEvalSeed);batch_l_unnatural <- try(GetBatch(nBatch = nBatch,  
+      batch_l_unnatural <- try(GetBatch(nBatch = policy_count, example_seeds = policy_seeds,
                                       INPUT_REF_DAT = input_df_red_in,
                                       nTimes = NTimeSteps_SIM,
                                       nTimesLook = nTimesLookValidation,
                                       PolicyList = PolicyList_GetBatch_unnatural), T) 
                                       #PolicyList = PolicyList_GetBatch_natural),T) # for debugging
-      if(ok_counter_ > 100){
+      if(ok_counter_ >= 1 && (inherits(batch_l_natural, "try-error") || inherits(batch_l_unnatural, "try-error"))){
         warning("Skipping policy scenario analytics because natural/counterfactual batches could not be generated")
         policy_eval_failed <- TRUE
         break
@@ -357,16 +246,12 @@ if(SimMode == T){
     {
       # get factual and counterfactual predictions
       # note: t is differnt in meaning for getting data and for modeling
-      hat_y_natural <- GetPred_inference(
-        ModelList, batch2package(batch_l_natural),
-        state, PriorList, PolicyList_Model_natural,
-        GetPredSaveAtInfo_inference,
-        ndm_runtime_data_to_device(jax$random$split(JaxKey(9L+counterf_), nBatch)))[[1]]
-      hat_y_unnatural <- GetPred_inference(
-        ModelList, batch2package(batch_l_unnatural),
-        state, PriorList, PolicyList_Model_unnatural,
-        GetPredSaveAtInfo_inference,
-        ndm_runtime_data_to_device(jax$random$split(JaxKey(9L), nBatch)))[[1]]
+      policy_predict <- function(batch, policy) {
+        draws <- sim_predict_draws(batch, policy_ids, policy)
+        Reduce(`+`, lapply(draws, function(x) sim_matrix(x$y_mu, policy_count, nTimesLookValidationInference, "policy prediction"))) / length(draws)
+      }
+      hat_y_natural <- policy_predict(batch_l_natural, PolicyList_Model_natural)
+      hat_y_unnatural <- policy_predict(batch_l_unnatural, PolicyList_Model_unnatural)
 
       # skill baseline -predicting unnatural outcomes with natural outcomes
       NUM <- (0.001+colMeans(abs(np$array( batch_l_unnatural$YTrue_out )[,,1] -
@@ -379,10 +264,10 @@ if(SimMode == T){
 
       # skill - predicting unnatural outcomes using natural predictions
       NUM <- (0.001+colMeans(abs(np$array( batch_l_unnatural$YTrue_out )[,,1] -#out_y_indices
-                            np$array( hat_y_unnatural$y_mu )[,,1] )))
+                            hat_y_unnatural )))
                             #np$array( hat_y_unnatural$y_mu )[,out_y_indices,1] )))
       DENOM <- (0.001+colMeans(abs(np$array( batch_l_unnatural$YTrue_out )[,,1] -
-                                np$array( hat_y_natural$y_mu )[,,1])) )
+                                hat_y_natural)) )
                                      #np$array( hat_y_natural$y_mu )[,out_y_indices,1])) )
       PolicyScenarioSkill <- NUM  / DENOM
 
@@ -391,46 +276,7 @@ if(SimMode == T){
       PolicyScenarioSkillRes <- rbind(PolicyScenarioSkillRes,PolicyScenarioSkill)
       PolicyScenarioSkillBaselineRes <- rbind(PolicyScenarioSkillBaselineRes,PolicyScenarioSkill_baseline)
 
-      if(PolicyPlot <- F){
-        # sample an observation
-        i_ <- sample(1:batch_l_natural$YTrue[[1]]$shape[[1]], 1)
 
-        # data-generation outcome scenario checks
-        par(mfrow=c(2,2))
-        plot( np$array( batch_l_natural$YTrue[[1]] )[i_,,1],main = "Disease Outcomes", ylim = c(0, max( c(np$array( batch_l_unnatural$YTrue[[1]] )[i_,,1] ,np$array( batch_l_natural$YTrue[[1]] )[i_,,1]))))
-        #abline(v =  batch_l_natural$YTrue[[1]]$shape[[2]] - nTimesLookahead-1,col="red")
-        points( np$array( batch_l_unnatural$YTrue[[1]] )[i_,,1] , col = "gray",pch = 3)
-
-        # data-generation policy scenario checks
-        plot( tmp <- np$array( batch_l_natural$YTrue[[1]] )[i_,,2], main = "Policy Stringency", ylim = summary(c(np$array( batch_l_unnatural$YTrue[[1]] )[i_,,2], np$array( batch_l_natural$YTrue[[1]] )[i_,,2]) )[c(1,6)])
-        #abline(v =  batch_l_natural$YTrue[[1]]$shape[[2]] - nTimesLookahead,col="red")
-        points( np$array( batch_l_unnatural$YTrue[[1]] )[i_,,2],  col = "gray", pch = 3)
-
-        # data-generation beta scenario checks
-        plot( np$array( SoftPlus(batch_l_natural$inv_beta_true))[i_,1:length(tmp)], main = "Beta", ylim = summary(c(np$array( SoftPlus(batch_l_natural$inv_beta_true) )[i_,], np$array( SoftPlus(batch_l_unnatural$inv_beta_true) )[i_,]) )[c(1,6)])
-        #abline(v =  batch_l_natural$YTrue[[1]]$shape[[2]] - nTimesLookahead,col="red")
-        points( np$array( SoftPlus(batch_l_unnatural$inv_beta_true) )[i_,1:length(tmp)],  col = "gray", pch = 3)
-
-
-        # prediction scenario outcome checks
-        plot( ( np$array( hat_y_natural$y_mu )[i_,,1]), main="Pred Truths",ylim = summary(c(( np$array( hat_y_natural$y_mu )[i_,,1]),c(np$array( hat_y_unnatural$y_mu )[i_,,1])))[c(1,6)])
-        points( np$array( hat_y_unnatural$y_mu )[i_,,1],  col = "gray", pch = 3)
-        # plot(np$array( hat_y_natural$y_mu )[i_,,1] - np$array( hat_y_unnatural$y_mu )[i_,,1])
-
-        # prediction scenario policy checks
-        plot( ( np$array( hat_y_natural$y_mu )[i_,,2]), main="Pred Policies", ylim = c(-10, 10))
-        points( np$array( hat_y_unnatural$y_mu )[i_,,2],  col = "gray", pch = 3)
-        PolicyList_Model_unnatural[[1]]$evaluate(jnp$array(0:(nTimesTotal-1L)))
-        par(mfrow=c(1,1))
-
-        # prediction beta policy checks
-        #plot( ( np$array( hat_y_natural$ODEParamsSampList$diff_eq_sol_ys.Neural1 )[i_,,LocalNeuralEmbedDim+1]), ylim = summary( np$array( hat_y_natural$ODEParamsSampList$diff_eq_sol_ys.Neural1 )[i_,,LocalNeuralEmbedDim+1])[c(1,6)])
-        #points( np$array( hat_y_unnatural$ODEParamsSampList$diff_eq_sol_ys.Neural1 )[i_,,LocalNeuralEmbedDim+1],  col = "gray", pch = 3)
-
-        # analysis
-        # plot( np$array(hat_y_natural$ODEParamsSampList$diff_eq_sol_ys.Neural1)[i_,,LocalNeuralEmbedDim+1] )
-        # hist( apply(np$array(hat_y_natural$ODEParamsSampList$diff_eq_sol_ys.Neural1)[,,LocalNeuralEmbedDim+1], 1,  function(zer){mean(diff(zer))}), xlab = ""); abline(v = 0, lwd = 2)
-      }
     }
   }
   if(is.null(PolicyScenarioSkillRes) || is.null(PolicyScenarioSkillBaselineRes)){
@@ -449,7 +295,7 @@ if(SimMode == T){
   ##############################
   # setup save variable names
   ##############################
-  if(nj == 1){
+  {
     SaveQuantityNames <- c(outcome2 <- c("MedianWithinR2_Raw","MedianWithinR2_Fit",
                                          "GlobalR2_Raw","GlobalR2_Fit",
                                          "FNorm_Raw","FNorm_Rel",
@@ -474,8 +320,7 @@ if(SimMode == T){
     list(eval(parse(text = sprintf("c('%s' = eval(parse(text = %s)))",ze,ze))))
   })
   names(tmp) <- NULL
-  res_list[[nj]] <- c(do.call(c,tmp), skill_vec, RSS_pred, RSS_baseline, PolicyScenarioSkillRes, PolicyScenarioSkillBaselineRes)
-  }
+  panel_metrics <- c(do.call(c,tmp), skill_vec, RSS_pred, RSS_baseline, PolicyScenarioSkillRes, PolicyScenarioSkillBaselineRes)
   
   try({
     ndm_viz_trajectory_rows <- ndm_viz_trajectory_rows[!vapply(ndm_viz_trajectory_rows, inherits, logical(1), "try-error")]
@@ -527,10 +372,26 @@ if(SimMode == T){
                  "te_total" = te_total, 
                  "te_grads" = te_grads, 
                  unlist(SimEntry),
-                 colMeans(do.call(rbind,res_list))))
+                 panel_metrics))
   res_vec <- ndm_result_metadata(as.data.frame(res_vec), environment(), nTimesLookValidationInference)
   print(sprintf("WRITING af of %s", af))
-  data.table::fwrite(file = file.path(HolderFolder, sprintf("res%s_i%s.csv", af, i)), res_vec)
-  save.image(file = file.path(HolderFolder, sprintf("res%s_i%s.Rdata", af, i)))
+  res_vec$KLDiv_init_status <- KLDiv_init_status
+  res_vec$KLDiv_init_infinite_count <- KLDiv_init_infinite_count
+  res_vec$inference_mc_draws_requested <- inference_draw_plan$requested
+  res_vec$inference_mc_draws_effective <- inference_draw_plan$effective
+  res_vec$inference_key_scheme <- "jax-fold-in-v2:run>BaseID>checkpoint>draw;local>canonical_ordinal;global>shared-draw"
+  res_vec$inference_examples <- nrow(l_true)
+  res_vec$policy_examples <- 64L
+  res_vec$policy_status <- if (policy_eval_failed) "failed" else "ok"
+  result_file <- file.path(HolderFolder, sprintf("res%s_i%s.csv", af, i))
+  utils::getFromNamespace(".ndm_atomic_result_csv", "ndm")(
+    res_vec, result_file, list(
+      run_id = as.character(res_vec$RunID[[1L]]), checkpoint_step = as.integer(i), n_sgd = as.integer(nSGD_model),
+      inference_examples = nrow(l_true), evaluation_horizon = ncol(l_true),
+      manifest_sha256 = get0("ndm_inference_manifest_sha256", ifnotfound = NA_character_),
+      draws_requested = inference_draw_plan$requested, draws_effective = inference_draw_plan$effective,
+      key_scheme = res_vec$inference_key_scheme,
+      canonical_ids_sha256 = digest::digest(seq_len(nrow(l_true)), algo = "sha256")))
+  ndm_last_evaluation_file <- result_file
   print("Done with SuperLModel_GetAnalytics_Sim.R")
 }

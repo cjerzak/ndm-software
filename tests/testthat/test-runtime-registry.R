@@ -116,7 +116,9 @@ test_that("production runtime avoids shared per-step files and uses final-only c
 
   expect_false(grepl("plot( LR_schedule_vec )", train_define, fixed = TRUE))
   expect_false(grepl("TrainDoStepTime.csv", train_do, fixed = TRUE))
-  expect_match(train_do, "if (n_checkpoints == 1L", fixed = TRUE)
+  expect_match(train_do, ".ndm_checkpoint_save_steps", fixed = TRUE)
+  expect_identical(.ndm_checkpoint_save_steps(100L, 1L), 100L)
+  expect_identical(.ndm_checkpoint_save_steps(8L, 10L), 8L)
   expect_match(train_do, "training_telemetry.csv", fixed = TRUE)
   expect_match(train_do, "if (!(i %in% training_telemetry$iteration))", fixed = TRUE)
   expect_match(train_do, "digits = 17L", fixed = TRUE)

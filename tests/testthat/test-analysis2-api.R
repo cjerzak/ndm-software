@@ -165,11 +165,11 @@ test_that("Analysis2 training TFRecord shuffle is reproducible from run_seed", {
 
   backend <- ndm_backend_modules()
   api <- ndm:::.ndm_legacy_run_env(refresh = TRUE)
-  first_batch <- function(seed) {
+  first_batch <- function(seed, inference_limit = NULL) {
     runtime_env <- ndm_new_runtime_env()
     runtime_env$tf <- backend$tf
     runtime_env$nSamplesTrain <- 16L
-    runtime_env$nObsInference <- 8L
+    runtime_env$nObsInference <- inference_limit
     api$analysis2_attach_canonical_tfrecords(
       ndmdatasets_pkg = "ndmdatasets",
       runtime_env = runtime_env,
@@ -189,6 +189,7 @@ test_that("Analysis2 training TFRecord shuffle is reproducible from run_seed", {
   seed_12 <- first_batch(12L)
   expect_equal(seed_11_a, seed_11_b, tolerance = 0)
   expect_false(identical(seed_11_a, seed_12))
+  expect_error(first_batch(11L, 8L), "complete canonical panel")
 })
 
 test_that("canonical sim bootstrap skips existing artifacts on rerun", {

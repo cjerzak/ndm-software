@@ -407,23 +407,7 @@ capture_nonfinite_report <- function(batch_l,
 if (exists("ndm_runtime_normalize_getpred_saveat_info", inherits = TRUE)) {
   GetPredSaveAtInfo_default <- ndm_runtime_normalize_getpred_saveat_info(GetPredSaveAtInfo_default)
 }
-checkpoint_save_steps <- function(n_steps, n_checkpoints) {
-  n_steps <- max(1L, as.integer(n_steps))
-  n_checkpoints <- max(0L, as.integer(n_checkpoints))
-  if (n_checkpoints == 0L) {
-    return(integer())
-  }
-  if (n_checkpoints == 1L || n_steps == 1L) {
-    return(n_steps)
-  }
-  first_step <- min(10L, n_steps)
-  intermediate <- round(10^seq(
-    log(first_step, base = 10),
-    log(n_steps, base = 10),
-    length.out = n_checkpoints
-  ))
-  sort(unique(c(as.integer(intermediate), n_steps)))
-}
+checkpoint_save_steps <- utils::getFromNamespace(".ndm_checkpoint_save_steps", "ndm")
 CheckPointSaveAt <- checkpoint_save_steps(nSGD_MASTER, nCheckpoints)
 # Explicit collection (R gc plus a full Python gc.collect()) costs about
 # 200 ms per call, so it runs at checkpoints and every TrainingGcInterval

@@ -2244,80 +2244,7 @@ analysis2_resolve_real_inputs <- function(ndmdatasets_pkg, bundle, dataset_spec)
 }
 
 analysis2_real_training_rows <- function(bundle, dataset_spec) {
-  truth_df <- as.data.frame(bundle$truth_df, stringsAsFactors = FALSE)
-  required_columns <- c("location_id", "location_name", "week_id")
-  missing_columns <- setdiff(required_columns, names(truth_df))
-  if (length(missing_columns) > 0L) {
-    stop(
-      "Real-data transform fitting is missing required source columns: ",
-      paste(missing_columns, collapse = ", "),
-      ".",
-      call. = FALSE
-    )
-  }
-
-  eligible <- !is.na(truth_df$location_name)
-  if (identical(dataset_spec$data_subset, "high_income")) {
-    if (!"LOC2_region_name" %in% names(truth_df)) {
-      stop(
-        "Real-data high-income filtering requires `LOC2_region_name`.",
-        call. = FALSE
-      )
-    }
-    high_income_regions <- c(
-      "Western Europe",
-      "High-income North America",
-      "Central Europe",
-      "High-income Asia Pacific"
-    )
-    eligible <- eligible & truth_df$LOC2_region_name %in% high_income_regions
-  }
-  eligible_rows <- which(eligible)
-  if (length(eligible_rows) == 0L) {
-    stop("Real-data transform fitting found no eligible observations.", call. = FALSE)
-  }
-
-  time_id <- as.numeric(truth_df$week_id[eligible_rows])
-  in_out_cutpoint <- round(stats::quantile(
-    sort(unique(time_id)),
-    prob = dataset_spec$evaluation_time /
-      (max(dataset_spec$evaluation_sequence) + 1)
-  ))
-  split_type <- as.character(dataset_spec$split_type)
-  if (identical(split_type, "OutOfTime")) {
-    return(eligible_rows[time_id <= in_out_cutpoint])
-  }
-  if (!split_type %in% c("OutOfPlace", "OutOfPlacetime")) {
-    stop("Unsupported real-data split type: ", split_type, call. = FALSE)
-  }
-
-  locations <- sort(unique(truth_df$location_id[eligible_rows]))
-  n_train_locations <- max(
-    1L,
-    floor(length(locations) * dataset_spec$train_location_fraction)
-  )
-  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  if (had_seed) {
-    previous_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  }
-  on.exit({
-    if (had_seed) {
-      assign(".Random.seed", previous_seed, envir = .GlobalEnv)
-    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-      rm(".Random.seed", envir = .GlobalEnv)
-    }
-  }, add = TRUE)
-  set.seed(1L)
-  training_locations <- sample(
-    locations,
-    n_train_locations,
-    replace = FALSE
-  )
-  training <- truth_df$location_id[eligible_rows] %in% training_locations
-  if (identical(split_type, "OutOfPlacetime")) {
-    training <- training & time_id <= in_out_cutpoint
-  }
-  eligible_rows[training]
+  ndmdatasets::ndm_real_training_rows(bundle, dataset_spec)
 }
 
 analysis2_preapply_real_initial_transform <- function(ndmdatasets_pkg,
@@ -3439,6 +3366,9 @@ analysis2_sim_runtime_globals <- function(row_values,
 analysis2_dry_run_result <- function(spec,
                                      grid,
                                      nsgd_calibration = NULL) {
+  if (!is.null(nsgd_calibration)) nsgd_calibration$checkpoint_steps <-
+    utils::getFromNamespace(".ndm_checkpoint_save_steps", "ndm")(
+      nsgd_calibration$resolved_n_sgd, spec$n_checkpoints)
   preview_rows <- spec$outer[seq_len(min(3L, length(spec$outer)))]
   preview <- grid[preview_rows, , drop = FALSE]
   invisible(list(

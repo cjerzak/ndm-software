@@ -265,6 +265,18 @@
   assign("TFDataset_inference", inference_dataset, envir = runtime_env)
   assign("TFDatasetIterator_inference", iterator_factory(inference_dataset), envir = runtime_env)
   assign("ndm_canonical_tfrecord_schema", schema_kind, envir = runtime_env)
+  manifest_file <- .ndm_canonical_manifest_path(inference_file)
+  if (file.exists(manifest_file)) {
+    manifest <- readRDS(manifest_file)
+    count <- .ndm_canonical_optional_count(manifest$n_examples, "inference manifest count")
+    if (identical(schema_kind, "sim") && !is.null(max_inference_examples) &&
+        max_inference_examples != count) {
+      stop("Simulation inference must use the complete canonical panel.", call. = FALSE)
+    }
+    assign("ndm_inference_expected_count", min(count, max_inference_examples %||% count), envir = runtime_env)
+    assign("ndm_inference_manifest_sha256", digest::digest(file = manifest_file, algo = "sha256"), envir = runtime_env)
+  }
+
 
   invisible(runtime_env)
 }
@@ -466,7 +478,8 @@
            nTimes = dataset_spec$n_time_steps %||%
              ((dataset_spec$context_length + dataset_spec$lookahead) * 4L),
            nTimesLook = dataset_spec$lookahead,
-           PolicyList = list(ComputeScenario = FALSE, Scenario = NULL)) {
+           PolicyList = list(ComputeScenario = FALSE, Scenario = NULL),
+           example_seeds = NULL) {
     if (isTRUE(openBrowser)) {
       browser()
     }
@@ -480,13 +493,23 @@
     local_spec$lookahead <- as.integer(nTimesLook)
     compute_scenario <- isTRUE(PolicyList$ComputeScenario)
     policy_scenario <- PolicyList$Scenario %||% numeric(local_spec$n_time_steps)
+    if (inherits(policy_scenario, "python.builtin.object")) {
+      policy_scenario <- runtime_env$np$asanyarray(policy_scenario)
+    }
+    policy_scenario <- as.numeric(policy_scenario)
 
+
+    example_seeds <- example_seeds %||% (5000L + seq_len(nBatch))
+    if (length(example_seeds) != nBatch || any(!is.finite(example_seeds)) ||
+        any(example_seeds < 0 | example_seeds > .Machine$integer.max | example_seeds != floor(example_seeds))) {
+      stop("Policy example seeds must align with the batch.", call. = FALSE)
+    }
     examples <- lapply(seq_len(nBatch), function(i) {
       dataset_call(
         "ndm_sim_make_example",
         dataset_spec = local_spec,
         scaler = scaler,
-        seed = 5000L + i,
+        seed = as.integer(example_seeds[[i]]),
         compute_scenario = compute_scenario,
         policy_scenario = policy_scenario
       )
